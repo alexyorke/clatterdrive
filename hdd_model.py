@@ -65,7 +65,6 @@ class HDDLatenyModel:
                 time.sleep(2)
 
     def _lba_to_chs(self, lba):
-        # 2000 sectors/track (Advanced Format logic)
         sectors_per_cyl = self.num_heads * 2000 
         cyl = (lba // sectors_per_cyl) % self.total_cylinders
         rem = lba % sectors_per_cyl
@@ -96,9 +95,7 @@ class HDDLatenyModel:
         return (size_bytes / (1024 * 1024)) / rate * 1000, rate
 
     def submit_physical_access(self, lba, size_bytes, is_write):
-        """Simulates one physical seek/rotation/transfer."""
         with self.lock:
-            # Check cache hits (read only)
             if not is_write and lba >= self.read_ahead_lba and lba < (self.read_ahead_lba + self.read_ahead_size // 512):
                 audio._update_telemetry(self.current_rpm, is_seq=True)
                 return {"total_ms": 0.01, "cache_hit": True}
@@ -113,7 +110,6 @@ class HDDLatenyModel:
             total_lat += xfer_ms
             time.sleep(total_lat / 1000.0)
             
-            # Update position
             sectors_passed = math.ceil(size_bytes / 512.0)
             HDDLatenyModel._current_cyl = t_cyl
             HDDLatenyModel._current_head = t_head
@@ -136,38 +132,43 @@ class VirtualHDD:
         self.model = HDDLatenyModel()
         self.fs = FileSystemSimulator()
         self.backing_dir = backing_dir
+        self.scheduler = None # Will be set by provider
+
+    def set_scheduler(self, scheduler):
+        self.scheduler = scheduler
 
     def access_file(self, path, offset, length, is_write=False):
-        """
-        Simulates file access through the block-based filesystem.
-        A single file access may trigger multiple physical seeks due to fragmentation.
-        """
-        # 1. Get extents from FS Simulator
         if is_write:
             extents = self.fs.write(path, offset, length)
         else:
             extents = self.fs.read(path, offset, length)
             
-        # 2. Process each extent as a physical I/O
         total_stats = {
             "total_ms": 0,
             "extents": len(extents),
-            "cyl": 0,
-            "head": 0,
+            "cyl": "-",
+            "head": "-",
             "cache_hit": True if extents else False
         }
         
-        # If write cache enabled, writes return instantly
+        # Immediate completion for write-back cache
         if is_write and self.model.write_cache_enabled:
-            # We still need to process them in the background ideally,
-            # but for simplicity we return immediate completion.
+            # We still need to queue the physical writes in background,
+            # but for this simulation we return immediately.
             return {"total_ms": 0.05, "cache_hit": True, "type": "WRITE", "extents": len(extents)}
 
         for lba, count in extents:
-            res = self.model.submit_physical_access(lba, count * 4096, is_write)
+            if self.scheduler:
+                # Route through OS Scheduler
+                req_id = self.scheduler.submit_bio(lba, count * 4096, is_write)
+                res = self.scheduler.wait_for_completion(req_id)
+            else:
+                # Direct access (fallback)
+                res = self.model.submit_physical_access(lba, count * 4096, is_write)
+                
             total_stats["total_ms"] += res["total_ms"]
-            total_stats["cyl"] = res.get("cyl")
-            total_stats["head"] = res.get("head")
+            if "cyl" in res: total_stats["cyl"] = res["cyl"]
+            if "head" in res: total_stats["head"] = res["head"]
             if not res.get("cache_hit"):
                 total_stats["cache_hit"] = False
                 

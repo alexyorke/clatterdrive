@@ -6,41 +6,36 @@ from hdd_model import VirtualHDD
 from os_scheduler import OSScheduler
 
 class LatencyFileResource(FileResource):
-    def __init__(self, path, environ, file_path, vhdd, scheduler):
+    def __init__(self, path, environ, file_path, vhdd):
         super().__init__(path, environ, file_path)
         self.vhdd = vhdd
-        self.scheduler = scheduler
 
     def get_content(self):
         original_reader = super().get_content()
         if hasattr(original_reader, "read"):
-            return LatencyReader(original_reader, self.path, self.vhdd, self.scheduler)
+            return LatencyReader(original_reader, self.path, self.vhdd)
         return original_reader
 
     def begin_write(self, *, content_type=None):
-        # Call super with keyword argument as per inspected signature
         original_writer = super().begin_write(content_type=content_type)
-        return LatencyWriter(original_writer, self.path, self.vhdd, self.scheduler)
+        return LatencyWriter(original_writer, self.path, self.vhdd)
 
 class LatencyReader:
-    def __init__(self, reader, path, vhdd, scheduler):
+    def __init__(self, reader, path, vhdd):
         self.reader = reader
         self.path = path
         self.vhdd = vhdd
-        self.scheduler = scheduler
         self.offset = 0
 
     def read(self, size=-1):
         if size == -1: size = 4096 
         
-        start_lba = self.vhdd.get_file_lba(self.path)
-        target_lba = start_lba + (self.offset // 512)
-        
-        req_id = self.scheduler.submit_bio(target_lba, size, is_write=False)
-        stats = self.scheduler.wait_for_completion(req_id)
+        # Dispatch to the VirtualHDD stack
+        stats = self.vhdd.access_file(self.path, self.offset, size, is_write=False)
         
         hit_str = "[CACHE HIT]" if stats.get("cache_hit") else ""
-        print(f"READ: {self.path} {hit_str} | Cyl: {stats.get('cyl','-')} Head: {stats.get('head','-')} | "
+        ext_str = f"| Extents: {stats['extents']}" if stats['extents'] > 1 else ""
+        print(f"READ: {self.path} {hit_str} | Cyl: {stats.get('cyl','-')} Head: {stats.get('head','-')} {ext_str} | "
               f"Total Latency: {stats['total_ms']:.2f}ms", file=sys.stderr)
         
         data = self.reader.read(size)
@@ -65,21 +60,17 @@ class LatencyReader:
             self.reader.close()
 
 class LatencyWriter:
-    def __init__(self, writer, path, vhdd, scheduler):
+    def __init__(self, writer, path, vhdd):
         self.writer = writer
         self.path = path
         self.vhdd = vhdd
-        self.scheduler = scheduler
         self.offset = 0
 
     def write(self, data):
         size = len(data)
         
-        start_lba = self.vhdd.get_file_lba(self.path)
-        target_lba = start_lba + (self.offset // 512)
-        
-        req_id = self.scheduler.submit_bio(target_lba, size, is_write=True)
-        stats = self.scheduler.wait_for_completion(req_id)
+        # Dispatch to the VirtualHDD stack
+        stats = self.vhdd.access_file(self.path, self.offset, size, is_write=True)
         
         hit_str = "[WRITE-BACK]" if stats.get("cache_hit") else ""
         print(f"WRITE: {self.path} {hit_str} | Cyl: {stats.get('cyl','-')} Head: {stats.get('head','-')} | "
@@ -97,6 +88,8 @@ class HDDProvider(FilesystemProvider):
         super().__init__(root_folder_path)
         self.vhdd = VirtualHDD(root_folder_path)
         self.scheduler = OSScheduler(self.vhdd.model)
+        # Link scheduler to VirtualHDD
+        self.vhdd.set_scheduler(self.scheduler)
 
     def get_resource_inst(self, path, environ):
         res = super().get_resource_inst(path, environ)
@@ -104,10 +97,9 @@ class HDDProvider(FilesystemProvider):
             fp = getattr(res, "file_path", getattr(res, "_file_path", None))
             if not fp:
                 fp = os.path.join(self.root_folder_path, path.lstrip("/"))
-            return LatencyFileResource(res.path, environ, fp, self.vhdd, self.scheduler)
+            return LatencyFileResource(res.path, environ, fp, self.vhdd)
         return res
 
     def delete_resource(self, path, environ):
-        # Notify FS simulator to free blocks
         self.vhdd.fs.delete(path)
         return super().delete_resource(path, environ)
