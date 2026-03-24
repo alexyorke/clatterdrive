@@ -17,8 +17,9 @@ class LatencyFileResource(FileResource):
             return LatencyReader(original_reader, self.path, self.vhdd, self.scheduler)
         return original_reader
 
-    def begin_write(self, content_type=None):
-        original_writer = super().begin_write(content_type)
+    def begin_write(self, *, content_type=None):
+        # Call super with keyword argument as per inspected signature
+        original_writer = super().begin_write(content_type=content_type)
         return LatencyWriter(original_writer, self.path, self.vhdd, self.scheduler)
 
 class LatencyReader:
@@ -32,15 +33,12 @@ class LatencyReader:
     def read(self, size=-1):
         if size == -1: size = 4096 
         
-        # 1. Translate path/offset to LBA
         start_lba = self.vhdd.get_file_lba(self.path)
         target_lba = start_lba + (self.offset // 512)
         
-        # 2. Submit to OS Scheduler (VFS -> Block Layer)
         req_id = self.scheduler.submit_bio(target_lba, size, is_write=False)
         stats = self.scheduler.wait_for_completion(req_id)
         
-        # Log the detailed stats including Cache Hit (Read-Ahead)
         hit_str = "[CACHE HIT]" if stats.get("cache_hit") else ""
         print(f"READ: {self.path} {hit_str} | Cyl: {stats.get('cyl','-')} Head: {stats.get('head','-')} | "
               f"Total Latency: {stats['total_ms']:.2f}ms", file=sys.stderr)
@@ -56,7 +54,6 @@ class LatencyReader:
             self.reader.seek(offset, whence)
             new_offset = self.reader.tell()
         
-        # No simulation for the seek itself, as the next READ will trigger the mechanical delay
         if whence != 2: self.reader.seek(offset, whence)
         self.offset = new_offset
 
@@ -64,7 +61,8 @@ class LatencyReader:
         return self.offset
 
     def close(self):
-        self.reader.close()
+        if hasattr(self.reader, "close"):
+            self.reader.close()
 
 class LatencyWriter:
     def __init__(self, writer, path, vhdd, scheduler):
@@ -80,7 +78,6 @@ class LatencyWriter:
         start_lba = self.vhdd.get_file_lba(self.path)
         target_lba = start_lba + (self.offset // 512)
         
-        # Submit to OS Scheduler
         req_id = self.scheduler.submit_bio(target_lba, size, is_write=True)
         stats = self.scheduler.wait_for_completion(req_id)
         
@@ -92,13 +89,13 @@ class LatencyWriter:
         self.offset += size
 
     def close(self):
-        self.writer.close()
+        if hasattr(self.writer, "close"):
+            self.writer.close()
 
 class HDDProvider(FilesystemProvider):
     def __init__(self, root_folder_path):
         super().__init__(root_folder_path)
         self.vhdd = VirtualHDD(root_folder_path)
-        # Initialize the OS Scheduler stack
         self.scheduler = OSScheduler(self.vhdd.model)
 
     def get_resource_inst(self, path, environ):
