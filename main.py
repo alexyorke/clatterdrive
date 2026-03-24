@@ -15,18 +15,19 @@ def start_server():
         },
         "middleware_stack": [
             "wsgidav.error_printer.ErrorPrinter",
-            # "wsgidav.http_authenticator.HTTPAuthenticator", # Commented out
             "wsgidav.dir_browser._dir_browser.WsgiDavDirBrowser",
             "wsgidav.request_resolver.RequestResolver",
         ],
         "port": 8080,
         "host": "127.0.0.1",
-        "verbose": 4,
+        "verbose": 1,
     }
     
     app = WsgiDAVApp(config)
     server = wsgi.Server(("127.0.0.1", 8080), app)
-    print("Fake HDD WebDAV server starting on http://127.0.0.1:8080")
+    print("Research-Enhanced HDD WebDAV server starting on http://127.0.0.1:8080")
+    print("Simulated Stack: VFS -> Page Cache -> Block Layer (SCAN) -> SATA/AHCI -> NCQ/RPO -> Physical HDD")
+    
     try:
         server.start()
     except KeyboardInterrupt:
