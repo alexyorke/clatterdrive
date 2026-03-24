@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+.venv
+env/
+venv/
+ENV/
+server.log
+server.err
+backing_storage/
+.vscode/
+.idea/
