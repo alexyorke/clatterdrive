@@ -3,6 +3,13 @@ from cheroot import wsgi
 from vfs_provider import HDDProvider
 import os
 
+# Create a minimal app without authentication
+class NoAuthWsgiDAVApp(WsgiDAVApp):
+    def __call__(self, environ, start_response):
+        # Force anonymous user to skip authenticator
+        environ["wsgidav.auth.user_name"] = "anonymous"
+        return super().__call__(environ, start_response)
+
 def start_server():
     root_path = os.path.abspath("backing_storage")
     if not os.path.exists(root_path):
@@ -15,6 +22,7 @@ def start_server():
         },
         "middleware_stack": [
             "wsgidav.error_printer.ErrorPrinter",
+            # We explicitly skip HTTPAuthenticator here
             "wsgidav.dir_browser._dir_browser.WsgiDavDirBrowser",
             "wsgidav.request_resolver.RequestResolver",
         ],
@@ -23,10 +31,9 @@ def start_server():
         "verbose": 1,
     }
     
-    app = WsgiDAVApp(config)
+    app = NoAuthWsgiDAVApp(config)
     server = wsgi.Server(("127.0.0.1", 8080), app)
     print("Research-Enhanced HDD WebDAV server starting on http://127.0.0.1:8080")
-    print("Simulated Stack: VFS -> Page Cache -> Block Layer (SCAN) -> SATA/AHCI -> NCQ/RPO -> Physical HDD")
     
     try:
         server.start()
