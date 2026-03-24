@@ -25,7 +25,7 @@ class HDDLatenyModel:
                  write_cache_enabled=True):
         
         self.target_rpm = rpm
-        self.current_rpm = 0.0 # Start at 0 for spin-up
+        self.current_rpm = 0.0
         self.num_heads = platters * 2
         self.total_cylinders = cylinders_per_surface
         self.ms_per_rotation = 60000.0 / rpm
@@ -43,16 +43,30 @@ class HDDLatenyModel:
         self.read_ahead_lba = -1
         self.read_ahead_size = 0
         
-        # Spin-up thread
+        self.running = True
         threading.Thread(target=self._spin_up_loop, daemon=True).start()
+        # Background calibration thread
+        threading.Thread(target=self._background_tasks_loop, daemon=True).start()
 
     def _spin_up_loop(self):
-        """Simulates the 5-10 second spin-up curve."""
         while self.current_rpm < self.target_rpm:
-            self.current_rpm += 100 # Increment RPM
+            self.current_rpm += 150 
             audio._update_telemetry(self.current_rpm)
             time.sleep(0.1)
         self.current_rpm = self.target_rpm
+
+    def _background_tasks_loop(self):
+        """Simulates autonomous background firmware tasks."""
+        while self.running:
+            time.sleep(random.uniform(5, 15)) # Wait some time
+            # 1. Thermal Calibration Tick
+            if time.time() - self._last_access_time > 5:
+                audio._update_telemetry(self.current_rpm, is_cal=True)
+            
+            # 2. Idle Ramp Parking (if idle long enough)
+            if time.time() - self._last_access_time > 30:
+                audio._update_telemetry(self.current_rpm, is_park=True)
+                time.sleep(2) # Stay parked
 
     def _lba_to_chs(self, lba):
         sectors_per_cyl = self.num_heads * 2000 
@@ -87,7 +101,6 @@ class HDDLatenyModel:
     def submit_request(self, lba, size_bytes, is_write=False):
         with self.lock:
             if not is_write and lba >= self.read_ahead_lba and lba < (self.read_ahead_lba + self.read_ahead_size // 512):
-                # Sequential Purr
                 audio._update_telemetry(self.current_rpm, is_seq=True)
                 return {"total_ms": 0.01, "cache_hit": True, "type": "READ"}
 
@@ -99,7 +112,6 @@ class HDDLatenyModel:
                 self._current_cyl, self._current_head, self._current_sector, lba
             )
             
-            # Trigger Audio Seek Click
             audio._update_telemetry(self.current_rpm, seek_trigger=True, seek_dist=dist)
             
             xfer_ms, rate = self._get_transfer_time(lba, size_bytes)

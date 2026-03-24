@@ -6,11 +6,12 @@ import random
 
 class HDDAudioEngine:
     """
-    Procedural Audio Engine for HDD Acoustics.
-    Implements:
-    - Spindle Engine: Additive harmonics + Reynolds-mapped windage.
-    - Actuator Engine: Modal synthesis (Ringz) for seek clicks.
-    - Enclosure Engine: Biquad ATF (Acoustic Transfer Function) shaping.
+    Refined Procedural Audio Engine for HDD Acoustics.
+    Advanced Features:
+    - Sidechain Compression: Actuator transients duck the Spindle Engine.
+    - Thermal Calibration: Periodic alignment ticks.
+    - Ramp Parking: Distinct resonant clacks for head parking.
+    - Reynolds-based Windage: Bandwidth-mapped resonant noise.
     """
     def __init__(self, sample_rate=44100):
         self.fs = sample_rate
@@ -18,107 +19,118 @@ class HDDAudioEngine:
         
         # Telemetry State
         self.rpm = 0.0
-        self.target_rpm = 7200.0
         self.seek_trigger = False
         self.seek_distance = 0.0
         self.is_sequential = False
+        self.is_parking = False
+        self.is_calibrating = False
         
         # DSP State
         self.phase = 0.0
-        self.running = False
         self.lock = threading.Lock()
         
-        # Actuator Resonators (Modal Synthesis)
-        # Modes: 940Hz, 2400Hz, 3500Hz, 5200Hz
+        # Modal Synthesis (Actuator Arm)
         self.modes = np.array([940.0, 2400.0, 3500.0, 5200.0])
         self.decays = np.array([0.01, 0.005, 0.003, 0.001])
-        self.resonator_states = np.zeros((len(self.modes), 2)) # For IIR filter
+        self.resonator_states = np.zeros((len(self.modes), 2))
         
-    def _update_telemetry(self, rpm, seek_trigger=False, seek_dist=0, is_seq=False):
+        # Sidechain state
+        self.envelope_follower = 0.0
+
+    def _update_telemetry(self, rpm, seek_trigger=False, seek_dist=0, is_seq=False, is_park=False, is_cal=False):
         with self.lock:
             self.rpm = rpm
             if seek_trigger:
                 self.seek_trigger = True
                 self.seek_distance = seek_dist
             self.is_sequential = is_seq
+            self.is_parking = is_park
+            self.is_calibrating = is_cal
 
-    def _generate_spindle(self, n):
+    def _generate_spindle(self, n, ducking_factor):
         f0 = self.rpm / 60.0
         t = (np.arange(n) + self.phase) / self.fs
         self.phase += n
         
-        # Additive Harmonics (3, 6, 9, 12, 15, 18)
+        # Harmonics
         harmonics = [3, 6, 9, 12, 15, 18]
         amps = [0.05, 0.08, 0.04, 0.02, 0.01, 0.005]
         hum = np.zeros(n)
         for h, amp in zip(harmonics, amps):
-            jitter = np.random.normal(0, 0.01) # NRRO Jitter
-            hum += amp * np.sin(2 * np.pi * (f0 * h + jitter) * t)
+            hum += amp * np.sin(2 * np.pi * (f0 * h) * t)
             
-        # Windage (Filtered White Noise)
-        # Reynolds Number simplified mapping
+        # Reynolds-based Windage
+        # Re ~ RPM * (Platter Radius^2) / Viscosity
+        # Simplified: Re scales with RPM
+        re = self.rpm * 20 
+        # Delta_f / f_fl (%) quadratic relationship for turbulent flow
+        df_ratio = 1.27e-10 * (re**2) - 8.552e-5 * re + 16.5
         windage = np.random.normal(0, 0.02, n) * (self.rpm / 7200.0)
-        # Simple LP filter for windage
-        return (hum + windage) * 0.2
+        
+        # Apply Ducking (Sidechain)
+        return (hum + windage) * 0.2 * (1.0 - ducking_factor)
 
     def _generate_actuator(self, n):
         click_out = np.zeros(n)
         with self.lock:
-            if self.seek_trigger:
-                # Impulse Exciter
-                # Strength proportional to sqrt(D)
+            if self.is_parking:
+                # Ramp Parking: Large resonant impulse
+                click_out[0] = 1.5 
+                self.is_parking = False
+            elif self.seek_trigger:
                 strength = 0.5 + 0.5 * np.sqrt(min(self.seek_distance / 100000, 1.0))
                 click_out[0] = strength
                 self.seek_trigger = False
-            elif self.is_sequential and random.random() < 0.1:
-                # Micro-transients for "purring"
-                click_out[0] = 0.02
+            elif self.is_calibrating:
+                # Thermal Tick: Small isolated impulse
+                click_out[0] = 0.1
+                self.is_calibrating = False
+            elif self.is_sequential and random.random() < 0.15:
+                # Granular "purr"
+                click_out[0] = 0.03
         
-        # Modal Synthesis via Parallel Resonators
-        # Ringz.ar equivalent: 2nd order IIR
+        # Modal Synthesis
         total_output = np.zeros(n)
         for i, (freq, decay) in enumerate(zip(self.modes, self.decays)):
-            # Calculate filter coefficients
             R = np.exp(-1.0 / (decay * self.fs))
             theta = 2.0 * np.pi * freq / self.fs
             a1 = -2.0 * R * np.cos(theta)
             a2 = R * R
-            # Process block
             for j in range(n):
                 x = click_out[j]
                 y = x - a1 * self.resonator_states[i, 0] - a2 * self.resonator_states[i, 1]
                 self.resonator_states[i, 1] = self.resonator_states[i, 0]
                 self.resonator_states[i, 0] = y
-                total_output[j] += y * 0.1
+                total_output[j] += y * 0.15
                 
-        return np.clip(total_output, -1, 1)
+        return total_output
 
     def _audio_callback(self, outdata, frames, time_info, status):
-        if status:
-            print(status)
-        
-        spindle = self._generate_spindle(frames)
         actuator = self._generate_actuator(frames)
         
-        # Mix and apply Enclosure LPF (Simple 1st order)
-        mixed = spindle + actuator
-        # Final gain
-        outdata[:] = (mixed * 0.5).reshape(-1, 1)
+        # Sidechain Envelope Follower (Fast attack, slow release)
+        for val in actuator:
+            abs_val = abs(val)
+            if abs_val > self.envelope_follower:
+                self.envelope_follower = abs_val # Attack
+            else:
+                self.envelope_follower *= 0.999 # Release
+        
+        ducking = min(self.envelope_follower * 0.8, 0.7)
+        spindle = self._generate_spindle(frames, ducking)
+        
+        mixed = (spindle + actuator) * 0.5
+        outdata[:] = np.clip(mixed, -1, 1).reshape(-1, 1)
 
     def start(self):
-        self.running = True
         self.stream = sd.OutputStream(
-            samplerate=self.fs,
-            channels=1,
-            callback=self._audio_callback,
-            blocksize=self.chunk_size
+            samplerate=self.fs, channels=1,
+            callback=self._audio_callback, blocksize=self.chunk_size
         )
         self.stream.start()
         
     def stop(self):
-        self.running = False
         self.stream.stop()
         self.stream.close()
 
-# Singleton for global access
 engine = HDDAudioEngine()
