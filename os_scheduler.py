@@ -52,7 +52,7 @@ class OSScheduler:
             if batch:
                 for req in batch:
                     # Dispatch to HDD NCQ
-                    res = self.hdd_model.submit_request(req["lba"], req["size"], req["is_write"])
+                    res = self.hdd_model.submit_physical_access(req["lba"], req["size"], req["is_write"])
                     with self.lock:
                         self.results[req["id"]] = res
             else:

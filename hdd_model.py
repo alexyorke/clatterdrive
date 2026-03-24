@@ -4,6 +4,7 @@ import random
 import threading
 from collections import deque
 from audio_engine import engine as audio
+from fs_simulator import FileSystemSimulator
 
 class HDDLatenyModel:
     _current_cyl = 0
@@ -45,7 +46,6 @@ class HDDLatenyModel:
         
         self.running = True
         threading.Thread(target=self._spin_up_loop, daemon=True).start()
-        # Background calibration thread
         threading.Thread(target=self._background_tasks_loop, daemon=True).start()
 
     def _spin_up_loop(self):
@@ -56,19 +56,16 @@ class HDDLatenyModel:
         self.current_rpm = self.target_rpm
 
     def _background_tasks_loop(self):
-        """Simulates autonomous background firmware tasks."""
         while self.running:
-            time.sleep(random.uniform(5, 15)) # Wait some time
-            # 1. Thermal Calibration Tick
+            time.sleep(random.uniform(5, 15))
             if time.time() - self._last_access_time > 5:
                 audio._update_telemetry(self.current_rpm, is_cal=True)
-            
-            # 2. Idle Ramp Parking (if idle long enough)
             if time.time() - self._last_access_time > 30:
                 audio._update_telemetry(self.current_rpm, is_park=True)
-                time.sleep(2) # Stay parked
+                time.sleep(2)
 
     def _lba_to_chs(self, lba):
+        # 2000 sectors/track (Advanced Format logic)
         sectors_per_cyl = self.num_heads * 2000 
         cyl = (lba // sectors_per_cyl) % self.total_cylinders
         rem = lba % sectors_per_cyl
@@ -98,16 +95,14 @@ class HDDLatenyModel:
         rate = self.rate_inner + (self.rate_outer - self.rate_inner) * zone_factor
         return (size_bytes / (1024 * 1024)) / rate * 1000, rate
 
-    def submit_request(self, lba, size_bytes, is_write=False):
+    def submit_physical_access(self, lba, size_bytes, is_write):
+        """Simulates one physical seek/rotation/transfer."""
         with self.lock:
+            # Check cache hits (read only)
             if not is_write and lba >= self.read_ahead_lba and lba < (self.read_ahead_lba + self.read_ahead_size // 512):
                 audio._update_telemetry(self.current_rpm, is_seq=True)
-                return {"total_ms": 0.01, "cache_hit": True, "type": "READ"}
+                return {"total_ms": 0.01, "cache_hit": True}
 
-            if is_write and self.write_cache_enabled:
-                return {"total_ms": 0.05, "cache_hit": True, "type": "WRITE"}
-
-        with self.lock:
             total_lat, t_cyl, t_head, t_sector, dist = self._calculate_total_latency(
                 self._current_cyl, self._current_head, self._current_sector, lba
             )
@@ -118,6 +113,7 @@ class HDDLatenyModel:
             total_lat += xfer_ms
             time.sleep(total_lat / 1000.0)
             
+            # Update position
             sectors_passed = math.ceil(size_bytes / 512.0)
             HDDLatenyModel._current_cyl = t_cyl
             HDDLatenyModel._current_head = t_head
@@ -128,29 +124,52 @@ class HDDLatenyModel:
                 self.read_ahead_lba = lba + sectors_passed
                 self.read_ahead_size = 128 * 1024
                 
-        return {
-            "total_ms": total_lat,
-            "seek_ms": total_lat - xfer_ms,
-            "transfer_ms": xfer_ms,
-            "rate_mbps": rate,
-            "cyl": t_cyl,
-            "head": t_head,
-            "type": "WRITE" if is_write else "READ",
-            "cache_hit": False
-        }
+            return {
+                "total_ms": total_lat,
+                "cyl": t_cyl,
+                "head": t_head,
+                "cache_hit": False
+            }
 
 class VirtualHDD:
     def __init__(self, backing_dir):
         self.model = HDDLatenyModel()
+        self.fs = FileSystemSimulator()
         self.backing_dir = backing_dir
-        self.file_lba_start = {}
-
-    def get_file_lba(self, path):
-        if path not in self.file_lba_start:
-            self.file_lba_start[path] = random.randint(0, 50000000)
-        return self.file_lba_start[path]
 
     def access_file(self, path, offset, length, is_write=False):
-        start_lba = self.get_file_lba(path)
-        target_lba = start_lba + (offset // 512)
-        return self.model.submit_request(target_lba, length, is_write)
+        """
+        Simulates file access through the block-based filesystem.
+        A single file access may trigger multiple physical seeks due to fragmentation.
+        """
+        # 1. Get extents from FS Simulator
+        if is_write:
+            extents = self.fs.write(path, offset, length)
+        else:
+            extents = self.fs.read(path, offset, length)
+            
+        # 2. Process each extent as a physical I/O
+        total_stats = {
+            "total_ms": 0,
+            "extents": len(extents),
+            "cyl": 0,
+            "head": 0,
+            "cache_hit": True if extents else False
+        }
+        
+        # If write cache enabled, writes return instantly
+        if is_write and self.model.write_cache_enabled:
+            # We still need to process them in the background ideally,
+            # but for simplicity we return immediate completion.
+            return {"total_ms": 0.05, "cache_hit": True, "type": "WRITE", "extents": len(extents)}
+
+        for lba, count in extents:
+            res = self.model.submit_physical_access(lba, count * 4096, is_write)
+            total_stats["total_ms"] += res["total_ms"]
+            total_stats["cyl"] = res.get("cyl")
+            total_stats["head"] = res.get("head")
+            if not res.get("cache_hit"):
+                total_stats["cache_hit"] = False
+                
+        total_stats["type"] = "WRITE" if is_write else "READ"
+        return total_stats

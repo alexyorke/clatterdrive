@@ -106,3 +106,8 @@ class HDDProvider(FilesystemProvider):
                 fp = os.path.join(self.root_folder_path, path.lstrip("/"))
             return LatencyFileResource(res.path, environ, fp, self.vhdd, self.scheduler)
         return res
+
+    def delete_resource(self, path, environ):
+        # Notify FS simulator to free blocks
+        self.vhdd.fs.delete(path)
+        return super().delete_resource(path, environ)
