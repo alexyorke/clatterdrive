@@ -1,6 +1,5 @@
 import time
 import requests
-import threading
 import random
 import os
 import concurrent.futures
@@ -9,6 +8,11 @@ BASE_URL = "http://localhost:8080"
 TEST_FILE = "stress_test_file.bin"
 NUM_TESTS = 100
 
+
+def _checked(response):
+    response.raise_for_status()
+    return response
+
 def log_test(name, duration, size_mb=0):
     throughput = (size_mb / (duration / 1000.0)) if duration > 0 and size_mb > 0 else 0
     print(f"[TEST] {name:30} | Duration: {duration:7.2f}ms | Throughput: {throughput:7.2f} MB/s")
@@ -16,13 +20,13 @@ def log_test(name, duration, size_mb=0):
 def test_sequential_write(size_kb=1024):
     data = os.urandom(size_kb * 1024)
     start = time.time()
-    resp = requests.put(f"{BASE_URL}/seq_write.bin", data=data)
+    _checked(requests.put(f"{BASE_URL}/seq_write.bin", data=data))
     duration = (time.time() - start) * 1000
     return duration, size_kb / 1024.0
 
 def test_sequential_read(size_kb=1024):
     start = time.time()
-    resp = requests.get(f"{BASE_URL}/seq_write.bin")
+    _checked(requests.get(f"{BASE_URL}/seq_write.bin"))
     duration = (time.time() - start) * 1000
     return duration, size_kb / 1024.0
 
@@ -31,7 +35,7 @@ def test_random_read(file_path, size_kb=4):
     offset = random.randint(0, 1024 * 1024 - size_kb * 1024)
     headers = {"Range": f"bytes={offset}-{offset + size_kb * 1024 - 1}"}
     start = time.time()
-    resp = requests.get(f"{BASE_URL}/{file_path}", headers=headers)
+    _checked(requests.get(f"{BASE_URL}/{file_path}", headers=headers))
     duration = (time.time() - start) * 1000
     return duration
 
@@ -66,7 +70,7 @@ def run_suite():
     print("\nCreating 20 small files...")
     start_dir = time.time()
     for i in range(20):
-        requests.put(f"{BASE_URL}/file_{i}.txt", data=b"small data")
+        _checked(requests.put(f"{BASE_URL}/file_{i}.txt", data=b"small data"))
     dur_dir = (time.time() - start_dir) * 1000
     log_test("20x File Creations", dur_dir)
 

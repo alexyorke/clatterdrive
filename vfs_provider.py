@@ -1,6 +1,5 @@
 import os
 import sys
-import random
 from wsgidav.fs_dav_provider import FilesystemProvider, FileResource
 from hdd_model import VirtualHDD
 from os_scheduler import OSScheduler
@@ -25,32 +24,50 @@ class LatencyReader:
         self.reader = reader
         self.path = path
         self.vhdd = vhdd
-        self.offset = 0
+        try:
+            self.offset = int(reader.tell())
+        except Exception:
+            self.offset = 0
 
     def read(self, size=-1):
-        if size == -1: size = 4096 
-        
-        # Dispatch to the VirtualHDD stack
-        stats = self.vhdd.access_file(self.path, self.offset, size, is_write=False)
-        
-        hit_str = "[CACHE HIT]" if stats.get("cache_hit") else ""
+        if size == 0:
+            return b""
+
+        data = self.reader.read(size)
+        actual_size = len(data)
+        if actual_size == 0:
+            return data
+
+        # Price the actual bytes returned, not the requested size.
+        stats = self.vhdd.access_file(self.path, self.offset, actual_size, is_write=False)
+
+        if stats.get("cache_hit"):
+            hit_str = "[CACHE HIT]"
+        elif stats.get("partial_hit"):
+            hit_str = "[PARTIAL CACHE]"
+        else:
+            hit_str = ""
+        if stats.get("ready_poll_count"):
+            hit_str = f"{hit_str} [NOT READY x{stats['ready_poll_count']}]".strip()
         ext_str = f"| Extents: {stats['extents']}" if stats['extents'] > 1 else ""
         print(f"READ: {self.path} {hit_str} | Cyl: {stats.get('cyl','-')} Head: {stats.get('head','-')} {ext_str} | "
               f"Total Latency: {stats['total_ms']:.2f}ms", file=sys.stderr)
-        
-        data = self.reader.read(size)
-        self.offset += len(data)
+
+        self.offset += actual_size
         return data
 
     def seek(self, offset, whence=0):
-        if whence == 0: new_offset = offset
-        elif whence == 1: new_offset = self.offset + offset
+        if whence == 0:
+            new_offset = offset
+            self.reader.seek(offset, whence)
+        elif whence == 1:
+            new_offset = self.offset + offset
+            self.reader.seek(offset, whence)
         else:
             self.reader.seek(offset, whence)
             new_offset = self.reader.tell()
-        
-        if whence != 2: self.reader.seek(offset, whence)
         self.offset = new_offset
+        return self.offset
 
     def tell(self):
         return self.offset
@@ -59,39 +76,73 @@ class LatencyReader:
         if hasattr(self.reader, "close"):
             self.reader.close()
 
+    def __getattr__(self, name):
+        return getattr(self.reader, name)
+
 class LatencyWriter:
     def __init__(self, writer, path, vhdd):
         self.writer = writer
         self.path = path
         self.vhdd = vhdd
-        self.offset = 0
+        try:
+            self.offset = int(writer.tell())
+        except Exception:
+            self.offset = 0
+        self.vhdd.prepare_overwrite(self.path)
 
     def write(self, data):
         size = len(data)
-        
-        # Dispatch to the VirtualHDD stack
-        stats = self.vhdd.access_file(self.path, self.offset, size, is_write=True)
-        
+        if size == 0:
+            return 0
+
+        written = self.writer.write(data)
+        actual_size = size if written is None else int(written)
+        if actual_size <= 0:
+            return written
+
+        stats = self.vhdd.access_file(self.path, self.offset, actual_size, is_write=True)
         hit_str = "[WRITE-BACK]" if stats.get("cache_hit") else ""
+        if stats.get("ready_poll_count"):
+            hit_str = f"{hit_str} [NOT READY x{stats['ready_poll_count']}]".strip()
         print(f"WRITE: {self.path} {hit_str} | Cyl: {stats.get('cyl','-')} Head: {stats.get('head','-')} | "
               f"Total Latency: {stats['total_ms']:.2f}ms", file=sys.stderr)
-        
-        self.writer.write(data)
-        self.offset += size
+        self.offset += actual_size
+        return written
 
     def close(self):
         if hasattr(self.writer, "close"):
             self.writer.close()
 
+    def seek(self, offset, whence=0):
+        if whence == 0:
+            new_offset = offset
+            self.writer.seek(offset, whence)
+        elif whence == 1:
+            new_offset = self.offset + offset
+            self.writer.seek(offset, whence)
+        else:
+            self.writer.seek(offset, whence)
+            new_offset = self.writer.tell()
+        self.offset = new_offset
+        return self.offset
+
+    def tell(self):
+        return self.offset
+
+    def __getattr__(self, name):
+        return getattr(self.writer, name)
+
 class HDDProvider(FilesystemProvider):
     def __init__(self, root_folder_path):
         super().__init__(root_folder_path)
-        self.vhdd = VirtualHDD(root_folder_path)
+        self.vhdd = VirtualHDD(root_folder_path, cold_start=True, async_power_on=True)
         self.scheduler = OSScheduler(self.vhdd.model)
         # Link scheduler to VirtualHDD
         self.vhdd.set_scheduler(self.scheduler)
 
     def get_resource_inst(self, path, environ):
+        if path not in ("", "/"):
+            self.vhdd.lookup_path(path)
         res = super().get_resource_inst(path, environ)
         if res and isinstance(res, FileResource):
             fp = getattr(res, "file_path", getattr(res, "_file_path", None))
@@ -101,5 +152,5 @@ class HDDProvider(FilesystemProvider):
         return res
 
     def delete_resource(self, path, environ):
-        self.vhdd.fs.delete(path)
+        self.vhdd.delete_path(path)
         return super().delete_resource(path, environ)
