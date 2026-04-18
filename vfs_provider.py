@@ -1,26 +1,122 @@
 import os
 import sys
-from wsgidav.fs_dav_provider import FilesystemProvider, FileResource
+from typing import Any, Iterable
+
+from wsgidav import util
+from wsgidav.fs_dav_provider import FileResource, FilesystemProvider, FolderResource
+
 from hdd_model import VirtualHDD
 from os_scheduler import OSScheduler
 
+
+def _stats_flags(stats: dict[str, Any], writeback: bool = False) -> str:
+    flags = []
+    if writeback and stats.get("cache_hit"):
+        flags.append("WRITE-BACK")
+    elif stats.get("cache_hit"):
+        flags.append("CACHE HIT")
+    elif stats.get("partial_hit"):
+        flags.append("PARTIAL CACHE")
+    if stats.get("ready_poll_count"):
+        flags.append(f"NOT READY x{stats['ready_poll_count']}")
+    return "".join(f"[{flag}] " for flag in flags).strip()
+
+
+def _log_op(label: str, path: str, stats: dict[str, Any], writeback: bool = False) -> None:
+    hit_str = _stats_flags(stats, writeback=writeback)
+    ext_str = f" | Extents: {stats['extents']}" if stats.get("extents", 0) > 1 else ""
+    prefix = f"{label}: {path}"
+    if hit_str:
+        prefix = f"{prefix} {hit_str}"
+    print(
+        f"{prefix} | Cyl: {stats.get('cyl', '-')} Head: {stats.get('head', '-')}{ext_str} | "
+        f"Total Latency: {stats['total_ms']:.2f}ms",
+        file=sys.stderr,
+    )
+
+
 class LatencyFileResource(FileResource):
-    def __init__(self, path, environ, file_path, vhdd):
+    def __init__(self, path: str, environ: dict[str, Any], file_path: str, vhdd: VirtualHDD) -> None:
         super().__init__(path, environ, file_path)
         self.vhdd = vhdd
 
-    def get_content(self):
+    def get_content(self) -> Any:
         original_reader = super().get_content()
         if hasattr(original_reader, "read"):
             return LatencyReader(original_reader, self.path, self.vhdd)
         return original_reader
 
-    def begin_write(self, *, content_type=None):
+    def begin_write(self, *, content_type: str | None = None) -> Any:
         original_writer = super().begin_write(content_type=content_type)
         return LatencyWriter(original_writer, self.path, self.vhdd)
 
+    def delete(self) -> None:
+        self.vhdd.ensure_tree_known(self.path)
+        super().delete()
+        _log_op("DELETE", self.path, self.vhdd.delete_path(self.path))
+
+    def move_recursive(self, dest_path: str) -> None:
+        self.vhdd.ensure_tree_known(self.path)
+        super().move_recursive(dest_path)
+        _log_op("MOVE", f"{self.path} -> {dest_path}", self.vhdd.rename_path(self.path, dest_path))
+
+    def copy_move_single(self, dest_path: str, *, is_move: bool) -> Any:
+        if is_move:
+            return super().copy_move_single(dest_path, is_move=is_move)
+        self.vhdd.ensure_tree_known(self.path)
+        super().copy_move_single(dest_path, is_move=is_move)
+        _log_op("COPY", f"{self.path} -> {dest_path}", self.vhdd.copy_file(self.path, dest_path))
+
+
+class LatencyFolderResource(FolderResource):
+    def __init__(self, path: str, environ: dict[str, Any], file_path: str, vhdd: VirtualHDD) -> None:
+        super().__init__(path, environ, file_path)
+        self.vhdd = vhdd
+
+    def get_member_names(self) -> list[str]:
+        stats = self.vhdd.list_directory(self.path)
+        _log_op("READDIR", self.path, stats)
+        return super().get_member_names()
+
+    def get_member(self, name: str) -> Any:
+        child_path = util.join_uri(self.path, name)
+        return self.provider.get_resource_inst(child_path, self.environ)
+
+    def create_collection(self, name: str) -> None:
+        super().create_collection(name)
+        child_path = util.join_uri(self.path, name)
+        _log_op("MKCOL", child_path, self.vhdd.create_directory(child_path))
+
+    def create_empty_resource(self, name: str) -> Any:
+        resource = super().create_empty_resource(name)
+        child_path = util.join_uri(self.path, name)
+        _log_op("CREATE", child_path, self.vhdd.create_empty_file(child_path))
+        return resource
+
+    def delete(self) -> None:
+        self.vhdd.ensure_tree_known(self.path)
+        super().delete()
+        _log_op("DELETE", self.path, self.vhdd.delete_directory(self.path))
+
+    def move_recursive(self, dest_path: str) -> None:
+        self.vhdd.ensure_tree_known(self.path)
+        super().move_recursive(dest_path)
+        _log_op("MOVE", f"{self.path} -> {dest_path}", self.vhdd.rename_path(self.path, dest_path))
+
+    def copy_move_single(self, dest_path: str, *, is_move: bool) -> Any:
+        if is_move:
+            return super().copy_move_single(dest_path, is_move=is_move)
+        self.vhdd.ensure_tree_known(self.path)
+        super().copy_move_single(dest_path, is_move=is_move)
+        if self.vhdd.fs._normalize_path(dest_path) in self.vhdd.fs.directories:
+            stats = self.vhdd.refresh_directory(dest_path)
+        else:
+            stats = self.vhdd.create_directory(dest_path)
+        _log_op("COPY", f"{self.path} -> {dest_path}", stats)
+
+
 class LatencyReader:
-    def __init__(self, reader, path, vhdd):
+    def __init__(self, reader: Any, path: str, vhdd: VirtualHDD) -> None:
         self.reader = reader
         self.path = path
         self.vhdd = vhdd
@@ -29,7 +125,7 @@ class LatencyReader:
         except Exception:
             self.offset = 0
 
-    def read(self, size=-1):
+    def read(self, size: int = -1) -> bytes:
         if size == 0:
             return b""
 
@@ -38,25 +134,13 @@ class LatencyReader:
         if actual_size == 0:
             return data
 
-        # Price the actual bytes returned, not the requested size.
         stats = self.vhdd.access_file(self.path, self.offset, actual_size, is_write=False)
-
-        if stats.get("cache_hit"):
-            hit_str = "[CACHE HIT]"
-        elif stats.get("partial_hit"):
-            hit_str = "[PARTIAL CACHE]"
-        else:
-            hit_str = ""
-        if stats.get("ready_poll_count"):
-            hit_str = f"{hit_str} [NOT READY x{stats['ready_poll_count']}]".strip()
-        ext_str = f"| Extents: {stats['extents']}" if stats['extents'] > 1 else ""
-        print(f"READ: {self.path} {hit_str} | Cyl: {stats.get('cyl','-')} Head: {stats.get('head','-')} {ext_str} | "
-              f"Total Latency: {stats['total_ms']:.2f}ms", file=sys.stderr)
+        _log_op("READ", self.path, stats)
 
         self.offset += actual_size
         return data
 
-    def seek(self, offset, whence=0):
+    def seek(self, offset: int, whence: int = 0) -> int:
         if whence == 0:
             new_offset = offset
             self.reader.seek(offset, whence)
@@ -69,18 +153,19 @@ class LatencyReader:
         self.offset = new_offset
         return self.offset
 
-    def tell(self):
+    def tell(self) -> int:
         return self.offset
 
-    def close(self):
+    def close(self) -> None:
         if hasattr(self.reader, "close"):
             self.reader.close()
 
-    def __getattr__(self, name):
+    def __getattr__(self, name: str) -> Any:
         return getattr(self.reader, name)
 
+
 class LatencyWriter:
-    def __init__(self, writer, path, vhdd):
+    def __init__(self, writer: Any, path: str, vhdd: VirtualHDD) -> None:
         self.writer = writer
         self.path = path
         self.vhdd = vhdd
@@ -90,7 +175,7 @@ class LatencyWriter:
             self.offset = 0
         self.vhdd.prepare_overwrite(self.path)
 
-    def write(self, data):
+    def write(self, data: bytes) -> Any:
         size = len(data)
         if size == 0:
             return 0
@@ -101,19 +186,19 @@ class LatencyWriter:
             return written
 
         stats = self.vhdd.access_file(self.path, self.offset, actual_size, is_write=True)
-        hit_str = "[WRITE-BACK]" if stats.get("cache_hit") else ""
-        if stats.get("ready_poll_count"):
-            hit_str = f"{hit_str} [NOT READY x{stats['ready_poll_count']}]".strip()
-        print(f"WRITE: {self.path} {hit_str} | Cyl: {stats.get('cyl','-')} Head: {stats.get('head','-')} | "
-              f"Total Latency: {stats['total_ms']:.2f}ms", file=sys.stderr)
+        _log_op("WRITE", self.path, stats, writeback=True)
         self.offset += actual_size
         return written
 
-    def close(self):
+    def writelines(self, lines: Iterable[bytes]) -> None:
+        for chunk in lines:
+            self.write(chunk)
+
+    def close(self) -> None:
         if hasattr(self.writer, "close"):
             self.writer.close()
 
-    def seek(self, offset, whence=0):
+    def seek(self, offset: int, whence: int = 0) -> int:
         if whence == 0:
             new_offset = offset
             self.writer.seek(offset, whence)
@@ -126,31 +211,32 @@ class LatencyWriter:
         self.offset = new_offset
         return self.offset
 
-    def tell(self):
+    def tell(self) -> int:
         return self.offset
 
-    def __getattr__(self, name):
+    def __getattr__(self, name: str) -> Any:
         return getattr(self.writer, name)
 
+
 class HDDProvider(FilesystemProvider):
-    def __init__(self, root_folder_path):
+    def __init__(self, root_folder_path: str) -> None:
         super().__init__(root_folder_path)
         self.vhdd = VirtualHDD(root_folder_path, cold_start=True, async_power_on=True)
         self.scheduler = OSScheduler(self.vhdd.model)
-        # Link scheduler to VirtualHDD
         self.vhdd.set_scheduler(self.scheduler)
 
-    def get_resource_inst(self, path, environ):
-        if path not in ("", "/"):
-            self.vhdd.lookup_path(path)
-        res = super().get_resource_inst(path, environ)
-        if res and isinstance(res, FileResource):
-            fp = getattr(res, "file_path", getattr(res, "_file_path", None))
-            if not fp:
-                fp = os.path.join(self.root_folder_path, path.lstrip("/"))
-            return LatencyFileResource(res.path, environ, fp, self.vhdd)
-        return res
+    def get_resource_inst(self, path: str, environ: dict[str, Any]) -> Any:
+        self.vhdd.lookup_path(path)
+        resource = super().get_resource_inst(path, environ)
+        if resource is None:
+            return None
 
-    def delete_resource(self, path, environ):
-        self.vhdd.delete_path(path)
-        return super().delete_resource(path, environ)
+        file_path = getattr(resource, "file_path", getattr(resource, "_file_path", None))
+        if not file_path:
+            file_path = os.path.join(self.root_folder_path, path.lstrip("/"))
+
+        if isinstance(resource, FolderResource):
+            return LatencyFolderResource(resource.path, environ, file_path, self.vhdd)
+        if isinstance(resource, FileResource):
+            return LatencyFileResource(resource.path, environ, file_path, self.vhdd)
+        return resource

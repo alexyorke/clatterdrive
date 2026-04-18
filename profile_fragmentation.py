@@ -1,55 +1,59 @@
-import time
-import tempfile
+from __future__ import annotations
+
 from pathlib import Path
+
 from hdd_model import VirtualHDD
+from runtime_paths import workspace_tempdir
 
-def profile_fragmentation():
-    with tempfile.TemporaryDirectory(prefix="fake-hdd-frag-") as backing_dir:
-        vhdd = VirtualHDD(str(Path(backing_dir)))
+
+def collect_fragmentation_metrics() -> dict[str, float]:
+    with workspace_tempdir(prefix="fake-hdd-frag-", subdir="profiles") as backing_dir:
+        vhdd = VirtualHDD(str(backing_dir), latency_scale=0.0)
         try:
-            print("=== HIGH-FIDELITY FRAGMENTATION PROFILING (No Network) ===")
-
-            # 1. Sequential Case (Clean disk)
-            print("\n[Case 1] Writing 10MB sequentially to clean disk...")
-            start = time.perf_counter()
-            vhdd.access_file("contiguous.bin", 0, 10 * 1024 * 1024, is_write=True)
-            vhdd.sync_all()
-            write_dur = (time.perf_counter() - start) * 1000
-            print(f"Contiguous Write: {write_dur:.2f}ms")
-
+            contiguous_write = vhdd.access_file("/contiguous.bin", 0, 10 * 1024 * 1024, is_write=True)["total_ms"]
+            contiguous_write += vhdd.sync_all()
             vhdd.reset_runtime_state()
-            start = time.perf_counter()
-            stats = vhdd.access_file("contiguous.bin", 0, 10 * 1024 * 1024, is_write=False)
-            read_dur = (time.perf_counter() - start) * 1000
-            print(f"Contiguous Read: {read_dur:.2f}ms | Extents: {stats['extents']}")
+            contiguous_read_stats = vhdd.access_file("/contiguous.bin", 0, 10 * 1024 * 1024, is_write=False)
 
-            # 2. Fragmented Case
-            print("\n[Case 2] Creating fragmentation (filling/deleting)...")
-            for i in range(500):
-                vhdd.access_file(f"noise_{i}.bin", 0, 16384, is_write=True)
+            for index in range(500):
+                vhdd.access_file(f"/noise_{index}.bin", 0, 16384, is_write=True)
             vhdd.sync_all()
-            for i in range(0, 500, 2):
-                vhdd.delete_path(f"noise_{i}.bin")
+            for index in range(0, 500, 2):
+                vhdd.delete_path(f"/noise_{index}.bin")
 
-            print("Writing 10MB to fragmented disk...")
-            start = time.perf_counter()
-            vhdd.access_file("fragmented.bin", 0, 10 * 1024 * 1024, is_write=True)
-            vhdd.sync_all()
-            write_dur = (time.perf_counter() - start) * 1000
-            print(f"Fragmented Write: {write_dur:.2f}ms")
-
-            print("Reading 10MB fragmented file...")
+            fragmented_write = vhdd.access_file("/fragmented.bin", 0, 10 * 1024 * 1024, is_write=True)["total_ms"]
+            fragmented_write += vhdd.sync_all()
             vhdd.reset_runtime_state()
-            start = time.perf_counter()
-            stats = vhdd.access_file("fragmented.bin", 0, 10 * 1024 * 1024, is_write=False)
-            read_dur = (time.perf_counter() - start) * 1000
-            print(f"Fragmented Read: {read_dur:.2f}ms | Extents: {stats['extents']}")
-
-            if stats['extents'] > 1:
-                print(f"\nSUCCESS: Fragmentation confirmed. File split into {stats['extents']} pieces.")
-                print("Performance penalty is mechanically simulated.")
+            fragmented_read_stats = vhdd.access_file("/fragmented.bin", 0, 10 * 1024 * 1024, is_write=False)
         finally:
             vhdd.stop()
+
+    return {
+        "contiguous_write_ms": contiguous_write,
+        "contiguous_read_ms": contiguous_read_stats["total_ms"],
+        "contiguous_read_extents": float(contiguous_read_stats["extents"]),
+        "fragmented_write_ms": fragmented_write,
+        "fragmented_read_ms": fragmented_read_stats["total_ms"],
+        "fragmented_read_extents": float(fragmented_read_stats["extents"]),
+    }
+
+
+def assert_fragmentation_expectations(metrics: dict[str, float]) -> None:
+    assert metrics["contiguous_read_extents"] <= 8
+    assert metrics["fragmented_read_extents"] > metrics["contiguous_read_extents"]
+    assert metrics["fragmented_read_ms"] > metrics["contiguous_read_ms"]
+    assert metrics["fragmented_write_ms"] >= metrics["contiguous_write_ms"]
+
+
+def profile_fragmentation() -> dict[str, float]:
+    metrics = collect_fragmentation_metrics()
+    print("=== HIGH-FIDELITY FRAGMENTATION PROFILING (Simulated Milliseconds) ===")
+    for key, value in metrics.items():
+        print(f"{key:28} {value:10.2f}")
+    assert_fragmentation_expectations(metrics)
+    print("Fragmentation profiling expectations passed.")
+    return metrics
+
 
 if __name__ == "__main__":
     profile_fragmentation()

@@ -3,19 +3,30 @@ from __future__ import annotations
 import random
 import wave
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
+import numpy.typing as npt
 
 from audio_engine import HDDAudioEngine
-from hdd_model import HDDLatencyModel
+from hdd_model import HDDLatencyModel, StartupStage
+from profiles import AcousticProfile, DriveProfile
 
 
 ROOT = Path(__file__).resolve().parent
 SAMPLES_DIR = ROOT / "samples"
+FloatArray = npt.NDArray[np.float64]
+ScenarioUpdater = Callable[[HDDAudioEngine, float, set[str]], None]
+PowerOnSequence = tuple[tuple[StartupStage, ...], float]
 
 
-def _load_power_on_sequence():
-    model = HDDLatencyModel(addressable_blocks=4096, latency_scale=0.0, start_ready=False)
+def _load_power_on_sequence(drive_profile: str | DriveProfile | None = None) -> PowerOnSequence:
+    model = HDDLatencyModel(
+        addressable_blocks=4096,
+        latency_scale=0.0,
+        start_ready=False,
+        drive_profile=drive_profile,
+    )
     try:
         stages = tuple(model._build_startup_sequence("power_on"))
     finally:
@@ -24,14 +35,21 @@ def _load_power_on_sequence():
     return stages, total_s
 
 
-POWER_ON_STAGES, POWER_ON_TOTAL_S = _load_power_on_sequence()
+POWER_ON_STAGE_CACHE: dict[str, PowerOnSequence] = {}
 
 
-def render_chunk(engine: HDDAudioEngine, frames: int) -> np.ndarray:
+def _power_on_sequence_for(engine: HDDAudioEngine) -> PowerOnSequence:
+    profile_name = engine.synthesizer.drive_profile.name
+    if profile_name not in POWER_ON_STAGE_CACHE:
+        POWER_ON_STAGE_CACHE[profile_name] = _load_power_on_sequence(profile_name)
+    return POWER_ON_STAGE_CACHE[profile_name]
+
+
+def render_chunk(engine: HDDAudioEngine, frames: int) -> FloatArray:
     return engine.render_chunk(frames).astype(np.float32)
 
 
-def write_wav(path: Path, samples: np.ndarray, sample_rate: int) -> None:
+def write_wav(path: Path, samples: FloatArray, sample_rate: int) -> None:
     pcm = np.clip(samples * 32767.0, -32768.0, 32767.0).astype(np.int16)
     with wave.open(str(path), "wb") as wav_file:
         wav_file.setnchannels(1)
@@ -40,10 +58,22 @@ def write_wav(path: Path, samples: np.ndarray, sample_rate: int) -> None:
         wav_file.writeframes(pcm.tobytes())
 
 
-def render_scenario(name: str, duration_s: float, update_func, seed: int = 7) -> Path:
-    engine = HDDAudioEngine(sample_rate=44100, seed=seed)
+def render_scenario(
+    name: str,
+    duration_s: float,
+    update_func: ScenarioUpdater,
+    seed: int = 7,
+    drive_profile: str | DriveProfile | None = None,
+    acoustic_profile: str | AcousticProfile | None = None,
+) -> Path:
+    engine = HDDAudioEngine(
+        sample_rate=44100,
+        seed=seed,
+        drive_profile=drive_profile,
+        acoustic_profile=acoustic_profile,
+    )
     total_frames = int(duration_s * engine.fs)
-    rendered = []
+    rendered: list[FloatArray] = []
     emitted_flags: set[str] = set()
 
     while total_frames > 0:
@@ -61,8 +91,10 @@ def render_scenario(name: str, duration_s: float, update_func, seed: int = 7) ->
 
 
 def update_spinup_idle(engine: HDDAudioEngine, t: float, emitted_flags: set[str]) -> None:
+    target_rpm = float(engine.synthesizer.drive_profile.rpm)
+    power_on_stages, power_on_total_s = _power_on_sequence_for(engine)
     stage_start = 0.0
-    for stage in POWER_ON_STAGES:
+    for stage in power_on_stages:
         stage_duration_s = stage.duration_ms / 1000.0
         stage_end = stage_start + stage_duration_s
         if t < stage_end:
@@ -84,7 +116,7 @@ def update_spinup_idle(engine: HDDAudioEngine, t: float, emitted_flags: set[str]
                     emitted_flags.add(head_load_key)
                     head_load = True
 
-            engine._update_telemetry(
+            engine.emit_telemetry(
                 rpm,
                 seek_trigger=head_load,
                 seek_dist=28 if head_load else 0,
@@ -96,23 +128,24 @@ def update_spinup_idle(engine: HDDAudioEngine, t: float, emitted_flags: set[str]
             return
         stage_start = stage_end
 
-    idle_elapsed = t - POWER_ON_TOTAL_S
+    idle_elapsed = t - power_on_total_s
     if idle_elapsed < 2.0:
         calibrate = False
         if idle_elapsed >= 0.9 and "idle-cal" not in emitted_flags:
             emitted_flags.add("idle-cal")
             calibrate = True
-        engine._update_telemetry(7200.0, is_cal=calibrate, queue_depth=1, op_kind="metadata")
+        engine.emit_telemetry(target_rpm, is_cal=calibrate, queue_depth=1, op_kind="metadata")
         return
 
     park = False
     if "park" not in emitted_flags:
         emitted_flags.add("park")
         park = True
-    engine._update_telemetry(7200.0, is_park=park, queue_depth=1, op_kind="metadata")
+    engine.emit_telemetry(target_rpm, is_park=park, queue_depth=1, op_kind="metadata")
 
 
 def update_sequential_read(engine: HDDAudioEngine, t: float, emitted_flags: set[str]) -> None:
+    target_rpm = float(engine.synthesizer.drive_profile.rpm)
     seek = False
     seek_dist = 0
 
@@ -125,8 +158,8 @@ def update_sequential_read(engine: HDDAudioEngine, t: float, emitted_flags: set[
         seek = True
         seek_dist = 6
 
-    engine._update_telemetry(
-        7200.0,
+    engine.emit_telemetry(
+        target_rpm,
         seek_trigger=seek,
         seek_dist=seek_dist,
         is_seq=True,
@@ -136,6 +169,7 @@ def update_sequential_read(engine: HDDAudioEngine, t: float, emitted_flags: set[
 
 
 def update_random_flush(engine: HDDAudioEngine, t: float, emitted_flags: set[str]) -> None:
+    target_rpm = float(engine.synthesizer.drive_profile.rpm)
     step = int(t * 12)
     should_seek = False
     seek_dist = 0
@@ -159,8 +193,8 @@ def update_random_flush(engine: HDDAudioEngine, t: float, emitted_flags: set[str
             op_kind = "data"
             seek_dist = 40 + ((step * 53) % 700)
 
-    engine._update_telemetry(
-        7200.0,
+    engine.emit_telemetry(
+        target_rpm,
         seek_trigger=should_seek,
         seek_dist=seek_dist,
         queue_depth=queue_depth,
@@ -175,7 +209,12 @@ def main() -> None:
     SAMPLES_DIR.mkdir(parents=True, exist_ok=True)
 
     outputs = [
-        render_scenario("spinup-idle-park", POWER_ON_TOTAL_S + 3.0, update_spinup_idle, seed=7),
+        render_scenario(
+            "spinup-idle-park",
+            _load_power_on_sequence()[1] + 3.0,
+            update_spinup_idle,
+            seed=7,
+        ),
         render_scenario("sequential-read-stream", 6.0, update_sequential_read, seed=11),
         render_scenario("random-seek-journal-flush", 6.0, update_random_flush, seed=13),
     ]

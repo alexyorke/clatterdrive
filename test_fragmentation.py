@@ -1,15 +1,16 @@
 import time
 import os
+
 import requests
 
 BASE_URL = "http://localhost:8080"
 
 
-def _checked(response):
+def _checked(response: requests.Response) -> requests.Response:
     response.raise_for_status()
     return response
 
-def test_fragmentation():
+def test_fragmentation() -> None:
     print("=== REAL FRAGMENTATION TEST ===")
     
     # 1. Fill disk with many small files to create 'blocks'
@@ -42,5 +43,5 @@ def test_fragmentation():
 if __name__ == "__main__":
     try:
         test_fragmentation()
-    except Exception as e:
-        print(f"Error: {e}")
+    except Exception as exc:
+        print(f"Error: {exc}")

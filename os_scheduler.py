@@ -1,6 +1,7 @@
 import threading
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass
@@ -28,7 +29,13 @@ class OSScheduler:
     - finite outstanding queue depth
     """
 
-    def __init__(self, hdd_model, max_queue_depth=32, read_deadline_ms=25, write_deadline_ms=150):
+    def __init__(
+        self,
+        hdd_model: Any,
+        max_queue_depth: int = 32,
+        read_deadline_ms: float = 25,
+        write_deadline_ms: float = 150,
+    ) -> None:
         self.hdd_model = hdd_model
         self.max_queue_depth = max_queue_depth
         self.read_deadline_s = read_deadline_ms / 1000.0
@@ -46,7 +53,7 @@ class OSScheduler:
         self.dispatch_thread = threading.Thread(target=self._dispatch_loop, daemon=True)
         self.dispatch_thread.start()
 
-    def stop(self):
+    def stop(self) -> None:
         with self.condition:
             self.running = False
             for request in self.staging_queue:
@@ -60,7 +67,14 @@ class OSScheduler:
             self.condition.notify_all()
         self.dispatch_thread.join(timeout=2.0)
 
-    def submit_bio(self, lba, size, is_write, op_kind="data", sync=False):
+    def submit_bio(
+        self,
+        lba: int,
+        size: int,
+        is_write: bool,
+        op_kind: str = "data",
+        sync: bool = False,
+    ) -> str:
         now = time.monotonic()
         with self.condition:
             while self.running and self.outstanding >= self.max_queue_depth:
@@ -92,7 +106,7 @@ class OSScheduler:
             self.condition.notify_all()
             return req_id
 
-    def wait_for_completion(self, req_id):
+    def wait_for_completion(self, req_id: str) -> Any:
         event = self.events[req_id]
         event.wait()
         with self.lock:
@@ -102,7 +116,7 @@ class OSScheduler:
             raise completion
         return completion
 
-    def _merge_request(self, incoming):
+    def _merge_request(self, incoming: IORequest) -> IORequest | None:
         for request in self.staging_queue:
             if (
                 request.is_write == incoming.is_write
@@ -115,10 +129,10 @@ class OSScheduler:
                 return request
         return None
 
-    def _size_in_blocks(self, size_bytes):
+    def _size_in_blocks(self, size_bytes: int) -> int:
         return max(1, -(-size_bytes // self.hdd_model.block_bytes))
 
-    def _pick_next_request(self):
+    def _pick_next_request(self) -> IORequest | None:
         if not self.staging_queue:
             return None
 
@@ -144,7 +158,7 @@ class OSScheduler:
         self.staging_queue.remove(request)
         return request
 
-    def _dispatch_loop(self):
+    def _dispatch_loop(self) -> None:
         while True:
             with self.condition:
                 while self.running and not self.staging_queue:

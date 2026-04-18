@@ -1,36 +1,37 @@
-import time
-import requests
-import random
-import os
 import concurrent.futures
+import os
+import random
+import time
+
+import requests
 
 BASE_URL = "http://localhost:8080"
 TEST_FILE = "stress_test_file.bin"
 NUM_TESTS = 100
 
 
-def _checked(response):
+def _checked(response: requests.Response) -> requests.Response:
     response.raise_for_status()
     return response
 
-def log_test(name, duration, size_mb=0):
+def log_test(name: str, duration: float, size_mb: float = 0.0) -> None:
     throughput = (size_mb / (duration / 1000.0)) if duration > 0 and size_mb > 0 else 0
     print(f"[TEST] {name:30} | Duration: {duration:7.2f}ms | Throughput: {throughput:7.2f} MB/s")
 
-def test_sequential_write(size_kb=1024):
+def test_sequential_write(size_kb: int = 1024) -> tuple[float, float]:
     data = os.urandom(size_kb * 1024)
     start = time.time()
     _checked(requests.put(f"{BASE_URL}/seq_write.bin", data=data))
     duration = (time.time() - start) * 1000
     return duration, size_kb / 1024.0
 
-def test_sequential_read(size_kb=1024):
+def test_sequential_read(size_kb: int = 1024) -> tuple[float, float]:
     start = time.time()
     _checked(requests.get(f"{BASE_URL}/seq_write.bin"))
     duration = (time.time() - start) * 1000
     return duration, size_kb / 1024.0
 
-def test_random_read(file_path, size_kb=4):
+def test_random_read(file_path: str, size_kb: int = 4) -> float:
     # Use Range header to simulate random seek
     offset = random.randint(0, 1024 * 1024 - size_kb * 1024)
     headers = {"Range": f"bytes={offset}-{offset + size_kb * 1024 - 1}"}
@@ -39,7 +40,7 @@ def test_random_read(file_path, size_kb=4):
     duration = (time.time() - start) * 1000
     return duration
 
-def run_suite():
+def run_suite() -> None:
     print(f"Starting Stress Test Suite ({NUM_TESTS} operations)...")
     
     # 1. Warm up: Sequential Write (10MB)

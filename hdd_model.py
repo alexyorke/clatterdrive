@@ -1,12 +1,19 @@
+from __future__ import annotations
+
 import math
 import os
 import threading
 import time
 from collections import deque
 from dataclasses import dataclass
+from typing import Any
 
 from audio_engine import engine as audio
 from fs_simulator import FileSystemSimulator, IOOperation
+from profiles import AcousticProfile, DriveProfile, resolve_drive_profile, resolve_selected_profiles
+
+
+Stats = dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -39,39 +46,84 @@ class StartupStage:
     park: bool = False
 
 
+def _prefer_profile_value(value: Any, legacy_default: Any, profile_value: Any) -> Any:
+    return profile_value if value == legacy_default else value
+
+
 class HDDLatencyModel:
     def __init__(
         self,
-        addressable_blocks,
-        block_bytes=4096,
-        rpm=7200,
-        platters=4,
-        avg_seek_ms=8.4,
-        track_to_track_ms=0.25,
-        settle_ms=0.35,
-        head_switch_ms=0.35,
-        transfer_rate_outer_mbps=210,
-        transfer_rate_inner_mbps=120,
-        ncq_depth=32,
-        read_ahead_kb=512,
-        write_cache_mb=32,
-        dirty_expire_ms=350,
-        standby_after_s=60,
-        unload_after_s=12,
-        low_rpm_after_s=30,
-        spinup_ms=3200,
-        latency_scale=1.0,
-        start_ready=True,
-        standby_to_ready_ms=None,
-        power_on_to_ready_ms=None,
-        unload_to_ready_ms=None,
-        low_rpm_to_ready_ms=None,
-        low_rpm_rpm=None,
-        spin_down_ms=None,
-        ready_poll_ms=24.0,
-        identify_poll_ms=0.35,
-        test_unit_ready_ms=0.18,
-    ):
+        addressable_blocks: int,
+        block_bytes: int = 4096,
+        rpm: int = 7200,
+        platters: int = 4,
+        avg_seek_ms: float = 8.4,
+        track_to_track_ms: float = 0.25,
+        settle_ms: float = 0.35,
+        head_switch_ms: float = 0.35,
+        transfer_rate_outer_mbps: float = 210,
+        transfer_rate_inner_mbps: float = 120,
+        ncq_depth: int = 32,
+        read_ahead_kb: int = 512,
+        write_cache_mb: int = 32,
+        dirty_expire_ms: float = 350,
+        standby_after_s: float = 60,
+        unload_after_s: float = 12,
+        low_rpm_after_s: float = 30,
+        spinup_ms: float = 3200,
+        latency_scale: float = 1.0,
+        start_ready: bool = True,
+        standby_to_ready_ms: float | None = None,
+        power_on_to_ready_ms: float | None = None,
+        unload_to_ready_ms: float | None = None,
+        low_rpm_to_ready_ms: float | None = None,
+        low_rpm_rpm: int | None = None,
+        spin_down_ms: float | None = None,
+        ready_poll_ms: float = 24.0,
+        identify_poll_ms: float = 0.35,
+        test_unit_ready_ms: float = 0.18,
+        drive_profile: str | DriveProfile | None = None,
+    ) -> None:
+        resolved_drive = resolve_drive_profile(drive_profile)
+        rpm = int(_prefer_profile_value(rpm, 7200, resolved_drive.rpm))
+        platters = int(_prefer_profile_value(platters, 4, resolved_drive.platters))
+        avg_seek_ms = float(_prefer_profile_value(avg_seek_ms, 8.4, resolved_drive.avg_seek_ms))
+        track_to_track_ms = float(_prefer_profile_value(track_to_track_ms, 0.25, resolved_drive.track_to_track_ms))
+        settle_ms = float(_prefer_profile_value(settle_ms, 0.35, resolved_drive.settle_ms))
+        head_switch_ms = float(_prefer_profile_value(head_switch_ms, 0.35, resolved_drive.head_switch_ms))
+        transfer_rate_outer_mbps = float(
+            _prefer_profile_value(transfer_rate_outer_mbps, 210.0, resolved_drive.transfer_rate_outer_mbps)
+        )
+        transfer_rate_inner_mbps = float(
+            _prefer_profile_value(transfer_rate_inner_mbps, 120.0, resolved_drive.transfer_rate_inner_mbps)
+        )
+        ncq_depth = int(_prefer_profile_value(ncq_depth, 32, resolved_drive.ncq_depth))
+        read_ahead_kb = int(_prefer_profile_value(read_ahead_kb, 512, resolved_drive.read_ahead_kb))
+        write_cache_mb = int(_prefer_profile_value(write_cache_mb, 32, resolved_drive.write_cache_mb))
+        dirty_expire_ms = float(_prefer_profile_value(dirty_expire_ms, 350.0, resolved_drive.dirty_expire_ms))
+        standby_after_s = float(_prefer_profile_value(standby_after_s, 60.0, resolved_drive.standby_after_s))
+        unload_after_s = float(_prefer_profile_value(unload_after_s, 12.0, resolved_drive.unload_after_s))
+        low_rpm_after_s = float(_prefer_profile_value(low_rpm_after_s, 30.0, resolved_drive.low_rpm_after_s))
+        spinup_ms = float(_prefer_profile_value(spinup_ms, 3200.0, resolved_drive.spinup_ms))
+        ready_poll_ms = float(_prefer_profile_value(ready_poll_ms, 24.0, resolved_drive.ready_poll_ms))
+        identify_poll_ms = float(_prefer_profile_value(identify_poll_ms, 0.35, resolved_drive.identify_poll_ms))
+        test_unit_ready_ms = float(
+            _prefer_profile_value(test_unit_ready_ms, 0.18, resolved_drive.test_unit_ready_ms)
+        )
+        if standby_to_ready_ms is None:
+            standby_to_ready_ms = resolved_drive.standby_to_ready_ms
+        if power_on_to_ready_ms is None:
+            power_on_to_ready_ms = resolved_drive.power_on_to_ready_ms
+        if unload_to_ready_ms is None:
+            unload_to_ready_ms = resolved_drive.unload_to_ready_ms
+        if low_rpm_to_ready_ms is None:
+            low_rpm_to_ready_ms = resolved_drive.low_rpm_to_ready_ms
+        if low_rpm_rpm is None:
+            low_rpm_rpm = resolved_drive.low_rpm_rpm
+        if spin_down_ms is None:
+            spin_down_ms = resolved_drive.spin_down_ms
+
+        self.drive_profile = resolved_drive
         self.block_bytes = block_bytes
         self.addressable_blocks = max(1, addressable_blocks)
         self.target_rpm = rpm
@@ -86,7 +138,9 @@ class HDDLatencyModel:
         self.settle_ms = settle_ms
         self.head_switch_ms = head_switch_ms
         self.spinup_ms = spinup_ms
-        self.command_overhead_ms = 0.08
+        self.command_overhead_ms = resolved_drive.command_overhead_ms
+        self.command_overhead_by_kind = dict(resolved_drive.command_overheads_by_kind)
+        self.queue_depth_penalty_ms = resolved_drive.queue_depth_penalty_ms
         self.flush_penalty_ms = 4.0
         self.read_ahead_blocks = max(8, (read_ahead_kb * 1024) // block_bytes)
         self.write_cache_bytes = write_cache_mb * 1024 * 1024
@@ -157,8 +211,8 @@ class HDDLatencyModel:
         self.background_thread = threading.Thread(target=self._background_tasks_loop, daemon=True)
         self.background_thread.start()
 
-    def _build_zones(self, outer_rate, inner_rate, zone_count=8):
-        zones = []
+    def _build_zones(self, outer_rate: float, inner_rate: float, zone_count: int = 8) -> list[Zone]:
+        zones: list[Zone] = []
         cylinders_per_zone = math.ceil(self.total_cylinders / zone_count)
         current_lba = 0
 
@@ -194,7 +248,7 @@ class HDDLatencyModel:
 
         return zones
 
-    def stop(self):
+    def stop(self) -> None:
         self.running = False
         transition_thread = None
         with self.lock:
@@ -205,12 +259,12 @@ class HDDLatencyModel:
             transition_thread.join(timeout=2.0)
         self.background_thread.join(timeout=2.0)
 
-    def reset_caches(self):
+    def reset_caches(self) -> None:
         with self.lock:
             self.read_cache.clear()
             self.last_read_end_lba = -1
 
-    def power_on(self):
+    def power_on(self) -> None:
         with self.lock:
             if self.transition_cancel is not None:
                 self.transition_cancel.set()
@@ -226,12 +280,12 @@ class HDDLatencyModel:
             self.transition_stage = None
             self.transition_total_ms = 0.0
 
-    def _clear_read_cache_locked(self):
+    def _clear_read_cache_locked(self) -> None:
         self.read_cache.clear()
         self.last_read_end_lba = -1
 
-    def _build_resume_sequence(self, start_rpm, heads_loaded):
-        stages = []
+    def _build_resume_sequence(self, start_rpm: float, heads_loaded: bool) -> list[StartupStage]:
+        stages: list[StartupStage] = []
         clamped_rpm = max(0.0, min(float(start_rpm), float(self.target_rpm)))
 
         if clamped_rpm < self.target_rpm:
@@ -278,7 +332,7 @@ class HDDLatencyModel:
 
         return stages
 
-    def _resolve_startup_plan_locked(self):
+    def _resolve_startup_plan_locked(self) -> tuple[str | None, list[StartupStage], float]:
         if not self.has_completed_power_on:
             origin = "power_on"
             stages = self._build_startup_sequence(origin)
@@ -302,7 +356,7 @@ class HDDLatencyModel:
 
         return origin, stages, sum(stage.duration_ms for stage in stages)
 
-    def _build_spindown_sequence_locked(self):
+    def _build_spindown_sequence_locked(self) -> list[StartupStage]:
         if self.current_rpm <= 0.0 and not self.heads_loaded:
             return []
 
@@ -362,7 +416,7 @@ class HDDLatencyModel:
 
         return stages
 
-    def _finish_transition(self, cancel_event, kind, origin):
+    def _finish_transition(self, cancel_event: threading.Event, kind: str, origin: str) -> None:
         with self.lock:
             if self.transition_cancel is cancel_event:
                 self.transition_thread = None
@@ -386,7 +440,13 @@ class HDDLatencyModel:
                 self.ready_event.clear()
                 self._clear_read_cache_locked()
 
-    def _run_transition_sequence(self, kind, origin, stages, cancel_event):
+    def _run_transition_sequence(
+        self,
+        kind: str,
+        origin: str,
+        stages: list[StartupStage],
+        cancel_event: threading.Event,
+    ) -> None:
         try:
             for stage in stages:
                 slices = max(1, min(8, math.ceil(stage.duration_ms / 500.0)))
@@ -413,7 +473,7 @@ class HDDLatencyModel:
                             self.load_unload_count += 1
                         if stage.head_load and index == 0:
                             self.heads_loaded = True
-                    audio._update_telemetry(
+                    audio.emit_telemetry(
                         rpm,
                         seek_trigger=seek_trigger,
                         seek_dist=28 if seek_trigger else 0,
@@ -435,7 +495,7 @@ class HDDLatencyModel:
                     self.transition_stage = None
                     self.transition_total_ms = 0.0
 
-    def begin_async_startup(self):
+    def begin_async_startup(self) -> bool:
         thread_to_join = None
         with self.lock:
             if self.transition_kind == "startup" and self.transition_thread is not None:
@@ -475,7 +535,7 @@ class HDDLatencyModel:
         thread.start()
         return True
 
-    def begin_async_spindown(self):
+    def begin_async_spindown(self) -> bool:
         with self.lock:
             if self.transition_kind is not None or self.power_state == "standby":
                 return False
@@ -499,7 +559,7 @@ class HDDLatencyModel:
         thread.start()
         return True
 
-    def _wait_for_ready_poll(self):
+    def _wait_for_ready_poll(self) -> Stats:
         startup_ms = 0.0
         startup_origin = None
         startup_started_here = self.begin_async_startup()
@@ -517,7 +577,7 @@ class HDDLatencyModel:
         while not self.ready_event.is_set():
             probe_ms = self.identify_poll_ms if poll_count == 0 else self.test_unit_ready_ms
             cycle_ms = probe_ms + self.ready_poll_ms
-            audio._update_telemetry(self.current_rpm, queue_depth=1, op_kind="metadata")
+            audio.emit_telemetry(self.current_rpm, queue_depth=1, op_kind="metadata")
             self._sleep_ms(cycle_ms)
             poll_ms += cycle_ms
             poll_count += 1
@@ -531,31 +591,31 @@ class HDDLatencyModel:
             "ready_poll_count": poll_count,
         }
 
-    def _sleep_ms(self, latency_ms):
+    def _sleep_ms(self, latency_ms: float) -> None:
         if self.latency_scale <= 0.0:
             return
         time.sleep(max(latency_ms, 0.0) * self.latency_scale / 1000.0)
 
-    def get_estimated_lba(self):
+    def get_estimated_lba(self) -> int:
         zone = self._zone_for_cyl(self.current_cyl)
         blocks_per_cyl = self.num_heads * zone.blocks_per_track
         cyl_offset = self.current_cyl - zone.start_cyl
         return zone.start_lba + cyl_offset * blocks_per_cyl + self.current_head * zone.blocks_per_track + self.current_sector
 
-    def _zone_for_lba(self, lba):
+    def _zone_for_lba(self, lba: int) -> Zone:
         clamped_lba = min(max(lba, 0), self.addressable_blocks - 1)
         for zone in self.zones:
             if clamped_lba <= zone.end_lba:
                 return zone
         return self.zones[-1]
 
-    def _zone_for_cyl(self, cyl):
+    def _zone_for_cyl(self, cyl: int) -> Zone:
         for zone in self.zones:
             if zone.start_cyl <= cyl <= zone.end_cyl:
                 return zone
         return self.zones[-1]
 
-    def _lba_to_chs(self, lba):
+    def _lba_to_chs(self, lba: int) -> tuple[int, int, int, Zone]:
         zone = self._zone_for_lba(lba)
         relative_lba = max(0, min(lba, zone.end_lba) - zone.start_lba)
         blocks_per_cyl = self.num_heads * zone.blocks_per_track
@@ -565,7 +625,7 @@ class HDDLatencyModel:
         sector = remaining % zone.blocks_per_track
         return cyl, head, sector, zone
 
-    def _cache_overlap_blocks(self, lba, blocks, now):
+    def _cache_overlap_blocks(self, lba: int, blocks: int, now: float) -> int:
         requested_end = lba + blocks - 1
         overlap = 0
         while self.read_cache and self.read_cache[0][2] < now:
@@ -575,7 +635,7 @@ class HDDLatencyModel:
                 overlap = max(overlap, min(requested_end, end) - lba + 1)
         return overlap
 
-    def _remember_read(self, lba, blocks):
+    def _remember_read(self, lba: int, blocks: int) -> None:
         if lba <= self.last_read_end_lba + 1:
             cache_blocks = max(blocks * 4, self.read_ahead_blocks)
         else:
@@ -583,11 +643,15 @@ class HDDLatencyModel:
         self.last_read_end_lba = lba + blocks - 1
         self.read_cache.append((lba, lba + cache_blocks - 1, time.monotonic() + 2.0))
 
-    def note_cached_write(self, lba, size_bytes):
+    def note_cached_write(self, lba: int, size_bytes: int) -> None:
         blocks = max(1, math.ceil(size_bytes / self.block_bytes))
         self.read_cache.append((lba, lba + blocks - 1, time.monotonic() + 1.0))
 
-    def _calculate_position_latency(self, target_lba, block_count):
+    def _calculate_position_latency(
+        self,
+        target_lba: int,
+        block_count: int,
+    ) -> tuple[float, int, int, int, int, Zone]:
         target_cyl, target_head, target_sector, zone = self._lba_to_chs(target_lba)
         distance = abs(target_cyl - self.current_cyl)
 
@@ -612,12 +676,37 @@ class HDDLatencyModel:
         sector_delta = (target_sector - current_sector_after_seek) % zone.blocks_per_track
         rotational_ms = (sector_delta / zone.blocks_per_track) * self.ms_per_rotation
 
-        transfer_ms = (
-            (block_count * self.block_bytes) / (1024 * 1024)
-        ) / zone.transfer_rate_mbps * 1000.0
+        transfer_ms = self._transfer_ms_for_span(target_lba, block_count)
         return seek_ms + head_switch_ms + rotational_ms + transfer_ms, target_cyl, target_head, target_sector, distance, zone
 
-    def _allocate_stage_durations(self, total_ms, weights, minimums):
+    def _transfer_ms_for_span(self, start_lba: int, block_count: int) -> float:
+        remaining_blocks = max(0, block_count)
+        lba = max(0, start_lba)
+        transfer_ms = 0.0
+        while remaining_blocks > 0:
+            zone = self._zone_for_lba(lba)
+            zone_blocks = min(remaining_blocks, zone.end_lba - lba + 1)
+            transfer_ms += ((zone_blocks * self.block_bytes) / (1024 * 1024)) / zone.transfer_rate_mbps * 1000.0
+            remaining_blocks -= zone_blocks
+            lba += zone_blocks
+        return transfer_ms
+
+    def _command_overhead_for(self, op_kind: str, queue_depth: int) -> float:
+        base_ms = self.command_overhead_by_kind.get(op_kind, self.command_overhead_ms)
+        queue_scale = 1.0
+        if op_kind in {"journal", "flush"}:
+            queue_scale = 1.25
+        elif op_kind in {"metadata", "background"}:
+            queue_scale = 0.85
+        queue_penalty_ms = max(queue_depth - 1, 0) * self.queue_depth_penalty_ms * queue_scale
+        return base_ms + queue_penalty_ms
+
+    def _allocate_stage_durations(
+        self,
+        total_ms: float,
+        weights: list[float],
+        minimums: list[float],
+    ) -> list[float]:
         total_ms = max(float(total_ms), 0.0)
         if not weights:
             return []
@@ -647,7 +736,7 @@ class HDDLatencyModel:
         durations[-1] = max(0.0, total_ms - sum(durations[:-1]))
         return durations
 
-    def _build_startup_sequence(self, origin):
+    def _build_startup_sequence(self, origin: str) -> list[StartupStage]:
         if origin == "power_on":
             total_ms = self.power_on_to_ready_ms
             (
@@ -707,25 +796,25 @@ class HDDLatencyModel:
             ]
         return []
 
-    def _run_startup_sequence(self, origin):
+    def _run_startup_sequence(self, origin: str) -> float:
         stages = self._build_startup_sequence(origin)
         cancel_event = threading.Event()
         self._run_transition_sequence("startup", origin, stages, cancel_event)
         return sum(stage.duration_ms for stage in stages)
 
-    def _transition_to_active_if_needed(self):
+    def _transition_to_active_if_needed(self) -> tuple[float, str | None]:
         ready_info = self._wait_for_ready_poll()
         return ready_info["startup_ms"], ready_info["startup_origin"]
 
     def submit_physical_access(
         self,
-        lba,
-        size_bytes,
-        is_write,
-        op_kind="data",
-        force_unit_access=False,
-        queue_depth=1,
-    ):
+        lba: int,
+        size_bytes: int,
+        is_write: bool,
+        op_kind: str = "data",
+        force_unit_access: bool = False,
+        queue_depth: int = 1,
+    ) -> Stats:
         block_count = max(1, math.ceil(size_bytes / self.block_bytes))
         ready_info = self._wait_for_ready_poll()
 
@@ -739,7 +828,7 @@ class HDDLatencyModel:
                 if not is_write and op_kind == "data":
                     overlap = self._cache_overlap_blocks(lba, block_count, now)
                     if overlap >= block_count:
-                        audio._update_telemetry(
+                        audio.emit_telemetry(
                             self.current_rpm,
                             is_seq=True,
                             queue_depth=queue_depth,
@@ -768,10 +857,11 @@ class HDDLatencyModel:
                     lba,
                     block_count,
                 )
+                command_overhead_ms = self._command_overhead_for(op_kind, queue_depth)
                 flush_ms = self.flush_penalty_ms if (force_unit_access or op_kind == "flush") else 0.0
-                total_latency_ms += ready_info["ready_poll_ms"] + flush_ms + self.command_overhead_ms + cache_latency_ms
+                total_latency_ms += ready_info["ready_poll_ms"] + flush_ms + command_overhead_ms + cache_latency_ms
 
-                audio._update_telemetry(
+                audio.emit_telemetry(
                     self.current_rpm,
                     seek_trigger=(distance > 0 or target_head != self.current_head),
                     seek_dist=distance,
@@ -811,7 +901,7 @@ class HDDLatencyModel:
                     "ready_poll_count": ready_info["ready_poll_count"],
                 }
 
-    def _background_tasks_loop(self):
+    def _background_tasks_loop(self) -> None:
         while self.running:
             time.sleep(0.05)
             park = False
@@ -843,26 +933,38 @@ class HDDLatencyModel:
                     should_spindown = True
 
             if park:
-                audio._update_telemetry(rpm, is_park=True)
+                audio.emit_telemetry(rpm, is_park=True)
             elif calibrate:
-                audio._update_telemetry(rpm, is_cal=True)
+                audio.emit_telemetry(rpm, is_cal=True)
             if should_spindown:
                 self.begin_async_spindown()
 
 
 class VirtualHDD:
-    def __init__(self, backing_dir, latency_scale=1.0, cold_start=False, async_power_on=False):
+    def __init__(
+        self,
+        backing_dir: str,
+        latency_scale: float = 1.0,
+        cold_start: bool = False,
+        async_power_on: bool = False,
+        drive_profile: str | DriveProfile | None = None,
+        acoustic_profile: str | AcousticProfile | None = None,
+    ) -> None:
+        self.drive_profile, self.acoustic_profile = resolve_selected_profiles(drive_profile, acoustic_profile)
+        audio.configure_profiles(self.drive_profile, self.acoustic_profile)
         self.fs = FileSystemSimulator()
         self.model = HDDLatencyModel(
             addressable_blocks=self.fs.total_blocks,
             block_bytes=self.fs.block_size,
             latency_scale=latency_scale,
             start_ready=not cold_start,
+            drive_profile=self.drive_profile,
         )
         self.backing_dir = backing_dir
         self.scheduler = None
         self.lookup_cache = {}
         self.lookup_cache_ttl_s = 0.35
+        self.copy_chunk_bytes = 1024 * 1024
 
         self.writeback_lock = threading.Lock()
         self.writeback_queue = deque()
@@ -876,7 +978,7 @@ class VirtualHDD:
         if async_power_on and cold_start:
             self.begin_async_power_on()
 
-    def stop(self):
+    def stop(self) -> None:
         try:
             self.sync_all()
         finally:
@@ -886,34 +988,75 @@ class VirtualHDD:
                 self.scheduler.stop()
             self.model.stop()
 
-    def set_scheduler(self, scheduler):
+    def set_scheduler(self, scheduler: Any) -> None:
         self.scheduler = scheduler
 
-    def begin_async_power_on(self):
+    def begin_async_power_on(self) -> None:
         self.model.begin_async_startup()
 
-    def _invalidate_lookup(self, path):
+    def _real_path(self, path: str) -> str:
         normalized = self.fs._normalize_path(path)
-        self.lookup_cache.pop(normalized, None)
-        parent = self.fs._parent_dir(normalized)
-        self.lookup_cache.pop(parent, None)
+        return os.path.join(self.backing_dir, normalized.lstrip("/").replace("/", os.sep))
 
-    def _ensure_known_file(self, path):
+    def _invalidate_lookup_prefix(self, path: str) -> None:
         normalized = self.fs._normalize_path(path)
-        if normalized in self.fs.files:
+        for cached_path in list(self.lookup_cache):
+            if cached_path == normalized or cached_path.startswith(f"{normalized}/"):
+                self.lookup_cache.pop(cached_path, None)
+
+    def _invalidate_lookup(self, path: str) -> None:
+        normalized = self.fs._normalize_path(path)
+        self._invalidate_lookup_prefix(normalized)
+        self.lookup_cache.pop(self.fs._parent_dir(normalized), None)
+
+    def _ensure_known_path(self, path: str) -> None:
+        normalized = self.fs._normalize_path(path)
+        if normalized in self.fs.files or normalized in self.fs.directories:
             return
 
-        file_path = os.path.join(self.backing_dir, normalized.lstrip("/").replace("/", os.sep))
-        if os.path.isfile(file_path):
-            self.fs.materialize_existing_file(normalized, os.path.getsize(file_path))
+        real_path = self._real_path(normalized)
+        if os.path.isdir(real_path):
+            self.fs.materialize_existing_directory(normalized)
+        elif os.path.isfile(real_path):
+            self.fs.materialize_existing_file(normalized, os.path.getsize(real_path))
 
-    def _refresh_writeback_idle_state_locked(self):
+    def _materialize_directory_children(self, path: str) -> None:
+        normalized = self.fs._normalize_path(path)
+        real_path = self._real_path(normalized)
+        if not os.path.isdir(real_path):
+            return
+        self.fs.materialize_existing_directory(normalized)
+        for entry in os.scandir(real_path):
+            child_path = self.fs._normalize_path(f"{normalized}/{entry.name}")
+            if entry.is_dir():
+                self.fs.materialize_existing_directory(child_path)
+            elif entry.is_file():
+                self.fs.materialize_existing_file(child_path, entry.stat().st_size)
+
+    def ensure_tree_known(self, path: str) -> None:
+        normalized = self.fs._normalize_path(path)
+        self._ensure_known_path(normalized)
+        real_path = self._real_path(normalized)
+        if not os.path.isdir(real_path):
+            return
+
+        for current_root, dirnames, filenames in os.walk(real_path):
+            rel_root = os.path.relpath(current_root, self.backing_dir)
+            virtual_root = "/" if rel_root == "." else self.fs._normalize_path(rel_root.replace(os.sep, "/"))
+            self.fs.materialize_existing_directory(virtual_root)
+            for dirname in dirnames:
+                self.fs.materialize_existing_directory(f"{virtual_root}/{dirname}")
+            for filename in filenames:
+                file_path = os.path.join(current_root, filename)
+                self.fs.materialize_existing_file(f"{virtual_root}/{filename}", os.path.getsize(file_path))
+
+    def _refresh_writeback_idle_state_locked(self) -> None:
         if self.writeback_queue or self.inflight_writebacks:
             self.writeback_idle_event.clear()
         else:
             self.writeback_idle_event.set()
 
-    def _wait_for_writeback_idle(self, timeout_s=10.0):
+    def _wait_for_writeback_idle(self, timeout_s: float = 10.0) -> None:
         deadline = time.monotonic() + timeout_s
         while True:
             with self.writeback_lock:
@@ -925,7 +1068,12 @@ class VirtualHDD:
                 raise TimeoutError("timed out waiting for writeback to go idle")
             self.writeback_idle_event.wait(timeout=min(remaining, 0.1))
 
-    def _run_ops(self, operations, is_write, force_unit_access=False):
+    def _run_ops(
+        self,
+        operations: list[IOOperation],
+        is_write: bool,
+        force_unit_access: bool = False,
+    ) -> Stats:
         total_stats = {
             "total_ms": 0.0,
             "extents": len([operation for operation in operations if operation.kind == "data"]),
@@ -977,7 +1125,7 @@ class VirtualHDD:
         total_stats["type"] = "WRITE" if is_write else "READ"
         return total_stats
 
-    def _enqueue_writeback(self, operations):
+    def _enqueue_writeback(self, operations: list[IOOperation]) -> float:
         blocked_ms = 0.0
         with self.writeback_lock:
             for operation in operations:
@@ -998,8 +1146,8 @@ class VirtualHDD:
             blocked_ms += self._drain_write_cache(target_bytes=self.model.write_cache_bytes // 2)
         return blocked_ms
 
-    def _dequeue_writeback_batch(self, force=False, max_items=32):
-        batch = []
+    def _dequeue_writeback_batch(self, force: bool = False, max_items: int = 32) -> list[DirtyWrite]:
+        batch: list[DirtyWrite] = []
         now = time.monotonic()
         with self.writeback_lock:
             while self.writeback_queue and len(batch) < max_items:
@@ -1013,7 +1161,7 @@ class VirtualHDD:
             self._refresh_writeback_idle_state_locked()
         return batch
 
-    def _drain_write_cache(self, target_bytes=0):
+    def _drain_write_cache(self, target_bytes: int = 0) -> float:
         total_ms = 0.0
         while True:
             batch = self._dequeue_writeback_batch(force=True)
@@ -1035,7 +1183,7 @@ class VirtualHDD:
             self._wait_for_writeback_idle()
         return total_ms
 
-    def _writeback_loop(self):
+    def _writeback_loop(self) -> None:
         while self.running:
             batch = self._dequeue_writeback_batch(force=False)
             if batch:
@@ -1060,31 +1208,186 @@ class VirtualHDD:
                 continue
             time.sleep(0.05)
 
-    def sync_all(self):
+    def sync_all(self) -> float:
         total_ms = self._drain_write_cache(target_bytes=0)
         self._wait_for_writeback_idle()
         return total_ms
 
-    def reset_runtime_state(self):
+    def reset_runtime_state(self) -> None:
         self.sync_all()
         self.lookup_cache.clear()
         self.model.reset_caches()
 
-    def lookup_path(self, path):
+    def _empty_stats(self, op_type: str, total_ms: float = 0.01) -> Stats:
+        return {"total_ms": total_ms, "cache_hit": True, "extents": 0, "type": op_type}
+
+    def _merge_stats(self, op_type: str, *results: Stats) -> Stats:
+        combined = {
+            "total_ms": 0.0,
+            "cache_hit": True,
+            "partial_hit": False,
+            "extents": 0,
+            "cyl": "-",
+            "head": "-",
+            "startup_ms": 0.0,
+            "startup_origin": None,
+            "ready_poll_ms": 0.0,
+            "ready_poll_count": 0,
+            "type": op_type,
+        }
+        saw_result = False
+        for result in results:
+            if not result:
+                continue
+            saw_result = True
+            combined["total_ms"] += result.get("total_ms", 0.0)
+            combined["extents"] += result.get("extents", 0)
+            if "cyl" in result:
+                combined["cyl"] = result["cyl"]
+            if "head" in result:
+                combined["head"] = result["head"]
+            if not result.get("cache_hit", False):
+                combined["cache_hit"] = False
+            if result.get("partial_hit"):
+                combined["partial_hit"] = True
+            combined["startup_ms"] += result.get("startup_ms", 0.0)
+            if combined["startup_origin"] is None and result.get("startup_origin") is not None:
+                combined["startup_origin"] = result["startup_origin"]
+            combined["ready_poll_ms"] += result.get("ready_poll_ms", 0.0)
+            combined["ready_poll_count"] += result.get("ready_poll_count", 0)
+        if not saw_result:
+            return self._empty_stats(op_type)
+        return combined
+
+    def _apply_buffered_write(
+        self,
+        operations: list[IOOperation],
+        data_extent_count: int,
+        sync: bool = False,
+    ) -> Stats:
+        if not operations:
+            return self._empty_stats("WRITE")
+
+        if sync:
+            sync_total = self.sync_all()
+            stats = self._run_ops(operations, is_write=True, force_unit_access=True)
+            stats["total_ms"] += sync_total
+            stats["type"] = "WRITE"
+            stats["extents"] = data_extent_count
+            return stats
+
+        journal_ops = [operation for operation in operations if operation.kind == "journal"]
+        buffered_ops = [operation for operation in operations if operation.kind != "journal"]
+        stats = self._run_ops(journal_ops, is_write=True) if journal_ops else {
+            "total_ms": 0.0,
+            "cache_hit": True,
+            "cyl": "-",
+            "head": "-",
+            "partial_hit": False,
+            "startup_ms": 0.0,
+            "startup_origin": None,
+            "ready_poll_ms": 0.0,
+            "ready_poll_count": 0,
+        }
+        blocked_ms = self._enqueue_writeback(buffered_ops)
+        stats["total_ms"] += 0.08 + blocked_ms
+        stats["cache_hit"] = stats.get("cache_hit", True) and blocked_ms == 0.0
+        stats["type"] = "WRITE"
+        stats["extents"] = data_extent_count
+        return stats
+
+    def lookup_path(self, path: str) -> Stats:
         path = self.fs._normalize_path(path)
-        self._ensure_known_file(path)
+        self._ensure_known_path(path)
         now = time.monotonic()
         if self.lookup_cache.get(path, 0.0) > now:
-            return {"total_ms": 0.02, "cache_hit": True, "extents": 0, "type": "LOOKUP"}
+            return self._empty_stats("LOOKUP", total_ms=0.02)
         operations = self.fs.lookup(path)
         stats = self._run_ops(operations, is_write=False)
         self.lookup_cache[path] = now + self.lookup_cache_ttl_s
         stats["type"] = "LOOKUP"
         return stats
 
-    def prepare_overwrite(self, path):
+    def list_directory(self, path: str) -> Stats:
         path = self.fs._normalize_path(path)
-        self._ensure_known_file(path)
+        self._ensure_known_path(path)
+        self._materialize_directory_children(path)
+        operations = self.fs.list_directory(path)
+        if not operations:
+            return self._empty_stats("READDIR")
+        stats = self._run_ops(operations, is_write=False)
+        stats["type"] = "READDIR"
+        stats["extents"] = 0
+        return stats
+
+    def create_directory(self, path: str) -> Stats:
+        path = self.fs._normalize_path(path)
+        operations = self.fs.create_directory(path)
+        self._invalidate_lookup(path)
+        if not operations:
+            return self._empty_stats("MKCOL")
+        stats = self._run_ops(operations, is_write=True, force_unit_access=True)
+        stats["type"] = "MKCOL"
+        stats["extents"] = 0
+        return stats
+
+    def refresh_directory(self, path: str) -> Stats:
+        path = self.fs._normalize_path(path)
+        operations = self.fs.update_directory(path)
+        if not operations:
+            return self._empty_stats("COPY")
+        stats = self._run_ops(operations, is_write=True, force_unit_access=True)
+        stats["type"] = "COPY"
+        stats["extents"] = 0
+        return stats
+
+    def create_empty_file(self, path: str) -> Stats:
+        path = self.fs._normalize_path(path)
+        operations = self.fs.create_empty_file(path)
+        self._invalidate_lookup(path)
+        if not operations:
+            return self._empty_stats("CREATE")
+        stats = self._run_ops(operations, is_write=True, force_unit_access=True)
+        stats["type"] = "CREATE"
+        stats["extents"] = 0
+        return stats
+
+    def copy_file(self, source_path: str, dest_path: str) -> Stats:
+        source_path = self.fs._normalize_path(source_path)
+        dest_path = self.fs._normalize_path(dest_path)
+        self._ensure_known_path(source_path)
+        self._ensure_known_path(self.fs._parent_dir(dest_path))
+
+        if source_path not in self.fs.files:
+            return self._empty_stats("COPY")
+        if dest_path in self.fs.directories:
+            raise IsADirectoryError(dest_path)
+        if dest_path in self.fs.files:
+            self.delete_path(dest_path)
+
+        source_inode = self.fs.files[source_path]
+        source_size = source_inode.size
+        if source_size <= 0:
+            return self._merge_stats("COPY", self.create_empty_file(dest_path))
+
+        chunk_size = max(self.fs.block_size, self.copy_chunk_bytes)
+        copy_stats = []
+        for offset in range(0, source_size, chunk_size):
+            length = min(chunk_size, source_size - offset)
+            read_ops = self.fs.read(source_path, offset, length)
+            read_stats = self._run_ops(read_ops, is_write=False) if read_ops else self._empty_stats("READ")
+
+            write_ops = self.fs.write(dest_path, offset, length)
+            data_extent_count = len([operation for operation in write_ops if operation.kind == "data"])
+            write_stats = self._apply_buffered_write(write_ops, data_extent_count, sync=False)
+            copy_stats.append(self._merge_stats("COPY", read_stats, write_stats))
+
+        self._invalidate_lookup(dest_path)
+        return self._merge_stats("COPY", *copy_stats)
+
+    def prepare_overwrite(self, path: str) -> Stats:
+        path = self.fs._normalize_path(path)
+        self._ensure_known_path(path)
         if path not in self.fs.files:
             return {"total_ms": 0.0, "cache_hit": True, "extents": 0, "type": "TRUNCATE"}
         self._invalidate_lookup(path)
@@ -1097,55 +1400,64 @@ class VirtualHDD:
         stats["extents"] = 0
         return stats
 
-    def access_file(self, path, offset, length, is_write=False, sync=False):
+    def access_file(
+        self,
+        path: str,
+        offset: int,
+        length: int,
+        is_write: bool = False,
+        sync: bool = False,
+    ) -> Stats:
         path = self.fs._normalize_path(path)
-        self._ensure_known_file(path)
+        self._ensure_known_path(path)
         operations = self.fs.write(path, offset, length) if is_write else self.fs.read(path, offset, length)
         data_extent_count = len([operation for operation in operations if operation.kind == "data"])
 
         if not operations:
-            return {
-                "total_ms": 0.01,
-                "cache_hit": True,
-                "type": "WRITE" if is_write else "READ",
-                "extents": 0,
-            }
+            return self._empty_stats("WRITE" if is_write else "READ")
 
         if is_write:
             self._invalidate_lookup(path)
-            if sync:
-                sync_total = self.sync_all()
-                stats = self._run_ops(operations, is_write=True, force_unit_access=True)
-                stats["total_ms"] += sync_total
-                stats["extents"] = data_extent_count
-                return stats
-
-            journal_ops = [operation for operation in operations if operation.kind == "journal"]
-            buffered_ops = [operation for operation in operations if operation.kind != "journal"]
-            stats = self._run_ops(journal_ops, is_write=True) if journal_ops else {
-                "total_ms": 0.0,
-                "cache_hit": True,
-                "cyl": "-",
-                "head": "-",
-            }
-            blocked_ms = self._enqueue_writeback(buffered_ops)
-            stats["total_ms"] += 0.08 + blocked_ms
-            stats["cache_hit"] = stats.get("cache_hit", True) and blocked_ms == 0.0
-            stats["type"] = "WRITE"
-            stats["extents"] = data_extent_count
-            return stats
+            return self._apply_buffered_write(operations, data_extent_count, sync=sync)
 
         stats = self._run_ops(operations, is_write=False)
         stats["extents"] = data_extent_count
         return stats
 
-    def delete_path(self, path):
+    def rename_path(self, source_path: str, dest_path: str) -> Stats:
+        source_path = self.fs._normalize_path(source_path)
+        dest_path = self.fs._normalize_path(dest_path)
+        self._ensure_known_path(self.fs._parent_dir(dest_path))
+        operations = self.fs.rename(source_path, dest_path)
+        self._invalidate_lookup(source_path)
+        self._invalidate_lookup(dest_path)
+        self._invalidate_lookup_prefix(source_path)
+        if not operations:
+            return self._empty_stats("MOVE")
+        stats = self._run_ops(operations, is_write=True, force_unit_access=True)
+        stats["type"] = "MOVE"
+        stats["extents"] = 0
+        return stats
+
+    def delete_path(self, path: str) -> Stats:
         path = self.fs._normalize_path(path)
-        self._ensure_known_file(path)
+        self._ensure_known_path(path)
         self._invalidate_lookup(path)
         operations = self.fs.delete(path)
         if not operations:
-            return {"total_ms": 0.01, "cache_hit": True, "extents": 0, "type": "DELETE"}
+            return self._empty_stats("DELETE")
+        stats = self._run_ops(operations, is_write=True, force_unit_access=True)
+        stats["type"] = "DELETE"
+        stats["extents"] = 0
+        return stats
+
+    def delete_directory(self, path: str) -> Stats:
+        path = self.fs._normalize_path(path)
+        operations = self.fs.delete_directory(path)
+        self._invalidate_lookup(path)
+        self._invalidate_lookup_prefix(path)
+        if not operations:
+            return self._empty_stats("DELETE")
         stats = self._run_ops(operations, is_write=True, force_unit_access=True)
         stats["type"] = "DELETE"
         stats["extents"] = 0
