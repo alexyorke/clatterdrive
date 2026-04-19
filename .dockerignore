@@ -1,0 +1,16 @@
+.git
+.github
+.mypy_cache
+.pytest_cache
+.pytest_tmp
+.runtime
+.tmp_pip
+.tmp_tests
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.wav
+backing_storage
+samples
+tests

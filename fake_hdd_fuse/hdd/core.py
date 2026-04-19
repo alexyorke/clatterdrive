@@ -154,6 +154,9 @@ class OperationStats:
     ready_poll_count: int = 0
     op_type: str = ""
     transfer_rate_mbps: float | None = None
+    retry_count: int = 0
+    recovery_ms: float = 0.0
+    maintenance_wait_ms: float = 0.0
 
     def __getitem__(self, key: str) -> Any:
         if key == "type":
@@ -198,6 +201,9 @@ def merge_operation_stats(op_type: str, *results: OperationStats | None) -> Oper
             transfer_rate_mbps=result.transfer_rate_mbps
             if result.transfer_rate_mbps is not None
             else combined.transfer_rate_mbps,
+            retry_count=combined.retry_count + result.retry_count,
+            recovery_ms=combined.recovery_ms + result.recovery_ms,
+            maintenance_wait_ms=combined.maintenance_wait_ms + result.maintenance_wait_ms,
         )
     if not saw_result:
         return empty_operation_stats(op_type)

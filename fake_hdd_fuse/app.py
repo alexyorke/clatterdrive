@@ -6,7 +6,7 @@ from typing import Any
 from cheroot import wsgi
 from wsgidav.wsgidav_app import WsgiDAVApp
 
-from .audio.engine import engine as audio
+from .audio.engine import get_runtime_engine
 from .webdav.provider import HDDProvider
 
 
@@ -16,7 +16,16 @@ class NoAuthWsgiDAVApp(WsgiDAVApp):
         return super().__call__(environ, start_response)
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    return normalized not in {"0", "false", "no", "off"}
+
+
 def start_server() -> None:
+    audio = get_runtime_engine()
     provider: HDDProvider | None = None
     server: wsgi.Server | None = None
     audio_started = False
@@ -43,8 +52,11 @@ def start_server() -> None:
             event_sink=audio,
             drive_profile=drive_profile,
             acoustic_profile=acoustic_profile,
+            cold_start=_env_flag("FAKE_HDD_COLD_START", True),
+            async_power_on=_env_flag("FAKE_HDD_ASYNC_POWER_ON", True),
         )
         port = int(os.environ.get("FAKE_HDD_PORT", "8080"))
+        host = os.environ.get("FAKE_HDD_HOST", "127.0.0.1")
 
         config = {
             "provider_mapping": {"/": provider},
@@ -57,13 +69,13 @@ def start_server() -> None:
                 "wsgidav.request_resolver.RequestResolver",
             ],
             "port": port,
-            "host": "127.0.0.1",
+            "host": host,
             "verbose": 1,
         }
 
         app = NoAuthWsgiDAVApp(config)
-        server = wsgi.Server(("127.0.0.1", port), app)
-        print(f"Research-Enhanced HDD WebDAV server starting on http://127.0.0.1:{port}")
+        server = wsgi.Server((host, port), app)
+        print(f"Research-Enhanced HDD WebDAV server starting on http://{host}:{port}")
         print("Simulated Stack: VFS -> Page Cache -> Block Layer (LOOK/Deadline) -> SATA/AHCI -> NCQ/RPO -> Physical HDD")
         print("Hardware Model: Async Power-On -> Host Ready Polling -> Spin-Up -> Self-Test -> Head Load -> Servo Lock -> Ready")
         print("Idle Model: Unload -> Low-RPM Idle -> Staged Spin-Down -> Standby")

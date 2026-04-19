@@ -10,13 +10,29 @@ from typing import Protocol, runtime_checkable
 class StorageEvent:
     rpm: float
     emitted_at: float
+    target_rpm: float | None = None
     queue_depth: int = 1
     op_kind: str = "data"
     is_sequential: bool = False
     is_flush: bool = False
     is_spinup: bool = False
+    servo_mode: str | None = None
+    track_delta: float = 0.0
+    transfer_activity: float = 0.0
+    motion_duration_ms: float = 0.0
+    settle_duration_ms: float = 0.0
+
+    # Legacy compatibility telemetry. The current synth should prefer the
+    # command-domain fields above and treat these as optional fallbacks only.
     impulse: str | None = None
     seek_distance: float = 0.0
+    actuator_duration_ms: float = 0.0
+    actuator_force: float = 0.0
+    actuator_settle_ms: float = 0.0
+    motor_drive: float = 0.0
+    windage_level: float = 0.0
+    structure_borne_gain: float = 0.0
+    servo_activity: float = 0.0
 
 
 ScheduledStorageEvent = tuple[StorageEvent, int]

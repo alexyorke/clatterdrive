@@ -12,6 +12,16 @@ from ..scheduler import OSScheduler
 from ..storage_events import StorageEventSink
 
 
+def _is_case_only_alias(path: str, dest_path: str) -> bool:
+    return os.name == "nt" and path != dest_path and path.casefold() == dest_path.casefold()
+
+
+def _resource_file_path(resource: Any) -> str:
+    if hasattr(resource, "file_path"):
+        return resource.file_path
+    return resource._file_path
+
+
 def _stats_flags(stats: OperationStats, writeback: bool = False) -> str:
     flags = []
     if writeback and stats.cache_hit:
@@ -22,6 +32,10 @@ def _stats_flags(stats: OperationStats, writeback: bool = False) -> str:
         flags.append("PARTIAL CACHE")
     if stats.ready_poll_count:
         flags.append(f"NOT READY x{stats.ready_poll_count}")
+    if stats.retry_count:
+        flags.append(f"RETRY x{stats.retry_count}")
+    if stats.maintenance_wait_ms > 0.0:
+        flags.append(f"BG WAIT {stats.maintenance_wait_ms:.1f}ms")
     return "".join(f"[{flag}] " for flag in flags).strip()
 
 
@@ -58,14 +72,37 @@ class LatencyFileResource(FileResource):
         super().delete()
         _log_op("DELETE", self.path, self.vhdd.delete_path(self.path))
 
+    def handle_move(self, dest_path: str) -> bool:
+        if not _is_case_only_alias(self.path, dest_path):
+            return False
+        self.vhdd.ensure_tree_known(self.path)
+        dest_file_path = os.path.join(self.provider.root_folder_path, dest_path.lstrip("/"))
+        os.rename(_resource_file_path(self), dest_file_path)
+        _log_op("MOVE", f"{self.path} -> {dest_path}", self.vhdd.rename_path(self.path, dest_path))
+        return True
+
+    def handle_copy(self, dest_path: str, *, depth_infinity: bool) -> bool:
+        if not _is_case_only_alias(self.path, dest_path):
+            return False
+        _log_op("COPY", f"{self.path} -> {dest_path}", self.vhdd.copy_file(self.path, dest_path))
+        return True
+
     def move_recursive(self, dest_path: str) -> None:
         self.vhdd.ensure_tree_known(self.path)
+        if _is_case_only_alias(self.path, dest_path):
+            dest_file_path = os.path.join(self.provider.root_folder_path, dest_path.lstrip("/"))
+            os.rename(_resource_file_path(self), dest_file_path)
+            _log_op("MOVE", f"{self.path} -> {dest_path}", self.vhdd.rename_path(self.path, dest_path))
+            return
         super().move_recursive(dest_path)
         _log_op("MOVE", f"{self.path} -> {dest_path}", self.vhdd.rename_path(self.path, dest_path))
 
     def copy_move_single(self, dest_path: str, *, is_move: bool) -> Any:
         if is_move:
             return super().copy_move_single(dest_path, is_move=is_move)
+        if _is_case_only_alias(self.path, dest_path):
+            _log_op("COPY", f"{self.path} -> {dest_path}", self.vhdd.copy_file(self.path, dest_path))
+            return True
         self.vhdd.ensure_tree_known(self.path)
         super().copy_move_single(dest_path, is_move=is_move)
         _log_op("COPY", f"{self.path} -> {dest_path}", self.vhdd.copy_file(self.path, dest_path))
@@ -102,14 +139,37 @@ class LatencyFolderResource(FolderResource):
         super().delete()
         _log_op("DELETE", self.path, self.vhdd.delete_directory(self.path))
 
+    def handle_move(self, dest_path: str) -> bool:
+        if not _is_case_only_alias(self.path, dest_path):
+            return False
+        self.vhdd.ensure_tree_known(self.path)
+        dest_file_path = os.path.join(self.provider.root_folder_path, dest_path.lstrip("/"))
+        os.rename(_resource_file_path(self), dest_file_path)
+        _log_op("MOVE", f"{self.path} -> {dest_path}", self.vhdd.rename_path(self.path, dest_path))
+        return True
+
+    def handle_copy(self, dest_path: str, *, depth_infinity: bool) -> bool:
+        if not _is_case_only_alias(self.path, dest_path):
+            return False
+        _log_op("COPY", f"{self.path} -> {dest_path}", OperationStats(op_type="COPY"))
+        return True
+
     def move_recursive(self, dest_path: str) -> None:
         self.vhdd.ensure_tree_known(self.path)
+        if _is_case_only_alias(self.path, dest_path):
+            dest_file_path = os.path.join(self.provider.root_folder_path, dest_path.lstrip("/"))
+            os.rename(_resource_file_path(self), dest_file_path)
+            _log_op("MOVE", f"{self.path} -> {dest_path}", self.vhdd.rename_path(self.path, dest_path))
+            return
         super().move_recursive(dest_path)
         _log_op("MOVE", f"{self.path} -> {dest_path}", self.vhdd.rename_path(self.path, dest_path))
 
     def copy_move_single(self, dest_path: str, *, is_move: bool) -> Any:
         if is_move:
             return super().copy_move_single(dest_path, is_move=is_move)
+        if _is_case_only_alias(self.path, dest_path):
+            _log_op("COPY", f"{self.path} -> {dest_path}", OperationStats(op_type="COPY"))
+            return True
         self.vhdd.ensure_tree_known(self.path)
         super().copy_move_single(dest_path, is_move=is_move)
         if self.vhdd.fs._normalize_path(dest_path) in self.vhdd.fs.directories:
@@ -231,12 +291,14 @@ class HDDProvider(FilesystemProvider):
         event_sink: StorageEventSink | None = None,
         drive_profile: str | None = None,
         acoustic_profile: str | None = None,
+        cold_start: bool = True,
+        async_power_on: bool = True,
     ) -> None:
         super().__init__(root_folder_path)
         self.vhdd = VirtualHDD(
             root_folder_path,
-            cold_start=True,
-            async_power_on=True,
+            cold_start=cold_start,
+            async_power_on=async_power_on,
             drive_profile=drive_profile,
             acoustic_profile=acoustic_profile,
             event_sink=event_sink,

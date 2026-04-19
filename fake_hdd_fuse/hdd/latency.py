@@ -85,6 +85,8 @@ class HDDLatencyModel:
         drive_profile: str | DriveProfile | None = None,
         event_sink: StorageEventSink | None = None,
         deps: RuntimeDeps | None = None,
+        enable_retry_recovery: bool = True,
+        enable_background_scan: bool = True,
     ) -> None:
         self.deps = deps or RuntimeDeps()
         self.clock = self.deps.clock
@@ -246,6 +248,17 @@ class HDDLatencyModel:
         self.last_startup_total_ms: float = 0.0
         self.last_idle_calibration_time = 0.0
         self.event_sink: StorageEventSink = event_sink or NullStorageEventSink()
+        self.enable_retry_recovery = enable_retry_recovery
+        self.enable_background_scan = enable_background_scan
+        self.background_busy_until = 0.0
+        self.background_scan_lba = 0
+        self.last_background_scan_time = 0.0
+        self.background_scan_interval_s = min(max(self.unload_after_s * 0.12, 0.15), 0.45)
+        self.background_scan_activation_s = min(
+            max(self.unload_after_s * 0.55, 3.0),
+            max(self.unload_after_s - 0.5, 3.0),
+        )
+        self.background_scan_blocks = max(16, min(self.read_ahead_blocks, 256))
         self.running = True
         self.background_thread = threading.Thread(target=self._background_tasks_loop, daemon=True)
         self.background_thread.start()
@@ -433,26 +446,44 @@ class HDDLatencyModel:
                 elif not point.heads_loaded:
                     self.heads_loaded = False
 
+            motion_duration_ms, settle_duration_ms = (
+                self._actuator_profile(
+                    seek_distance=point.seek_distance,
+                    queue_depth=1,
+                    op_kind="metadata",
+                    is_flush=False,
+                    is_cal=point.is_calibration,
+                    is_park=False,
+                    is_sequential=False,
+                )
+            )
             if point.seek_distance > 0.0:
                 self._publish_event(
                     point.rpm,
+                    target_rpm=self.target_rpm,
                     seek_trigger=True,
                     seek_dist=point.seek_distance,
                     queue_depth=1,
                     op_kind="metadata",
                     is_spinup=point.is_spinup,
+                    motion_duration_ms=motion_duration_ms,
+                    settle_duration_ms=settle_duration_ms,
                 )
             if point.is_calibration:
                 self._publish_event(
                     point.rpm,
+                    target_rpm=self.target_rpm,
                     queue_depth=1,
                     op_kind="metadata",
                     is_cal=True,
                     is_spinup=point.is_spinup,
+                    motion_duration_ms=motion_duration_ms,
+                    settle_duration_ms=settle_duration_ms,
                 )
             if point.seek_distance <= 0.0 and not point.is_calibration:
                 self._publish_event(
                     point.rpm,
+                    target_rpm=self.target_rpm,
                     queue_depth=1,
                     op_kind="data",
                     is_spinup=point.is_spinup,
@@ -490,9 +521,12 @@ class HDDLatencyModel:
 
             self._publish_event(
                 point.rpm,
+                target_rpm=0.0 if kind == "spindown" else self.low_rpm_rpm,
                 is_park=point.park_event,
                 queue_depth=1,
                 op_kind="metadata" if point.park_event or point.stage == "spindle_lock" else "data",
+                motion_duration_ms=2.4 if point.park_event else 0.0,
+                settle_duration_ms=1.8 if point.park_event else 0.0,
             )
             self._sleep_ms(max(point.time_ms - previous_time_ms, 0.0))
             previous_time_ms = point.time_ms
@@ -580,6 +614,7 @@ class HDDLatencyModel:
                             self.heads_loaded = True
                     self._publish_event(
                         rpm,
+                        target_rpm=self.target_rpm if kind == "startup" else (0.0 if kind == "spindown" else self.low_rpm_rpm),
                         seek_trigger=seek_trigger,
                         seek_dist=28 if seek_trigger else 0,
                         is_park=park,
@@ -587,6 +622,8 @@ class HDDLatencyModel:
                         op_kind="metadata" if (is_cal or seek_trigger or park or stage.head_unload) else "data",
                         is_cal=is_cal,
                         is_spinup=kind == "startup" and stage.name in {"spinup", "rpm_recover", "spindle_unlock"},
+                        motion_duration_ms=1.6 if (seek_trigger or is_cal or park) else 0.0,
+                        settle_duration_ms=1.1 if (seek_trigger or is_cal or park) else 0.0,
                     )
                     self._sleep_ms(slice_ms)
             self._finish_transition(cancel_event, kind, origin)
@@ -707,7 +744,13 @@ class HDDLatencyModel:
         while not self.ready_event.is_set():
             probe_ms = self.identify_poll_ms if poll_count == 0 else self.test_unit_ready_ms
             cycle_ms = probe_ms + self.ready_poll_ms
-            self._publish_event(self.current_rpm, queue_depth=1, op_kind="metadata")
+            self._publish_event(
+                self.current_rpm,
+                target_rpm=self.target_rpm,
+                queue_depth=1,
+                op_kind="metadata",
+                is_spinup=self.transition_kind == "startup",
+            )
             self._sleep_ms(cycle_ms)
             poll_ms += cycle_ms
             poll_count += 1
@@ -782,10 +825,44 @@ class HDDLatencyModel:
     ) -> list[float]:
         return allocate_stage_durations(total_ms, weights, minimums)
 
+    def _actuator_profile(
+        self,
+        *,
+        seek_distance: float,
+        queue_depth: int,
+        op_kind: str,
+        is_flush: bool,
+        is_cal: bool = False,
+        is_park: bool = False,
+        head_switch: bool = False,
+        is_sequential: bool = False,
+    ) -> tuple[float, float]:
+        stroke = min(max(seek_distance / max(self.total_cylinders, 1), 0.0), 1.0)
+        queue_scale = 1.0 + 0.05 * max(queue_depth - 1, 0)
+        if is_park:
+            return 2.6, 2.0
+        if is_cal:
+            return 1.4, 1.2
+        if seek_distance <= 0.0 and not head_switch:
+            return 0.0, 0.0
+
+        move_ms = self.track_to_track_ms + self.seek_curve_b * math.sqrt(max(seek_distance, 0.0)) + self.settle_ms
+        if head_switch and seek_distance <= 0.0:
+            move_ms = max(move_ms, self.head_switch_ms + self.settle_ms)
+        duration_ms = max(1.2, 0.55 * move_ms + 0.45 * self.settle_ms) * queue_scale
+        settle_ms = max(0.9, self.settle_ms * (3.4 if is_flush else 2.8))
+        if is_flush:
+            settle_ms *= 1.2
+        if is_sequential:
+            duration_ms *= 0.85
+        settle_ms += 0.6 * math.sqrt(max(stroke, 0.0))
+        return duration_ms, settle_ms
+
     def _publish_event(
         self,
         rpm: float,
         *,
+        target_rpm: float | None = None,
         seek_trigger: bool = False,
         seek_dist: float = 0.0,
         is_seq: bool = False,
@@ -795,28 +872,146 @@ class HDDLatencyModel:
         op_kind: str = "data",
         is_flush: bool = False,
         is_spinup: bool = False,
+        servo_mode: str | None = None,
+        motion_duration_ms: float = 0.0,
+        settle_duration_ms: float = 0.0,
     ) -> None:
-        impulse = None
+        if servo_mode is None:
+            servo_mode = "track" if is_seq else None
         if is_park:
-            impulse = "park"
+            servo_mode = "park"
         elif seek_trigger:
-            impulse = "seek"
+            servo_mode = "seek"
         elif is_cal:
-            impulse = "calibration"
+            servo_mode = "calibration"
+
+        transfer_activity = {
+            "metadata": 0.24,
+            "journal": 0.42,
+            "data": 0.60,
+            "writeback": 0.66,
+            "flush": 0.82,
+            "background": 0.28,
+        }.get(op_kind, 0.40)
+        if is_seq:
+            transfer_activity *= 1.10
+        if is_flush:
+            transfer_activity *= 1.14
+        transfer_activity *= 1.0 + 0.05 * max(queue_depth - 1, 0)
 
         self.event_sink.publish_event(
             StorageEvent(
                 rpm=rpm,
                 emitted_at=self.clock.now(),
+                target_rpm=rpm if target_rpm is None else target_rpm,
                 queue_depth=queue_depth,
                 op_kind=op_kind,
                 is_sequential=is_seq,
                 is_flush=is_flush,
                 is_spinup=is_spinup,
-                impulse=impulse,
+                servo_mode=servo_mode,
+                track_delta=min(max(seek_dist / max(self.total_cylinders, 1), 0.0), 1.0),
+                transfer_activity=transfer_activity,
+                motion_duration_ms=motion_duration_ms,
+                settle_duration_ms=settle_duration_ms,
                 seek_distance=seek_dist,
             )
         )
+
+    def _read_recovery_tail(
+        self,
+        lba: int,
+        block_count: int,
+        *,
+        is_write: bool,
+        op_kind: str,
+        queue_depth: int,
+    ) -> tuple[float, int]:
+        if not self.enable_retry_recovery or is_write or op_kind in {"journal", "flush", "background", "writeback"}:
+            return 0.0, 0
+        if op_kind not in {"data", "metadata"}:
+            return 0.0, 0
+
+        signature = (
+            (lba * 1103515245)
+            + (block_count * 12345)
+            + (queue_depth * 97)
+            + int(self.target_rpm)
+        ) & 0x1FFF
+        if signature == 0:
+            retry_count = 3
+        elif signature in {1, 2}:
+            retry_count = 2
+        elif signature in {3, 4, 5, 6}:
+            retry_count = 1
+        else:
+            return 0.0, 0
+
+        zone = self._zone_for_lba(lba)
+        zone_scale = self.zones[0].transfer_rate_mbps / max(zone.transfer_rate_mbps, 1e-6)
+        recovery_ms = retry_count * self.ms_per_rotation * (0.55 + 0.08 * zone_scale)
+        recovery_ms += 0.18 * retry_count + 0.05 * math.log2(block_count + 1)
+        return recovery_ms, retry_count
+
+    def _background_scan_step(self, now: float) -> None:
+        if not self.enable_background_scan:
+            return
+        if not self.io_lock.acquire(blocking=False):
+            return
+        try:
+            with self.lock:
+                if self.transition_kind is not None or self.power_state != "active":
+                    return
+                idle_s = now - self.last_access_time
+                if idle_s < self.background_scan_activation_s or idle_s >= self.unload_after_s:
+                    return
+                if now - self.last_background_scan_time < self.background_scan_interval_s:
+                    return
+
+                scan_lba = min(self.background_scan_lba, self.addressable_blocks - 1)
+                block_count = min(self.background_scan_blocks, self.addressable_blocks - scan_lba)
+                if block_count <= 0:
+                    self.background_scan_lba = 0
+                    return
+
+                total_latency_ms, _target_cyl, target_head, _target_sector, distance, _zone = self._calculate_position_latency(
+                    scan_lba,
+                    block_count,
+                )
+                total_latency_ms += self._command_overhead_for("background", 1)
+                seek_trigger = distance > 0 or target_head != self.current_head
+                motion_duration_ms, settle_duration_ms = self._actuator_profile(
+                    seek_distance=distance,
+                    queue_depth=1,
+                    op_kind="background",
+                    is_flush=False,
+                    head_switch=(target_head != self.current_head),
+                    is_sequential=(distance == 0),
+                )
+
+                final_lba = min(self.addressable_blocks - 1, scan_lba + block_count - 1)
+                final_cyl, final_head, final_sector, final_zone = self._lba_to_chs(final_lba)
+                self.current_cyl = final_cyl
+                self.current_head = final_head
+                self.current_sector = (final_sector + 1) % final_zone.blocks_per_track
+                self.background_scan_lba = 0 if final_lba >= self.addressable_blocks - 1 else final_lba + 1
+                self.background_busy_until = max(self.background_busy_until, now + (total_latency_ms / 1000.0))
+                self.last_background_scan_time = now
+                current_rpm = self.current_rpm
+
+            self._publish_event(
+                current_rpm,
+                target_rpm=self.target_rpm,
+                seek_trigger=seek_trigger,
+                seek_dist=distance,
+                is_seq=distance == 0,
+                queue_depth=1,
+                op_kind="background",
+                motion_duration_ms=motion_duration_ms,
+                settle_duration_ms=settle_duration_ms,
+            )
+        finally:
+            self.io_lock.release()
 
     def _build_startup_sequence(self, origin: str) -> list[StartupStage]:
         return build_startup_sequence(self.core_config, origin)
@@ -839,6 +1034,13 @@ class HDDLatencyModel:
                 cache_latency_ms = 0.0
                 cache_hit = False
                 partial_hit = False
+                maintenance_wait_ms = 0.0
+                recovery_ms = 0.0
+                retry_count = 0
+
+                if self.background_busy_until > now:
+                    maintenance_wait_ms = (self.background_busy_until - now) * 1000.0
+                    self.background_busy_until = now
 
                 if not is_write and op_kind == "data":
                     overlap = self._cache_overlap_blocks(lba, block_count, now)
@@ -860,6 +1062,7 @@ class HDDLatencyModel:
                             startup_origin=ready_info.startup_origin,
                             ready_poll_ms=ready_info.ready_poll_ms,
                             ready_poll_count=ready_info.ready_poll_count,
+                            maintenance_wait_ms=maintenance_wait_ms,
                         )
                     if overlap > 0:
                         partial_hit = True
@@ -874,17 +1077,43 @@ class HDDLatencyModel:
                 )
                 command_overhead_ms = self._command_overhead_for(op_kind, queue_depth)
                 flush_ms = self.flush_penalty_ms if (force_unit_access or op_kind == "flush") else 0.0
-                total_latency_ms += ready_info.ready_poll_ms + flush_ms + command_overhead_ms + cache_latency_ms
+                recovery_ms, retry_count = self._read_recovery_tail(
+                    lba,
+                    block_count,
+                    is_write=is_write,
+                    op_kind=op_kind,
+                    queue_depth=queue_depth,
+                )
+                total_latency_ms += (
+                    ready_info.ready_poll_ms
+                    + flush_ms
+                    + command_overhead_ms
+                    + cache_latency_ms
+                    + maintenance_wait_ms
+                    + recovery_ms
+                )
+                seek_trigger = distance > 0 or target_head != self.current_head
+                motion_duration_ms, settle_duration_ms = self._actuator_profile(
+                    seek_distance=distance,
+                    queue_depth=queue_depth,
+                    op_kind=op_kind,
+                    is_flush=(force_unit_access or op_kind == "flush"),
+                    head_switch=(target_head != self.current_head),
+                    is_sequential=(distance == 0 and op_kind == "data" and not is_write),
+                )
 
                 self._publish_event(
                     self.current_rpm,
-                    seek_trigger=(distance > 0 or target_head != self.current_head),
+                    seek_trigger=seek_trigger,
                     seek_dist=distance,
                     is_seq=(distance == 0 and op_kind == "data" and not is_write),
                     queue_depth=queue_depth,
                     op_kind=op_kind,
                     is_flush=(force_unit_access or op_kind == "flush"),
                     is_spinup=ready_info.ready_poll_ms > 0.0,
+                    motion_duration_ms=motion_duration_ms,
+                    settle_duration_ms=settle_duration_ms,
+                    target_rpm=self.target_rpm,
                 )
 
             self._sleep_ms(total_latency_ms - ready_info.ready_poll_ms)
@@ -914,6 +1143,9 @@ class HDDLatencyModel:
                     startup_origin=ready_info.startup_origin,
                     ready_poll_ms=ready_info.ready_poll_ms,
                     ready_poll_count=ready_info.ready_poll_count,
+                    retry_count=retry_count,
+                    recovery_ms=recovery_ms,
+                    maintenance_wait_ms=maintenance_wait_ms,
                 )
 
     def _background_tasks_loop(self) -> None:
@@ -941,9 +1173,21 @@ class HDDLatencyModel:
                     self.last_idle_calibration_time = decision.next_idle_calibration_time
 
             if decision.park:
-                self._publish_event(decision.rpm, is_park=True)
+                self._publish_event(
+                    decision.rpm,
+                    target_rpm=0.0,
+                    is_park=True,
+                    motion_duration_ms=2.4,
+                    settle_duration_ms=1.8,
+                )
             elif decision.calibrate:
-                self._publish_event(decision.rpm, is_cal=True)
+                self._publish_event(
+                    decision.rpm,
+                    is_cal=True,
+                    motion_duration_ms=1.2,
+                    settle_duration_ms=1.0,
+                )
+            self._background_scan_step(self.clock.now())
             if decision.should_low_rpm:
                 self.begin_async_low_rpm()
             if decision.should_spindown:

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 
 import numpy as np
 import numpy.typing as npt
+from scipy import signal
 
 from ..profiles import AcousticProfile, DriveProfile
 from ..storage_events import ScheduledStorageEvent, StorageEvent
@@ -15,22 +17,7 @@ ScheduledEvent = ScheduledStorageEvent
 
 
 @dataclass(frozen=True)
-class ScheduledPulse:
-    start_frame: int
-    width: int
-    amplitude: float
-    phase_offset: int = 0
-
-
-@dataclass(frozen=True)
 class MechanicalMode:
-    """
-    Reduced-order mode for a vibrating HDD substructure.
-
-    The synth treats each subsystem as a bank of unit-mass second-order
-    oscillators: x'' + 2*zeta*wn*x' + wn^2*x = F(t).
-    """
-
     name: str
     frequency_hz: float
     damping_ratio: float
@@ -38,54 +25,126 @@ class MechanicalMode:
 
 
 @dataclass(frozen=True)
+class DiscreteModalBank:
+    a11: FloatArray
+    a12: FloatArray
+    a21: FloatArray
+    a22: FloatArray
+    b1: FloatArray
+    b2: FloatArray
+    gains: FloatArray
+
+
+@dataclass(frozen=True)
+class CoupledStructureModel:
+    ad: FloatArray
+    bd: FloatArray
+    velocity_readout: FloatArray
+
+
+@dataclass(frozen=True)
+class MechanicalPlantConfig:
+    spindle_inertia: float
+    spindle_drag_linear: float
+    spindle_drag_quadratic: float
+    spindle_torque_max: float
+    spindle_torque_time_constant_s: float
+    spindle_kp: float
+    spindle_ki: float
+    servo_sectors_per_rev: int
+    actuator_inertia: float
+    actuator_damping: float
+    actuator_torque_max: float
+    actuator_torque_time_constant_s: float
+    track_integral_gain: float
+    rro_1x: float
+    rro_2x: float
+
+
+@dataclass(frozen=True)
 class AudioModeBank:
     platter_modes: tuple[MechanicalMode, ...]
     cover_modes: tuple[MechanicalMode, ...]
     actuator_modes: tuple[MechanicalMode, ...]
-    platter_wn: FloatArray
-    platter_zeta: FloatArray
-    platter_gain: FloatArray
-    cover_wn: FloatArray
-    cover_zeta: FloatArray
-    cover_gain: FloatArray
-    actuator_wn: FloatArray
-    actuator_zeta: FloatArray
-    actuator_gain: FloatArray
+    structure_modes: tuple[MechanicalMode, ...]
+    platter_step: DiscreteModalBank
+    cover_step: DiscreteModalBank
+    actuator_step: DiscreteModalBank
+    structure_step: DiscreteModalBank
+    coupled_structure: CoupledStructureModel
+    plant_config: MechanicalPlantConfig
+    bearing_sos: FloatArray
+    windage_sos: FloatArray
+    final_highpass_sos: FloatArray
+    final_lowpass_sos: FloatArray
 
 
 @dataclass
 class AudioRenderState:
     fs: int
-    rpm: float = 0.0
-    is_sequential: bool = False
+    sample_clock: int = 0
+    target_rpm: float = 0.0
     queue_depth: int = 1
     op_kind: str = "data"
     is_flush: bool = False
     is_spinup: bool = False
-    sample_clock: int = 0
-    flutter_phase: float = 0.0
-    windage_state: float = 0.0
-    bearing_state: float = 0.0
-    air_turbulence_low_state: float = 0.0
-    air_turbulence_high_state: float = 0.0
-    final_lowpass_state: float = 0.0
-    final_highpass_state: float = 0.0
+    is_sequential: bool = False
+    heads_loaded: bool = False
+    transfer_activity: float = 0.0
+    servo_mode: str = "idle"
+    spindle_angle: float = 0.0
+    spindle_omega: float = 0.0
+    spindle_torque: float = 0.0
+    spindle_integrator: float = 0.0
+    servo_tick_phase: float = 0.0
+    actuator_pos: float = 0.0
+    actuator_vel: float = 0.0
+    actuator_torque: float = 0.0
+    actuator_torque_cmd: float = 0.0
+    actuator_integrator: float = 0.0
+    actuator_target_pos: float = 0.0
+    actuator_seek_hz: float = 110.0
+    actuator_track_hz: float = 54.0
+    actuator_damping_ratio: float = 0.86
+    actuator_direction: float = 1.0
+    settle_time_remaining: float = 0.0
+    seek_time_remaining: float = 0.0
     output_gain: float = 0.88
-    pending_impulses: tuple[ScheduledPulse, ...] = ()
     platter_disp: FloatArray = field(default_factory=lambda: np.zeros(0, dtype=np.float64))
     platter_vel: FloatArray = field(default_factory=lambda: np.zeros(0, dtype=np.float64))
     cover_disp: FloatArray = field(default_factory=lambda: np.zeros(0, dtype=np.float64))
     cover_vel: FloatArray = field(default_factory=lambda: np.zeros(0, dtype=np.float64))
     actuator_disp: FloatArray = field(default_factory=lambda: np.zeros(0, dtype=np.float64))
-    actuator_vel: FloatArray = field(default_factory=lambda: np.zeros(0, dtype=np.float64))
+    actuator_vel_modes: FloatArray = field(default_factory=lambda: np.zeros(0, dtype=np.float64))
+    structure_disp: FloatArray = field(default_factory=lambda: np.zeros(0, dtype=np.float64))
+    structure_vel: FloatArray = field(default_factory=lambda: np.zeros(0, dtype=np.float64))
+    structure_state: FloatArray = field(default_factory=lambda: np.zeros(6, dtype=np.float64))
+    bearing_zi: FloatArray = field(default_factory=lambda: np.zeros((0, 2), dtype=np.float64))
+    windage_zi: FloatArray = field(default_factory=lambda: np.zeros((0, 2), dtype=np.float64))
+    final_highpass_zi: FloatArray = field(default_factory=lambda: np.zeros((0, 2), dtype=np.float64))
+    final_lowpass_zi: FloatArray = field(default_factory=lambda: np.zeros((0, 2), dtype=np.float64))
+
+
+@dataclass(frozen=True)
+class AudioDiagnosticTrace:
+    time_s: FloatArray
+    target_rpm: FloatArray
+    actual_rpm: FloatArray
+    actuator_pos: FloatArray
+    actuator_torque: FloatArray
+    structure_base_velocity: FloatArray
+    structure_cover_velocity: FloatArray
+    structure_desk_velocity: FloatArray
+    output: FloatArray
 
 
 BASE_PLATTER_MODES: tuple[tuple[str, float, float, float], ...] = (
-    ("platter-1", 637.5, 0.018, 0.21),
-    ("platter-2", 737.5, 0.018, 0.18),
-    ("platter-3", 1013.0, 0.022, 0.16),
-    ("platter-4", 1838.0, 0.028, 0.09),
-    ("platter-5", 2100.0, 0.030, 0.07),
+    ("platter-1", 359.0, 0.020, 0.18),
+    ("platter-2", 525.0, 0.018, 0.20),
+    ("platter-3", 650.0, 0.020, 0.17),
+    ("platter-4", 1080.0, 0.024, 0.13),
+    ("platter-5", 1838.0, 0.028, 0.09),
+    ("platter-6", 2100.0, 0.030, 0.07),
 )
 BASE_COVER_MODES: tuple[tuple[str, float, float, float], ...] = (
     ("cover-1", 212.5, 0.050, 0.14),
@@ -97,11 +156,18 @@ BASE_COVER_MODES: tuple[tuple[str, float, float, float], ...] = (
     ("cover-7", 2675.0, 0.030, 0.07),
 )
 BASE_ACTUATOR_MODES: tuple[tuple[str, float, float, float], ...] = (
-    ("actuator-1", 87.5, 0.070, 0.05),
-    ("actuator-2", 1100.0, 0.030, 0.38),
-    ("actuator-3", 1450.0, 0.028, 0.44),
-    ("actuator-4", 1700.0, 0.026, 0.40),
-    ("actuator-5", 1850.0, 0.026, 0.34),
+    ("actuator-1", 975.0, 0.032, 0.24),
+    ("actuator-2", 1325.0, 0.028, 0.33),
+    ("actuator-3", 1680.0, 0.026, 0.31),
+    ("actuator-4", 1980.0, 0.026, 0.26),
+    ("actuator-5", 2400.0, 0.028, 0.20),
+)
+BASE_STRUCTURE_MODES: tuple[tuple[str, float, float, float], ...] = (
+    ("structure-1", 72.0, 0.080, 0.20),
+    ("structure-2", 120.0, 0.068, 0.24),
+    ("structure-3", 167.0, 0.058, 0.18),
+    ("structure-4", 250.0, 0.050, 0.14),
+    ("structure-5", 420.0, 0.044, 0.10),
 )
 
 
@@ -121,7 +187,156 @@ def _configure_mode_bank(
     )
 
 
-def build_mode_bank(drive_profile: DriveProfile) -> AudioModeBank:
+def _discretize_modes(modes: Sequence[MechanicalMode], sample_rate: int) -> DiscreteModalBank:
+    dt = 1.0 / sample_rate
+    a11: list[float] = []
+    a12: list[float] = []
+    a21: list[float] = []
+    a22: list[float] = []
+    b1: list[float] = []
+    b2: list[float] = []
+    gains: list[float] = []
+
+    identity = np.eye(2, dtype=np.float64)
+    zero = np.zeros((2, 1), dtype=np.float64)
+    for mode in modes:
+        wn = 2.0 * math.pi * mode.frequency_hz
+        a_matrix = np.array(
+            [[0.0, 1.0], [-(wn * wn), -(2.0 * mode.damping_ratio * wn)]],
+            dtype=np.float64,
+        )
+        b_matrix = np.array([[0.0], [1.0]], dtype=np.float64)
+        ad, bd, _, _, _ = signal.cont2discrete(
+            (a_matrix, b_matrix, identity, zero),
+            dt,
+            method="zoh",
+        )
+        a11.append(float(ad[0, 0]))
+        a12.append(float(ad[0, 1]))
+        a21.append(float(ad[1, 0]))
+        a22.append(float(ad[1, 1]))
+        b1.append(float(bd[0, 0]))
+        b2.append(float(bd[1, 0]))
+        gains.append(mode.radiation_gain)
+
+    return DiscreteModalBank(
+        a11=np.array(a11, dtype=np.float64),
+        a12=np.array(a12, dtype=np.float64),
+        a21=np.array(a21, dtype=np.float64),
+        a22=np.array(a22, dtype=np.float64),
+        b1=np.array(b1, dtype=np.float64),
+        b2=np.array(b2, dtype=np.float64),
+        gains=np.array(gains, dtype=np.float64),
+    )
+
+
+def _build_structure_model(sample_rate: int, drive_profile: DriveProfile) -> CoupledStructureModel:
+    dt = 1.0 / sample_rate
+    masses = np.array(
+        [
+            1.0 + 0.14 * max(drive_profile.platters - 1, 0),
+            0.82 + 0.06 * max(drive_profile.platters - 1, 0),
+            1.35 if drive_profile.helium else 1.65,
+        ],
+        dtype=np.float64,
+    )
+    frequencies = np.array(
+        [
+            72.0 * drive_profile.cover_frequency_scale,
+            120.0 * drive_profile.cover_frequency_scale,
+            167.0 * drive_profile.cover_frequency_scale,
+        ],
+        dtype=np.float64,
+    )
+    stiffness = (2.0 * np.pi * frequencies) ** 2 * masses
+    k12 = 0.85 * stiffness[1]
+    k13 = 0.45 * stiffness[0]
+    k23 = 0.72 * stiffness[2]
+    k_matrix = np.array(
+        [
+            [stiffness[0] + k12 + k13, -k12, -k13],
+            [-k12, stiffness[1] + k12 + k23, -k23],
+            [-k13, -k23, stiffness[2] + k13 + k23],
+        ],
+        dtype=np.float64,
+    )
+    alpha = 7.5
+    beta = 6.0e-5
+    c_matrix = alpha * np.diag(masses) + beta * k_matrix
+    inv_mass = np.diag(1.0 / masses)
+
+    g_matrix = np.array(
+        [
+            [1.00, 0.42],
+            [0.28, 0.92],
+            [0.22, 0.34],
+        ],
+        dtype=np.float64,
+    )
+
+    zeros = np.zeros((3, 3), dtype=np.float64)
+    identity = np.eye(3, dtype=np.float64)
+    a_matrix = np.block(
+        [
+            [zeros, identity],
+            [-(inv_mass @ k_matrix), -(inv_mass @ c_matrix)],
+        ]
+    )
+    b_matrix = np.vstack([np.zeros((3, 2), dtype=np.float64), inv_mass @ g_matrix])
+    ad, bd, _, _, _ = signal.cont2discrete(
+        (a_matrix, b_matrix, np.eye(6, dtype=np.float64), np.zeros((6, 2), dtype=np.float64)),
+        dt,
+        method="zoh",
+    )
+    velocity_readout = np.array([0.82, 0.74, 0.95], dtype=np.float64)
+    return CoupledStructureModel(
+        ad=np.asarray(ad, dtype=np.float64),
+        bd=np.asarray(bd, dtype=np.float64),
+        velocity_readout=velocity_readout,
+    )
+
+
+def _build_plant_config(drive_profile: DriveProfile) -> MechanicalPlantConfig:
+    target_omega = drive_profile.rpm * 2.0 * math.pi / 60.0
+    spinup_s = max(drive_profile.spinup_ms / 1000.0, 0.25)
+    spindle_inertia = 5.6e-6 * (0.86 if drive_profile.helium else 1.0) * (1.0 + 0.18 * max(drive_profile.platters - 1, 0))
+    drag_linear = 1.1e-5 * drive_profile.bearing_gain * (0.9 + 0.05 * drive_profile.platters)
+    drag_quadratic = 1.0e-8 * drive_profile.windage_gain * (0.72 if drive_profile.helium else 1.0) * (1.0 + 0.07 * drive_profile.platters)
+    target_torque = spindle_inertia * target_omega / max(spinup_s * 0.65, 0.2)
+    spindle_torque_max = target_torque + drag_linear * target_omega + drag_quadratic * target_omega * target_omega
+    spindle_kp = spindle_torque_max / max(target_omega * 0.9, 1.0)
+    spindle_ki = spindle_kp / max(spinup_s * 0.28, 0.04)
+
+    actuator_inertia = 8.5e-5 / max(drive_profile.actuator_frequency_scale, 0.1)
+    actuator_damping = actuator_inertia * (2.0 * math.pi * 82.0) * 0.23
+    actuator_torque_max = 0.82 * (1.0 + 0.08 * max(drive_profile.platters - 1, 0))
+    actuator_torque_tau = 0.00085 if drive_profile.helium else 0.00105
+    servo_sectors = 120 if drive_profile.helium else 96
+
+    return MechanicalPlantConfig(
+        spindle_inertia=spindle_inertia,
+        spindle_drag_linear=drag_linear,
+        spindle_drag_quadratic=drag_quadratic,
+        spindle_torque_max=spindle_torque_max,
+        spindle_torque_time_constant_s=0.018 if drive_profile.helium else 0.024,
+        spindle_kp=spindle_kp,
+        spindle_ki=spindle_ki,
+        servo_sectors_per_rev=servo_sectors,
+        actuator_inertia=actuator_inertia,
+        actuator_damping=actuator_damping,
+        actuator_torque_max=actuator_torque_max,
+        actuator_torque_time_constant_s=actuator_torque_tau,
+        track_integral_gain=0.32,
+        rro_1x=0.00125 * (0.82 if drive_profile.helium else 1.0),
+        rro_2x=0.00072 * (0.82 if drive_profile.helium else 1.0),
+    )
+
+
+def build_mode_bank(
+    drive_profile: DriveProfile,
+    sample_rate: int,
+    acoustic_profile: AcousticProfile,
+) -> AudioModeBank:
     platter_modes = _configure_mode_bank(
         BASE_PLATTER_MODES,
         drive_profile.platter_frequency_scale,
@@ -137,23 +352,56 @@ def build_mode_bank(drive_profile: DriveProfile) -> AudioModeBank:
         drive_profile.actuator_frequency_scale,
         drive_profile.actuator_gain_scale,
     )
+    structure_modes = _configure_mode_bank(
+        BASE_STRUCTURE_MODES,
+        drive_profile.cover_frequency_scale,
+        drive_profile.cover_gain_scale,
+    )
+
+    bearing_sos = signal.butter(
+        2,
+        [70.0, 950.0],
+        btype="bandpass",
+        fs=sample_rate,
+        output="sos",
+    )
+    windage_sos = signal.butter(
+        2,
+        [180.0, 2400.0],
+        btype="bandpass",
+        fs=sample_rate,
+        output="sos",
+    )
+    final_highpass_sos = signal.butter(
+        2,
+        acoustic_profile.final_highpass_hz,
+        btype="highpass",
+        fs=sample_rate,
+        output="sos",
+    )
+    final_lowpass_sos = signal.butter(
+        2,
+        acoustic_profile.final_lowpass_hz,
+        btype="lowpass",
+        fs=sample_rate,
+        output="sos",
+    )
+
     return AudioModeBank(
         platter_modes=platter_modes,
         cover_modes=cover_modes,
         actuator_modes=actuator_modes,
-        platter_wn=2.0
-        * np.pi
-        * np.array([mode.frequency_hz for mode in platter_modes], dtype=np.float64),
-        platter_zeta=np.array([mode.damping_ratio for mode in platter_modes], dtype=np.float64),
-        platter_gain=np.array([mode.radiation_gain for mode in platter_modes], dtype=np.float64),
-        cover_wn=2.0 * np.pi * np.array([mode.frequency_hz for mode in cover_modes], dtype=np.float64),
-        cover_zeta=np.array([mode.damping_ratio for mode in cover_modes], dtype=np.float64),
-        cover_gain=np.array([mode.radiation_gain for mode in cover_modes], dtype=np.float64),
-        actuator_wn=2.0
-        * np.pi
-        * np.array([mode.frequency_hz for mode in actuator_modes], dtype=np.float64),
-        actuator_zeta=np.array([mode.damping_ratio for mode in actuator_modes], dtype=np.float64),
-        actuator_gain=np.array([mode.radiation_gain for mode in actuator_modes], dtype=np.float64),
+        structure_modes=structure_modes,
+        platter_step=_discretize_modes(platter_modes, sample_rate),
+        cover_step=_discretize_modes(cover_modes, sample_rate),
+        actuator_step=_discretize_modes(actuator_modes, sample_rate),
+        structure_step=_discretize_modes(structure_modes, sample_rate),
+        coupled_structure=_build_structure_model(sample_rate, drive_profile),
+        plant_config=_build_plant_config(drive_profile),
+        bearing_sos=np.asarray(bearing_sos, dtype=np.float64),
+        windage_sos=np.asarray(windage_sos, dtype=np.float64),
+        final_highpass_sos=np.asarray(final_highpass_sos, dtype=np.float64),
+        final_lowpass_sos=np.asarray(final_lowpass_sos, dtype=np.float64),
     )
 
 
@@ -170,7 +418,14 @@ def initialize_render_state(
         cover_disp=np.zeros(len(mode_bank.cover_modes), dtype=np.float64),
         cover_vel=np.zeros(len(mode_bank.cover_modes), dtype=np.float64),
         actuator_disp=np.zeros(len(mode_bank.actuator_modes), dtype=np.float64),
-        actuator_vel=np.zeros(len(mode_bank.actuator_modes), dtype=np.float64),
+        actuator_vel_modes=np.zeros(len(mode_bank.actuator_modes), dtype=np.float64),
+        structure_disp=np.zeros(len(mode_bank.structure_modes), dtype=np.float64),
+        structure_vel=np.zeros(len(mode_bank.structure_modes), dtype=np.float64),
+        structure_state=np.zeros(6, dtype=np.float64),
+        bearing_zi=np.zeros((mode_bank.bearing_sos.shape[0], 2), dtype=np.float64),
+        windage_zi=np.zeros((mode_bank.windage_sos.shape[0], 2), dtype=np.float64),
+        final_highpass_zi=np.zeros((mode_bank.final_highpass_sos.shape[0], 2), dtype=np.float64),
+        final_lowpass_zi=np.zeros((mode_bank.final_lowpass_sos.shape[0], 2), dtype=np.float64),
     )
 
 
@@ -179,419 +434,471 @@ def reinitialize_mode_state(
     mode_bank: AudioModeBank,
     acoustic_profile: AcousticProfile,
 ) -> AudioRenderState:
+    fresh_state = initialize_render_state(state.fs, mode_bank, acoustic_profile)
+    fresh_state.sample_clock = state.sample_clock
+    return fresh_state
+
+
+def _clamp(value: float, low: float, high: float) -> float:
+    return min(max(value, low), high)
+
+
+def _derive_transfer_activity(event: StorageEvent) -> float:
+    if event.transfer_activity > 0.0:
+        return event.transfer_activity
+    base = {
+        "metadata": 0.22,
+        "journal": 0.44,
+        "data": 0.58,
+        "writeback": 0.64,
+        "flush": 0.80,
+    }.get(event.op_kind, 0.40)
+    if event.is_sequential:
+        base *= 1.12
+    if event.is_flush:
+        base *= 1.16
+    base *= 1.0 + 0.05 * max(event.queue_depth - 1, 0)
+    return base
+
+
+def _normalized_track_delta(event: StorageEvent) -> float:
+    if event.track_delta != 0.0:
+        return abs(event.track_delta)
+    if event.seek_distance <= 0.0:
+        return 0.0
+    return min(max(event.seek_distance / 1200.0, 0.0), 1.0)
+
+
+def _derive_servo_mode(event: StorageEvent) -> str:
+    if event.servo_mode:
+        return event.servo_mode
+    if event.track_delta > 0.0 or event.seek_distance > 0.0:
+        return "seek"
+    return "track" if event.is_sequential or event.op_kind in {"data", "flush", "writeback"} else "idle"
+
+
+def _command_frequency(duration_s: float, damping_ratio: float) -> float:
+    if duration_s <= 0.0:
+        return 70.0
+    return _clamp(4.0 / (duration_s * 2.0 * math.pi * damping_ratio), 40.0, 520.0)
+
+
+def _apply_motion_command(
+    state: AudioRenderState,
+    event: StorageEvent,
+    command_mode: str,
+) -> AudioRenderState:
+    normalized_delta = _normalized_track_delta(event)
+    duration_s = max(
+        max(event.motion_duration_ms, event.actuator_duration_ms) / 1000.0,
+        0.0012 + 0.0045 * math.sqrt(max(normalized_delta, 0.0)),
+    )
+    settle_s = max(
+        max(event.settle_duration_ms, event.actuator_settle_ms) / 1000.0,
+        0.0010 + 0.0020 * math.sqrt(max(normalized_delta, 0.0)),
+    )
+    direction = -state.actuator_direction
+
+    if command_mode == "park":
+        target_pos = -1.08
+        direction = -1.0
+    elif command_mode == "calibration":
+        target_pos = _clamp(state.actuator_target_pos + direction * 0.08, -0.92, 0.92)
+    else:
+        span = 0.07 + 0.93 * math.sqrt(max(normalized_delta, 0.0))
+        target_pos = _clamp(state.actuator_target_pos + direction * span, -0.96, 0.96)
+
+    seek_hz = _command_frequency(duration_s, 0.82)
+    track_hz = _clamp(_command_frequency(settle_s * 1.2, 0.95), 28.0, seek_hz)
+    damping = 0.92 if command_mode == "park" else 0.86 if command_mode == "calibration" else 0.82
+
     return replace(
         state,
-        output_gain=acoustic_profile.output_gain,
-        platter_disp=np.zeros(len(mode_bank.platter_modes), dtype=np.float64),
-        platter_vel=np.zeros(len(mode_bank.platter_modes), dtype=np.float64),
-        cover_disp=np.zeros(len(mode_bank.cover_modes), dtype=np.float64),
-        cover_vel=np.zeros(len(mode_bank.cover_modes), dtype=np.float64),
-        actuator_disp=np.zeros(len(mode_bank.actuator_modes), dtype=np.float64),
-        actuator_vel=np.zeros(len(mode_bank.actuator_modes), dtype=np.float64),
+        heads_loaded=command_mode != "park",
+        servo_mode=command_mode,
+        actuator_target_pos=target_pos,
+        actuator_seek_hz=seek_hz,
+        actuator_track_hz=track_hz,
+        actuator_damping_ratio=damping,
+        actuator_direction=direction,
+        seek_time_remaining=duration_s,
+        settle_time_remaining=settle_s,
     )
-
-
-def make_impulse_pulses(
-    impulse: str,
-    start_frame: int,
-    seek_distance: float,
-    op_kind: str,
-    is_flush: bool,
-    sample_rate: int,
-    acoustic_profile: AcousticProfile,
-) -> tuple[ScheduledPulse, ...]:
-    pulses: list[ScheduledPulse] = []
-    start = max(0, int(start_frame))
-    if impulse == "park":
-        pulses.append(ScheduledPulse(start, max(6, int(0.0012 * sample_rate)), 0.95))
-        pulses.append(
-            ScheduledPulse(
-                start + int(0.0009 * sample_rate),
-                max(5, int(0.0009 * sample_rate)),
-                -0.62,
-            )
-        )
-        return tuple(pulses)
-    if impulse == "calibration":
-        pulses.append(ScheduledPulse(start, max(4, int(0.00045 * sample_rate)), 0.12))
-        pulses.append(
-            ScheduledPulse(
-                start + int(0.00045 * sample_rate),
-                max(4, int(0.00035 * sample_rate)),
-                -0.05,
-            )
-        )
-        return tuple(pulses)
-    if impulse != "seek":
-        return ()
-
-    kind_scale = {
-        "metadata": 0.36,
-        "journal": 0.48,
-        "flush": 0.68,
-        "data": 0.78,
-    }.get(op_kind, 0.55)
-    stroke = min(max(seek_distance / 1000.0, 0.0), 1.0)
-    force_scale = kind_scale * (0.30 + 0.62 * np.sqrt(stroke)) * acoustic_profile.impulse_gain
-    accel_width = max(4, int(sample_rate * (0.00016 + 0.00022 * stroke)))
-    brake_delay = max(5, int(sample_rate * (0.00020 + 0.00018 * stroke)))
-    brake_width = max(5, int(accel_width * 0.85))
-    settle_width = max(4, int(accel_width * 0.55))
-    pulses.append(ScheduledPulse(start, accel_width, force_scale))
-    pulses.append(ScheduledPulse(start + brake_delay, brake_width, -force_scale * 0.78))
-    pulses.append(
-        ScheduledPulse(
-            start + brake_delay + int(0.00032 * sample_rate),
-            settle_width,
-            force_scale * 0.24,
-        )
-    )
-    if is_flush:
-        pulses.append(
-            ScheduledPulse(
-                start + int(0.0007 * sample_rate),
-                max(5, int(accel_width * 0.7)),
-                force_scale * 0.28,
-            )
-        )
-    return tuple(pulses)
 
 
 def apply_event(
     state: AudioRenderState,
     event: StorageEvent,
-    acoustic_profile: AcousticProfile,
+    mode_bank: AudioModeBank,
+    drive_profile: DriveProfile,
     start_frame: int = 0,
 ) -> AudioRenderState:
+    del start_frame
+    target_rpm = event.target_rpm if event.target_rpm is not None else event.rpm
     next_state = replace(
         state,
-        rpm=event.rpm,
-        is_sequential=event.is_sequential,
-        queue_depth=event.queue_depth,
+        target_rpm=target_rpm,
+        queue_depth=max(1, event.queue_depth),
         op_kind=event.op_kind,
         is_flush=event.is_flush,
         is_spinup=event.is_spinup,
+        is_sequential=event.is_sequential,
+        transfer_activity=_derive_transfer_activity(event),
     )
-    if not event.impulse:
-        return next_state
-
-    pulses = make_impulse_pulses(
-        impulse=event.impulse,
-        start_frame=max(0, int(start_frame)),
-        seek_distance=event.seek_distance,
-        op_kind=event.op_kind,
-        is_flush=event.is_flush,
-        sample_rate=state.fs,
-        acoustic_profile=acoustic_profile,
-    )
-    return replace(next_state, pending_impulses=next_state.pending_impulses + pulses)
-
-
-def _colored_noise(
-    raw: FloatArray,
-    level: float,
-    smoothing: float,
-    state: float,
-) -> tuple[FloatArray, float]:
-    if level <= 0.0:
-        return np.zeros(len(raw), dtype=np.float64), state
-
-    output = np.empty(len(raw), dtype=np.float64)
-    next_state = state
-    for index, sample in enumerate(raw):
-        next_state = next_state * smoothing + (sample * level) * (1.0 - smoothing)
-        output[index] = next_state
-    return output, next_state
-
-
-def _one_pole_lowpass(
-    signal: FloatArray,
-    cutoff_hz: float,
-    sample_rate: int,
-    state: float,
-) -> tuple[FloatArray, float]:
-    if cutoff_hz <= 0.0:
-        return np.zeros_like(signal), state
-
-    smoothing = np.exp(-2.0 * np.pi * cutoff_hz / sample_rate)
-    output = np.empty_like(signal)
-    next_state = state
-    for index, sample in enumerate(signal):
-        next_state = next_state * smoothing + sample * (1.0 - smoothing)
-        output[index] = next_state
-    return output, next_state
-
-
-def _one_pole_highpass(
-    signal: FloatArray,
-    cutoff_hz: float,
-    sample_rate: int,
-    state: float,
-) -> tuple[FloatArray, float]:
-    if cutoff_hz <= 0.0:
-        return np.array(signal, copy=True), state
-    lowpassed, next_state = _one_pole_lowpass(signal, cutoff_hz, sample_rate, state)
-    return signal - lowpassed, next_state
-
-
-def _band_limited_noise(
-    raw: FloatArray,
-    level: float,
-    smoothing: float,
-    low_cut_hz: float,
-    high_cut_hz: float,
-    sample_rate: int,
-    noise_state: float,
-    low_state: float,
-    high_state: float,
-) -> tuple[FloatArray, float, float, float]:
-    if level <= 0.0:
-        return np.zeros(len(raw), dtype=np.float64), noise_state, low_state, high_state
-    colored, next_noise_state = _colored_noise(raw, level, smoothing, noise_state)
-    highpassed, next_high_state = _one_pole_lowpass(colored, high_cut_hz, sample_rate, high_state)
-    lowpassed, next_low_state = _one_pole_lowpass(colored, low_cut_hz, sample_rate, low_state)
-    return highpassed - lowpassed, next_noise_state, next_low_state, next_high_state
-
-
-def _time_axis(sample_clock: int, frames: int, sample_rate: int) -> tuple[FloatArray, int]:
-    time_axis = (np.arange(frames, dtype=np.float64) + sample_clock) / sample_rate
-    return time_axis, sample_clock + frames
-
-
-def _generate_spindle_forces(
-    state: AudioRenderState,
-    drive_profile: DriveProfile,
-    t: FloatArray,
-    bearing_noise_raw: FloatArray,
-    windage_noise_raw: FloatArray,
-) -> tuple[FloatArray, FloatArray, FloatArray, AudioRenderState]:
-    frame_count = len(t)
-    rpm = state.rpm
-    if rpm <= 0.0:
-        return (
-            np.zeros(frame_count, dtype=np.float64),
-            np.zeros(frame_count, dtype=np.float64),
-            np.zeros(frame_count, dtype=np.float64),
-            replace(state, flutter_phase=state.flutter_phase + frame_count),
+    if not event.is_spinup and target_rpm > 0.0 and state.spindle_omega <= 0.0:
+        target_omega = target_rpm * 2.0 * math.pi / 60.0
+        config = mode_bank.plant_config
+        steady_torque = (
+            config.spindle_drag_linear * target_omega
+            + config.spindle_drag_quadratic * target_omega * target_omega
+        )
+        next_state = replace(
+            next_state,
+            spindle_omega=target_omega,
+            spindle_torque=steady_torque,
+            heads_loaded=True,
         )
 
-    f0 = rpm / 60.0
-    flutter_t = (np.arange(frame_count, dtype=np.float64) + state.flutter_phase) / state.fs
-    omega_ratio = min(rpm / max(float(drive_profile.rpm), 1.0), 1.35)
-    omega_sq = omega_ratio * omega_ratio
-    flutter = 1.0 + 0.02 * np.sin(2 * np.pi * 0.37 * flutter_t) + 0.008 * np.sin(2 * np.pi * 0.91 * flutter_t)
-    queue_excitation = 1.0 + 0.04 * max(state.queue_depth - 1, 0)
+    command_mode = _derive_servo_mode(event)
+    if command_mode in {"seek", "park", "calibration"}:
+        return _apply_motion_command(next_state, event, command_mode)
+    if command_mode == "track":
+        track_hz = _clamp(
+            0.72 * _command_frequency(max(next_state.settle_time_remaining, drive_profile.settle_ms / 1000.0), 0.95),
+            28.0,
+            180.0,
+        )
+        return replace(
+            next_state,
+            heads_loaded=True,
+            servo_mode="track",
+            actuator_track_hz=track_hz,
+        )
+    return replace(next_state, servo_mode="idle")
 
-    imbalance = np.zeros(frame_count, dtype=np.float64)
+
+def _sosfilt(
+    sos: FloatArray,
+    data: FloatArray,
+    zi: FloatArray,
+) -> tuple[FloatArray, FloatArray]:
+    if len(data) == 0:
+        return np.zeros(0, dtype=np.float64), zi
+    filtered, next_zi = signal.sosfilt(sos, data, zi=zi)
+    return np.asarray(filtered, dtype=np.float64), np.asarray(next_zi, dtype=np.float64)
+
+
+def _simulate_modal_bank(
+    force: FloatArray,
+    bank: DiscreteModalBank,
+    disp_state: FloatArray,
+    vel_state: FloatArray,
+) -> tuple[FloatArray, FloatArray, FloatArray]:
+    disp = np.array(disp_state, copy=True)
+    vel = np.array(vel_state, copy=True)
+    response = np.zeros(len(force), dtype=np.float64)
+    for index, force_sample in enumerate(force):
+        next_disp = bank.a11 * disp + bank.a12 * vel + bank.b1 * force_sample
+        next_vel = bank.a21 * disp + bank.a22 * vel + bank.b2 * force_sample
+        disp = next_disp
+        vel = next_vel
+        response[index] = float(np.dot(bank.gains, vel))
+    return response, disp, vel
+
+
+def _simulate_coupled_structure(
+    spindle_force: FloatArray,
+    actuator_force: FloatArray,
+    model: CoupledStructureModel,
+    structure_state: FloatArray,
+) -> tuple[FloatArray, FloatArray, FloatArray]:
+    state = np.array(structure_state, copy=True)
+    response = np.zeros(len(spindle_force), dtype=np.float64)
+    velocity_components = np.zeros((len(spindle_force), 3), dtype=np.float64)
+    for index, (spindle_sample, actuator_sample) in enumerate(zip(spindle_force, actuator_force, strict=True)):
+        inputs = np.array([spindle_sample, actuator_sample], dtype=np.float64)
+        state = model.ad @ state + model.bd @ inputs
+        velocity_components[index] = state[3:]
+        response[index] = float(np.dot(model.velocity_readout, state[3:]))
+    return response, state, velocity_components
+
+
+def _render_segment_internal(
+    state: AudioRenderState,
+    mode_bank: AudioModeBank,
+    drive_profile: DriveProfile,
+    acoustic_profile: AcousticProfile,
+    frames: int,
+    bearing_noise_raw: FloatArray,
+    windage_noise_raw: FloatArray,
+    *,
+    capture_diagnostics: bool,
+) -> tuple[AudioRenderState, FloatArray, AudioDiagnosticTrace | None]:
+    if frames <= 0:
+        empty = np.zeros(0, dtype=np.float64)
+        diagnostics = None
+        if capture_diagnostics:
+            diagnostics = AudioDiagnosticTrace(
+                time_s=empty,
+                target_rpm=empty,
+                actual_rpm=empty,
+                actuator_pos=empty,
+                actuator_torque=empty,
+                structure_base_velocity=empty,
+                structure_cover_velocity=empty,
+                structure_desk_velocity=empty,
+                output=empty,
+            )
+        return state, empty, diagnostics
+
+    dt = 1.0 / state.fs
+    config = mode_bank.plant_config
+    theta = state.spindle_angle
+    omega = state.spindle_omega
+    spindle_torque = state.spindle_torque
+    spindle_integrator = state.spindle_integrator
+    servo_phase = state.servo_tick_phase
+    actuator_pos = state.actuator_pos
+    actuator_vel = state.actuator_vel
+    actuator_torque = state.actuator_torque
+    actuator_torque_cmd = state.actuator_torque_cmd
+    actuator_integrator = state.actuator_integrator
+    seek_time_remaining = state.seek_time_remaining
+    settle_time_remaining = state.settle_time_remaining
+    servo_mode = state.servo_mode
+
+    omega_trace = np.zeros(frames, dtype=np.float64)
+    theta_trace = np.zeros(frames, dtype=np.float64)
+    spindle_reaction = np.zeros(frames, dtype=np.float64)
+    actuator_reaction = np.zeros(frames, dtype=np.float64)
+    actuator_jerk = np.zeros(frames, dtype=np.float64)
+    track_error_trace = np.zeros(frames, dtype=np.float64)
+    actuator_pos_trace = np.zeros(frames, dtype=np.float64)
+    actuator_torque_trace = np.zeros(frames, dtype=np.float64)
+    target_rpm_trace = np.zeros(frames, dtype=np.float64)
+
+    prev_actuator_torque = actuator_torque
+    nominal_omega = drive_profile.rpm * 2.0 * math.pi / 60.0
+    target_omega = max(state.target_rpm, 0.0) * 2.0 * math.pi / 60.0
+    for index in range(frames):
+        target_omega = max(state.target_rpm, 0.0) * 2.0 * math.pi / 60.0
+        omega_error = target_omega - omega
+        spindle_integrator = _clamp(spindle_integrator + omega_error * dt, -target_omega, target_omega)
+        spindle_torque_cmd = _clamp(
+            config.spindle_kp * omega_error + config.spindle_ki * spindle_integrator,
+            -config.spindle_torque_max,
+            config.spindle_torque_max,
+        )
+        spindle_torque += (spindle_torque_cmd - spindle_torque) * min(
+            dt / config.spindle_torque_time_constant_s,
+            1.0,
+        )
+        drag = config.spindle_drag_linear * omega + config.spindle_drag_quadratic * omega * abs(omega)
+        omega = max(0.0, omega + ((spindle_torque - drag) / config.spindle_inertia) * dt)
+        theta = (theta + omega * dt) % (2.0 * math.pi)
+
+        rev_hz = omega / (2.0 * math.pi)
+        servo_phase += rev_hz * config.servo_sectors_per_rev * dt
+        if seek_time_remaining > 0.0:
+            seek_time_remaining = max(0.0, seek_time_remaining - dt)
+        if settle_time_remaining > 0.0:
+            settle_time_remaining = max(0.0, settle_time_remaining - dt)
+
+        while state.heads_loaded and servo_phase >= 1.0:
+            servo_phase -= 1.0
+            disturbance = (
+                config.rro_1x * math.sin(theta + 0.3)
+                + config.rro_2x * math.sin(2.0 * theta + 1.1)
+                + 0.00045 * state.transfer_activity * math.sin(12.0 * theta)
+                + 0.00022 * state.transfer_activity * math.sin(23.0 * theta + 0.6)
+            )
+            measurement = actuator_pos + disturbance
+            error = state.actuator_target_pos - measurement
+            track_error_trace[index] = error
+            actuator_integrator = _clamp(actuator_integrator + error * dt, -0.35, 0.35)
+
+            if servo_mode in {"seek", "calibration", "park"}:
+                control_hz = state.actuator_seek_hz
+                damping = state.actuator_damping_ratio
+            else:
+                control_hz = state.actuator_track_hz
+                damping = 0.95
+            wn = 2.0 * math.pi * control_hz
+            desired_accel = wn * wn * error - 2.0 * damping * wn * actuator_vel
+            if servo_mode == "track":
+                desired_accel += config.track_integral_gain * actuator_integrator
+            actuator_torque_cmd = _clamp(
+                config.actuator_inertia * desired_accel,
+                -config.actuator_torque_max,
+                config.actuator_torque_max,
+            )
+
+        actuator_torque += (actuator_torque_cmd - actuator_torque) * min(
+            dt / config.actuator_torque_time_constant_s,
+            1.0,
+        )
+        actuator_accel = (actuator_torque - config.actuator_damping * actuator_vel) / config.actuator_inertia
+        actuator_vel += actuator_accel * dt
+        actuator_pos += actuator_vel * dt
+        actuator_pos = _clamp(actuator_pos, -1.1, 1.1)
+
+        if (
+            servo_mode in {"seek", "calibration", "park"}
+            and abs(state.actuator_target_pos - actuator_pos) < 0.018
+            and abs(actuator_vel) < 2.8
+            and settle_time_remaining <= 0.0
+        ):
+            servo_mode = "idle" if state.target_rpm <= 0.0 or state.servo_mode == "park" else "track"
+
+        theta_trace[index] = theta
+        omega_trace[index] = omega
+        spindle_reaction[index] = spindle_torque
+        actuator_reaction[index] = actuator_torque
+        actuator_jerk[index] = (actuator_torque - prev_actuator_torque) / dt
+        actuator_pos_trace[index] = actuator_pos
+        actuator_torque_trace[index] = actuator_torque
+        target_rpm_trace[index] = target_omega * 60.0 / (2.0 * math.pi)
+        prev_actuator_torque = actuator_torque
+
+    bearing_colored, bearing_zi = _sosfilt(mode_bank.bearing_sos, bearing_noise_raw, state.bearing_zi)
+    windage_colored, windage_zi = _sosfilt(mode_bank.windage_sos, windage_noise_raw, state.windage_zi)
+
+    omega_ratio = np.clip(omega_trace / max(nominal_omega, 1e-6), 0.0, 1.5)
+    imbalance = np.zeros(frames, dtype=np.float64)
     for harmonic, amplitude in zip(
         drive_profile.spindle_harmonics,
         drive_profile.spindle_harmonic_weights,
         strict=True,
     ):
-        imbalance += amplitude * np.sin(2 * np.pi * (f0 * harmonic) * t)
-    imbalance *= 0.012 * omega_sq * flutter
+        imbalance += amplitude * np.sin(theta_trace * harmonic)
+    imbalance *= 0.0105 * omega_ratio * omega_ratio
 
-    bearing_level = (0.00055 + 0.0012 * omega_sq) * drive_profile.bearing_gain * (0.96 + 0.04 * queue_excitation)
-    bearing, next_bearing_state = _colored_noise(
-        bearing_noise_raw,
-        bearing_level,
-        0.985,
-        state.bearing_state,
+    commutation = (
+        0.62 * np.sin(theta_trace * 6.0 + 0.2)
+        + 0.28 * np.sin(theta_trace * 12.0 + 1.0)
+        + 0.12 * np.sin(theta_trace * 18.0 + 2.1)
     )
+    commutation *= (0.0018 + 0.0046 * np.clip(np.abs(spindle_reaction) / max(config.spindle_torque_max, 1e-6), 0.0, 1.5))
 
-    windage_level = (0.0018 + 0.0048 * omega_ratio**2.2) * drive_profile.windage_gain * queue_excitation
+    bearing_force = bearing_colored * (
+        (0.00025 * omega_ratio + 0.0012 * omega_ratio**1.5)
+        * drive_profile.bearing_gain
+    )
+    windage_force = windage_colored * (
+        (0.0009 * omega_ratio**1.2 + 0.0046 * omega_ratio**2.15)
+        * drive_profile.windage_gain
+        * (1.0 + 0.18 * state.transfer_activity)
+    )
     if state.is_spinup:
-        windage_level *= 1.3
-    if state.op_kind in {"journal", "flush"}:
-        windage_level *= 1.08
-    smoothing = 0.93 if state.is_sequential else 0.88
-    windage, next_windage_state, next_low_state, next_high_state = _band_limited_noise(
-        windage_noise_raw,
-        windage_level,
-        smoothing,
-        550.0,
-        3600.0,
-        state.fs,
-        state.windage_state,
-        state.air_turbulence_low_state,
-        state.air_turbulence_high_state,
-    )
+        windage_force *= 1.16
 
-    direct_radiation = imbalance * 0.72 + bearing * 0.55
-    platter_force = imbalance * 0.45 + bearing * 0.18 + windage * 1.1
-    cover_force = imbalance * 0.30 + bearing * 0.14 + windage * 0.55
-    return (
-        direct_radiation,
+    direct_force = imbalance * 0.72 + commutation * 0.58 + bearing_force * 0.34
+    platter_force = imbalance * 0.30 + windage_force * 0.96 + 0.10 * commutation
+    cover_force = imbalance * 0.18 + windage_force * 0.30 + 0.18 * commutation
+    actuator_force = (
+        0.26 * actuator_reaction
+        + 0.00011 * actuator_jerk
+        + 0.075 * track_error_trace
+    )
+    structure_force = 0.18 * imbalance + 0.85 * spindle_reaction
+    structure_actuator_force = 0.95 * actuator_reaction + 0.00018 * actuator_jerk
+
+    platter, platter_disp, platter_vel = _simulate_modal_bank(
         platter_force,
-        cover_force,
-        replace(
-            state,
-            flutter_phase=state.flutter_phase + frame_count,
-            bearing_state=next_bearing_state,
-            windage_state=next_windage_state,
-            air_turbulence_low_state=next_low_state,
-            air_turbulence_high_state=next_high_state,
-        ),
-    )
-
-
-def _render_scheduled_pulse(
-    actuator_force: FloatArray,
-    pulse: ScheduledPulse,
-) -> ScheduledPulse | None:
-    frame_count = len(actuator_force)
-    if pulse.start_frame >= frame_count:
-        return replace(pulse, start_frame=pulse.start_frame - frame_count)
-
-    remaining_width = pulse.width - pulse.phase_offset
-    if remaining_width <= 0:
-        return None
-
-    render_start = max(0, pulse.start_frame)
-    render_end = min(frame_count, pulse.start_frame + remaining_width)
-    if render_end <= render_start:
-        return None
-
-    profile_start = pulse.phase_offset + (render_start - pulse.start_frame)
-    sample_indices = np.arange(
-        profile_start,
-        profile_start + (render_end - render_start),
-        dtype=np.float64,
-    )
-    window = np.sin(np.pi * sample_indices / pulse.width)
-    actuator_force[render_start:render_end] += pulse.amplitude * window
-
-    consumed = render_end - pulse.start_frame
-    if pulse.start_frame + remaining_width > frame_count:
-        return ScheduledPulse(
-            start_frame=0,
-            width=pulse.width,
-            amplitude=pulse.amplitude,
-            phase_offset=pulse.phase_offset + max(consumed, 0),
-        )
-    return None
-
-
-def _generate_actuator_force(
-    state: AudioRenderState,
-    drive_profile: DriveProfile,
-    acoustic_profile: AcousticProfile,
-    t: FloatArray,
-) -> tuple[FloatArray, AudioRenderState]:
-    frame_count = len(t)
-    actuator_force = np.zeros(frame_count, dtype=np.float64)
-    carry: list[ScheduledPulse] = []
-    for pulse in state.pending_impulses:
-        carried_pulse = _render_scheduled_pulse(actuator_force, pulse)
-        if carried_pulse is not None:
-            carry.append(carried_pulse)
-
-    if state.is_sequential and state.rpm > 0.0:
-        boundary_rate_hz = 24.0 + 2.5 * min(state.queue_depth, 6)
-        boundary_scale = (
-            0.0075
-            * drive_profile.boundary_excitation_gain
-            * acoustic_profile.sequential_boundary_gain
-            * (1.0 + 0.05 * max(state.queue_depth - 1, 0))
-        )
-        actuator_force += boundary_scale * np.sin(2 * np.pi * boundary_rate_hz * t)
-
-    if state.op_kind in {"journal", "flush"}:
-        actuator_force *= 1.08 + 0.03 * max(state.queue_depth - 1, 0)
-    elif state.queue_depth > 1:
-        actuator_force *= 1.0 + 0.015 * min(state.queue_depth - 1, 8)
-
-    return actuator_force, replace(state, pending_impulses=tuple(carry))
-
-
-def _simulate_mode_bank(
-    force: FloatArray,
-    wn: FloatArray,
-    zeta: FloatArray,
-    gains: FloatArray,
-    disp_state: FloatArray,
-    vel_state: FloatArray,
-    dt: float,
-) -> tuple[FloatArray, FloatArray, FloatArray]:
-    disp = np.array(disp_state, copy=True)
-    vel = np.array(vel_state, copy=True)
-    response = np.zeros(len(force), dtype=np.float64)
-    inv_wn = 1.0 / np.maximum(wn, 1.0)
-    for index, force_sample in enumerate(force):
-        accel = force_sample - 2.0 * zeta * wn * vel - (wn * wn) * disp
-        vel += accel * dt
-        disp += vel * dt
-        response[index] = float(np.dot(gains, vel * inv_wn))
-    return response, disp, vel
-
-
-def _radiate(
-    state: AudioRenderState,
-    mode_bank: AudioModeBank,
-    acoustic_profile: AcousticProfile,
-    direct_force: FloatArray,
-    platter_force: FloatArray,
-    cover_force: FloatArray,
-    actuator_force: FloatArray,
-) -> tuple[FloatArray, AudioRenderState]:
-    dt = 1.0 / state.fs
-    platter, platter_disp, platter_vel = _simulate_mode_bank(
-        platter_force,
-        mode_bank.platter_wn,
-        mode_bank.platter_zeta,
-        mode_bank.platter_gain,
+        mode_bank.platter_step,
         state.platter_disp,
         state.platter_vel,
-        dt,
     )
-    cover, cover_disp, cover_vel = _simulate_mode_bank(
+    cover, cover_disp, cover_vel = _simulate_modal_bank(
         cover_force,
-        mode_bank.cover_wn,
-        mode_bank.cover_zeta,
-        mode_bank.cover_gain,
+        mode_bank.cover_step,
         state.cover_disp,
         state.cover_vel,
-        dt,
     )
-    actuator, actuator_disp, actuator_vel = _simulate_mode_bank(
+    actuator_modes, actuator_disp, actuator_vel_modes = _simulate_modal_bank(
         actuator_force,
-        mode_bank.actuator_wn,
-        mode_bank.actuator_zeta,
-        mode_bank.actuator_gain,
+        mode_bank.actuator_step,
         state.actuator_disp,
-        state.actuator_vel,
-        dt,
+        state.actuator_vel_modes,
     )
+    structure_modes, structure_disp, structure_vel = _simulate_modal_bank(
+        structure_force + 0.18 * structure_actuator_force,
+        mode_bank.structure_step,
+        state.structure_disp,
+        state.structure_vel,
+    )
+    coupled_structure, structure_state, structure_velocity_components = _simulate_coupled_structure(
+        structure_force,
+        structure_actuator_force,
+        mode_bank.coupled_structure,
+        state.structure_state,
+    )
+
     radiated = (
         direct_force * acoustic_profile.direct_gain
         + platter * acoustic_profile.platter_gain
         + cover * acoustic_profile.cover_gain
-        + actuator * acoustic_profile.actuator_gain
+        + actuator_modes * acoustic_profile.actuator_gain
+        + (structure_modes + coupled_structure * (1.0 + acoustic_profile.desk_coupling))
+        * acoustic_profile.structure_gain
     )
-    highpassed, next_high_state = _one_pole_highpass(
+    highpassed, final_highpass_zi = _sosfilt(
+        mode_bank.final_highpass_sos,
         radiated,
-        acoustic_profile.final_highpass_hz,
-        state.fs,
-        state.final_highpass_state,
+        state.final_highpass_zi,
     )
-    lowpassed, next_low_state = _one_pole_lowpass(
+    lowpassed, final_lowpass_zi = _sosfilt(
+        mode_bank.final_lowpass_sos,
         highpassed,
-        acoustic_profile.final_lowpass_hz,
-        state.fs,
-        state.final_lowpass_state,
+        state.final_lowpass_zi,
     )
+
     next_state = replace(
         state,
+        sample_clock=state.sample_clock + frames,
+        spindle_angle=theta,
+        spindle_omega=omega,
+        spindle_torque=spindle_torque,
+        spindle_integrator=spindle_integrator,
+        servo_tick_phase=servo_phase,
+        actuator_pos=actuator_pos,
+        actuator_vel=actuator_vel,
+        actuator_torque=actuator_torque,
+        actuator_torque_cmd=actuator_torque_cmd,
+        actuator_integrator=actuator_integrator,
+        seek_time_remaining=seek_time_remaining,
+        settle_time_remaining=settle_time_remaining,
+        servo_mode=servo_mode,
         platter_disp=platter_disp,
         platter_vel=platter_vel,
         cover_disp=cover_disp,
         cover_vel=cover_vel,
         actuator_disp=actuator_disp,
-        actuator_vel=actuator_vel,
-        final_highpass_state=next_high_state,
-        final_lowpass_state=next_low_state,
+        actuator_vel_modes=actuator_vel_modes,
+        structure_disp=structure_disp,
+        structure_vel=structure_vel,
+        structure_state=structure_state,
+        bearing_zi=bearing_zi,
+        windage_zi=windage_zi,
+        final_highpass_zi=final_highpass_zi,
+        final_lowpass_zi=final_lowpass_zi,
     )
-    return lowpassed, next_state
+    output = np.tanh(lowpassed * 0.95) * acoustic_profile.output_gain
+    diagnostics = None
+    if capture_diagnostics:
+        time_s = (np.arange(frames, dtype=np.float64) + state.sample_clock) / state.fs
+        diagnostics = AudioDiagnosticTrace(
+            time_s=time_s,
+            target_rpm=target_rpm_trace,
+            actual_rpm=omega_trace * 60.0 / (2.0 * math.pi),
+            actuator_pos=actuator_pos_trace,
+            actuator_torque=actuator_torque_trace,
+            structure_base_velocity=structure_velocity_components[:, 0],
+            structure_cover_velocity=structure_velocity_components[:, 1],
+            structure_desk_velocity=structure_velocity_components[:, 2],
+            output=output,
+        )
+    return next_state, output, diagnostics
 
 
 def _render_segment(
@@ -603,34 +910,150 @@ def _render_segment(
     bearing_noise_raw: FloatArray,
     windage_noise_raw: FloatArray,
 ) -> tuple[AudioRenderState, FloatArray]:
-    if frames <= 0:
-        return state, np.zeros(0, dtype=np.float64)
-
-    time_axis, next_sample_clock = _time_axis(state.sample_clock, frames, state.fs)
-    timed_state = replace(state, sample_clock=next_sample_clock)
-    direct_force, platter_force, cover_force, spindle_state = _generate_spindle_forces(
-        timed_state,
+    next_state, output, _ = _render_segment_internal(
+        state,
+        mode_bank,
         drive_profile,
-        time_axis,
+        acoustic_profile,
+        frames,
         bearing_noise_raw,
         windage_noise_raw,
+        capture_diagnostics=False,
     )
-    actuator_force, actuator_state = _generate_actuator_force(
-        spindle_state,
-        drive_profile,
-        acoustic_profile,
-        time_axis,
+    return next_state, output
+
+
+def _concatenate_diagnostics(segments: Sequence[AudioDiagnosticTrace]) -> AudioDiagnosticTrace:
+    if not segments:
+        empty = np.zeros(0, dtype=np.float64)
+        return AudioDiagnosticTrace(
+            time_s=empty,
+            target_rpm=empty,
+            actual_rpm=empty,
+            actuator_pos=empty,
+            actuator_torque=empty,
+            structure_base_velocity=empty,
+            structure_cover_velocity=empty,
+            structure_desk_velocity=empty,
+            output=empty,
+        )
+    return AudioDiagnosticTrace(
+        time_s=np.concatenate([segment.time_s for segment in segments]),
+        target_rpm=np.concatenate([segment.target_rpm for segment in segments]),
+        actual_rpm=np.concatenate([segment.actual_rpm for segment in segments]),
+        actuator_pos=np.concatenate([segment.actuator_pos for segment in segments]),
+        actuator_torque=np.concatenate([segment.actuator_torque for segment in segments]),
+        structure_base_velocity=np.concatenate([segment.structure_base_velocity for segment in segments]),
+        structure_cover_velocity=np.concatenate([segment.structure_cover_velocity for segment in segments]),
+        structure_desk_velocity=np.concatenate([segment.structure_desk_velocity for segment in segments]),
+        output=np.concatenate([segment.output for segment in segments]),
     )
-    radiated, radiated_state = _radiate(
-        actuator_state,
-        mode_bank,
-        acoustic_profile,
-        direct_force,
-        platter_force,
-        cover_force + actuator_force * 0.62,
-        actuator_force,
+
+
+def render_diagnostic_chunk(
+    state: AudioRenderState,
+    mode_bank: AudioModeBank,
+    drive_profile: DriveProfile,
+    acoustic_profile: AcousticProfile,
+    frames: int,
+    *,
+    scheduled_events: Sequence[ScheduledEvent] = (),
+    bearing_noise_raw: FloatArray | None = None,
+    windage_noise_raw: FloatArray | None = None,
+) -> tuple[AudioRenderState, FloatArray, AudioDiagnosticTrace]:
+    if frames <= 0:
+        empty = np.zeros(0, dtype=np.float64)
+        return (
+            state,
+            empty,
+            AudioDiagnosticTrace(
+                time_s=empty,
+                target_rpm=empty,
+                actual_rpm=empty,
+                actuator_pos=empty,
+                actuator_torque=empty,
+                structure_base_velocity=empty,
+                structure_cover_velocity=empty,
+                structure_desk_velocity=empty,
+                output=empty,
+            ),
+        )
+
+    bearing_noise = (
+        np.zeros(frames, dtype=np.float64)
+        if bearing_noise_raw is None
+        else np.asarray(bearing_noise_raw, dtype=np.float64)
     )
-    return radiated_state, np.tanh(radiated * 1.4) * acoustic_profile.output_gain
+    windage_noise = (
+        np.zeros(frames, dtype=np.float64)
+        if windage_noise_raw is None
+        else np.asarray(windage_noise_raw, dtype=np.float64)
+    )
+
+    if not scheduled_events:
+        next_state, output, diagnostics = _render_segment_internal(
+            state,
+            mode_bank,
+            drive_profile,
+            acoustic_profile,
+            frames,
+            bearing_noise[:frames],
+            windage_noise[:frames],
+            capture_diagnostics=True,
+        )
+        assert diagnostics is not None
+        return next_state, output, diagnostics
+
+    output = np.zeros(frames, dtype=np.float64)
+    cursor = 0
+    next_state = state
+    diagnostic_segments: list[AudioDiagnosticTrace] = []
+    sorted_events = sorted(
+        ((event, max(0, min(frames, int(start_frame)))) for event, start_frame in scheduled_events),
+        key=lambda item: item[1],
+    )
+    event_index = 0
+
+    while event_index < len(sorted_events):
+        frame_offset = sorted_events[event_index][1]
+        if frame_offset > cursor:
+            next_state, segment, diagnostics = _render_segment_internal(
+                next_state,
+                mode_bank,
+                drive_profile,
+                acoustic_profile,
+                frame_offset - cursor,
+                bearing_noise[cursor:frame_offset],
+                windage_noise[cursor:frame_offset],
+                capture_diagnostics=True,
+            )
+            output[cursor:frame_offset] = segment
+            assert diagnostics is not None
+            diagnostic_segments.append(diagnostics)
+            cursor = frame_offset
+
+        while event_index < len(sorted_events) and sorted_events[event_index][1] == frame_offset:
+            event, _ = sorted_events[event_index]
+            next_state = apply_event(next_state, event, mode_bank, drive_profile)
+            event_index += 1
+
+    if cursor < frames:
+        next_state, segment, diagnostics = _render_segment_internal(
+            next_state,
+            mode_bank,
+            drive_profile,
+            acoustic_profile,
+            frames - cursor,
+            bearing_noise[cursor:frames],
+            windage_noise[cursor:frames],
+            capture_diagnostics=True,
+        )
+        output[cursor:] = segment
+        assert diagnostics is not None
+        diagnostic_segments.append(diagnostics)
+
+    diagnostics = _concatenate_diagnostics(diagnostic_segments)
+    return next_state, output, diagnostics
 
 
 def render_chunk(
@@ -671,12 +1094,12 @@ def render_chunk(
 
     output = np.zeros(frames, dtype=np.float64)
     cursor = 0
-    event_index = 0
+    next_state = state
     sorted_events = sorted(
         ((event, max(0, min(frames, int(start_frame)))) for event, start_frame in scheduled_events),
         key=lambda item: item[1],
     )
-    next_state = state
+    event_index = 0
 
     while event_index < len(sorted_events):
         frame_offset = sorted_events[event_index][1]
@@ -695,7 +1118,7 @@ def render_chunk(
 
         while event_index < len(sorted_events) and sorted_events[event_index][1] == frame_offset:
             event, _ = sorted_events[event_index]
-            next_state = apply_event(next_state, event, acoustic_profile, start_frame=0)
+            next_state = apply_event(next_state, event, mode_bank, drive_profile)
             event_index += 1
 
     if cursor < frames:

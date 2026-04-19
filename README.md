@@ -106,22 +106,30 @@ Important files:
 
 ## Running It
 
-Install the runtime dependencies first:
+This repo now uses `uv` for all Python dependency management. The committed [uv.lock](uv.lock) is the source of truth for exact runtime and dev dependency versions.
+
+Install `uv`, then sync the repo-local environment:
 
 ```powershell
-python -m pip install cheroot numpy requests sounddevice WsgiDAV
+uv sync --group dev
 ```
 
 Then start the server:
 
 ```powershell
-python main.py
+uv run python main.py
 ```
 
 Or run the packaged entrypoint directly:
 
 ```powershell
-python -m fake_hdd_fuse
+uv run python -m fake_hdd_fuse
+```
+
+There is also a console entrypoint if you prefer:
+
+```powershell
+uv run fake-hdd-fuse
 ```
 
 By default it serves `backing_storage/` over WebDAV on:
@@ -132,13 +140,16 @@ If you already have something bound to port `8080`, set `FAKE_HDD_PORT` instead 
 
 ```powershell
 $env:FAKE_HDD_PORT = "8090"
-python main.py
+uv run python main.py
 ```
 
 Useful environment variables:
 
+- `FAKE_HDD_HOST`: bind the WebDAV server to a different host interface
 - `FAKE_HDD_PORT`: bind the WebDAV server to a different port
 - `FAKE_HDD_BACKING_DIR`: choose a different backing directory instead of `backing_storage`
+- `FAKE_HDD_COLD_START=off`: start already ready instead of simulating an initial cold power-on
+- `FAKE_HDD_ASYNC_POWER_ON=off`: disable background startup sequencing at boot
 - `FAKE_HDD_AUDIO=off`: disable live audio output while keeping offline rendering/tests working
 - `FAKE_HDD_AUDIO_TEE_PATH`: also record the rendered live output stream to a WAV file
 - `FAKE_HDD_DRIVE_PROFILE`: select a modeled drive preset such as `desktop_7200_internal` or `archive_5900_internal`
@@ -164,15 +175,49 @@ Example:
 ```powershell
 $env:FAKE_HDD_DRIVE_PROFILE = "archive_5900_internal"
 $env:FAKE_HDD_ACOUSTIC_PROFILE = "mounted_in_case"
-python main.py
+uv run python main.py
 ```
+
+## Docker
+
+There is now a repo-local Docker setup for the headless WebDAV/server side of the project.
+
+The container build also uses `uv.lock`, not ad hoc `pip install` steps.
+
+Build and run it directly:
+
+```powershell
+docker build -t fake-hdd-fuse .
+docker run --rm -p 8080:8080 -e FAKE_HDD_AUDIO=off -v "${PWD}/backing_storage:/data" fake-hdd-fuse
+```
+
+Or use Compose:
+
+```powershell
+docker compose up --build
+```
+
+Container defaults:
+
+- it listens on `0.0.0.0:8080` inside the container
+- it mounts the backing directory at `/data`
+- live audio is disabled by default with `FAKE_HDD_AUDIO=off`
+
+Then access it from the host at:
+
+- `http://127.0.0.1:8080`
+
+Container note:
+
+- the Docker setup is mainly for the WebDAV/latency simulation path
+- the live audio path is better run natively on the host, because container audio-device passthrough is much more environment-specific than the WebDAV server itself
 
 ## Regenerating The Sample Audio
 
 To rebuild the sample WAV files:
 
 ```powershell
-python generate_readme_demo_samples.py
+uv run python generate_readme_demo_samples.py
 ```
 
 That writes deterministic README demo outputs into `samples/`. The spin-up sample is generated from the same startup model the runtime uses, rather than a separate hand-authored timeline. If you want the lower-level sample-rendering helpers directly, use `generate_audio_samples.py`.
@@ -182,18 +227,18 @@ That writes deterministic README demo outputs into `samples/`. The spin-up sampl
 Quick local smoke validation:
 
 ```powershell
-python smoke.py
+uv run python smoke.py
 ```
 
 That boots [main.py](main.py) on a random port with live audio disabled, exercises WebDAV operations, and runs an additional `curl` probe when available.
 
-Tests run in parallel by default via `pytest-xdist`. If you need to disable that for debugging, use `python -m pytest -q -n 0`.
+Tests run in parallel by default via `pytest-xdist`. If you need to disable that for debugging, use `uv run python -m pytest -q -n 0`.
 
 Core profiling:
 
 ```powershell
-python profile_core.py
-python profile_fragmentation.py
+uv run python profile_core.py
+uv run python profile_fragmentation.py
 ```
 
 Those scripts now include built-in expectation checks instead of only printing timings. They cover:
@@ -209,10 +254,10 @@ Those scripts now include built-in expectation checks instead of only printing t
 Unit tests:
 
 ```powershell
-python -m pytest -q
+uv run python -m pytest -q
 ```
 
-CI also runs lint, dead-code, compile, type-check, test, and smoke passes against the packaged layout.
+CI also uses `uv sync --locked --group dev` and then runs lint, dead-code, compile, type-check, test, and smoke passes from the locked environment.
 
 Dead-code policy:
 
@@ -257,7 +302,10 @@ The audio radiation and filtering path mostly lives in [fake_hdd_fuse/audio/engi
 
 `Backing tree changed behind the simulator`
 
-- the simulator lazily materializes existing files and directories, but it does not attempt full real-time reconciliation with arbitrary out-of-band edits
+- the simulator lazily materializes existing files and directories
+- for paths it has actually observed on disk, it now reconciles out-of-band file size changes and file deletion on later access
+- virtual-only paths created through the simulator without a backing file are intentionally kept as simulator-owned state until they are explicitly removed through the simulator path
+- it still does not attempt full real-time reconciliation of arbitrary external directory-tree churn, renames, or concurrent edits
 
 ## Limitations
 
@@ -265,7 +313,7 @@ This is still a simulation, not a real block device:
 
 - it is not implementing a full kernel page cache or full filesystem semantics
 - DAV properties and lock semantics are still much lighter than file-content paths
-- out-of-band backing-store mutations are tolerated only loosely
+- out-of-band backing-store mutations are only partially reconciled: file size changes and deletion are handled lazily for disk-observed paths, but broader external tree churn is still intentionally loose
 - it is intentionally compact and hackable, not a complete storage emulator
 
 That said, it is much closer to "modeled fake HDD" than "sleep calls plus MP3s".

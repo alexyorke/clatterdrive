@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import threading
 import wave
 from collections.abc import Sequence
@@ -11,14 +12,15 @@ import numpy.typing as npt
 import sounddevice as sd
 
 from .core import (
+    AudioDiagnosticTrace,
     AudioModeBank,
     AudioRenderState,
     ScheduledEvent,
     apply_event as apply_audio_event,
     build_mode_bank,
     initialize_render_state,
-    make_impulse_pulses,
     reinitialize_mode_state,
+    render_diagnostic_chunk as render_audio_diagnostic_chunk,
     render_chunk as render_audio_chunk,
 )
 from ..profiles import (
@@ -80,20 +82,25 @@ class HDDAudioSynthesizer:
         self.acoustic_profile: AcousticProfile
         self.mode_bank: AudioModeBank
         self.state: AudioRenderState
+        self._deferred_events: list[ScheduledEvent] = []
 
         resolved_drive, resolved_acoustic = resolve_selected_profiles(drive_profile, acoustic_profile)
         self.drive_profile = resolved_drive
         self.acoustic_profile = resolved_acoustic
-        self.mode_bank = build_mode_bank(self.drive_profile)
+        self.mode_bank = build_mode_bank(self.drive_profile, self.fs, self.acoustic_profile)
         self.state = initialize_render_state(self.fs, self.mode_bank, self.acoustic_profile)
 
     @property
     def rpm(self) -> float:
-        return self.state.rpm
+        return self.state.target_rpm
+
+    @property
+    def actual_rpm(self) -> float:
+        return self.state.spindle_omega * 60.0 / (2.0 * np.pi)
 
     @property
     def pending_impulses(self) -> tuple[Any, ...]:
-        return self.state.pending_impulses
+        return ()
 
     def configure_profiles(
         self,
@@ -103,34 +110,36 @@ class HDDAudioSynthesizer:
         resolved_drive, resolved_acoustic = resolve_selected_profiles(drive_profile, acoustic_profile)
         self.drive_profile = resolved_drive
         self.acoustic_profile = resolved_acoustic
-        self.mode_bank = build_mode_bank(self.drive_profile)
+        self.mode_bank = build_mode_bank(self.drive_profile, self.fs, self.acoustic_profile)
         self.state = reinitialize_mode_state(self.state, self.mode_bank, self.acoustic_profile)
+        self._deferred_events.clear()
 
     def apply_event(self, event: HDDAudioEvent, start_frame: int = 0) -> None:
         self.state = apply_audio_event(
             self.state,
             event,
-            self.acoustic_profile,
+            self.mode_bank,
+            self.drive_profile,
             start_frame=start_frame,
         )
 
-    def _make_impulse_pulses(
+    def _prepare_scheduled_events(
         self,
-        impulse: str,
-        start_frame: int,
-        seek_distance: float,
-        op_kind: str,
-        is_flush: bool,
-    ) -> tuple[Any, ...]:
-        return make_impulse_pulses(
-            impulse,
-            start_frame,
-            seek_distance,
-            op_kind,
-            is_flush,
-            self.fs,
-            self.acoustic_profile,
-        )
+        frames: int,
+        scheduled_events: Sequence[ScheduledEvent],
+    ) -> list[ScheduledEvent]:
+        all_events = [*self._deferred_events, *scheduled_events]
+        immediate: list[ScheduledEvent] = []
+        deferred: list[ScheduledEvent] = []
+        for event, start_frame in all_events:
+            frame_index = int(start_frame)
+            if frame_index >= frames:
+                deferred.append((event, frame_index - frames))
+            else:
+                immediate.append((event, max(0, frame_index)))
+        self._deferred_events = deferred
+        immediate.sort(key=lambda item: item[1])
+        return immediate
 
     def render_chunk(
         self,
@@ -142,17 +151,52 @@ class HDDAudioSynthesizer:
 
         bearing_noise = self.rng.normal(0.0, 1.0, frames).astype(np.float64, copy=False)
         windage_noise = self.rng.normal(0.0, 1.0, frames).astype(np.float64, copy=False)
+        scheduled_now = self._prepare_scheduled_events(frames, scheduled_events)
         self.state, chunk = render_audio_chunk(
             self.state,
             self.mode_bank,
             self.drive_profile,
             self.acoustic_profile,
             frames,
-            scheduled_events=scheduled_events,
+            scheduled_events=scheduled_now,
             bearing_noise_raw=bearing_noise,
             windage_noise_raw=windage_noise,
         )
         return chunk
+
+    def render_diagnostic_chunk(
+        self,
+        frames: int,
+        scheduled_events: Sequence[ScheduledEvent] = (),
+    ) -> AudioDiagnosticTrace:
+        if frames <= 0:
+            empty = np.zeros(0, dtype=np.float64)
+            return AudioDiagnosticTrace(
+                time_s=empty,
+                target_rpm=empty,
+                actual_rpm=empty,
+                actuator_pos=empty,
+                actuator_torque=empty,
+                structure_base_velocity=empty,
+                structure_cover_velocity=empty,
+                structure_desk_velocity=empty,
+                output=empty,
+            )
+
+        bearing_noise = self.rng.normal(0.0, 1.0, frames).astype(np.float64, copy=False)
+        windage_noise = self.rng.normal(0.0, 1.0, frames).astype(np.float64, copy=False)
+        scheduled_now = self._prepare_scheduled_events(frames, scheduled_events)
+        self.state, _chunk, diagnostics = render_audio_diagnostic_chunk(
+            self.state,
+            self.mode_bank,
+            self.drive_profile,
+            self.acoustic_profile,
+            frames,
+            scheduled_events=scheduled_now,
+            bearing_noise_raw=bearing_noise,
+            windage_noise_raw=windage_noise,
+        )
+        return diagnostics
 
 
 class HDDAudioEngine:
@@ -223,24 +267,33 @@ class HDDAudioEngine:
         is_flush: bool = False,
         is_spinup: bool = False,
     ) -> None:
-        impulse = None
+        servo_mode = "track" if is_seq else None
         if is_park:
-            impulse = "park"
+            servo_mode = "park"
         elif seek_trigger:
-            impulse = "seek"
+            servo_mode = "seek"
         elif is_cal:
-            impulse = "calibration"
+            servo_mode = "calibration"
 
         self.publish_event(
             HDDAudioEvent(
                 rpm=rpm,
                 emitted_at=self.clock.now(),
+                target_rpm=rpm,
                 queue_depth=queue_depth,
                 op_kind=op_kind,
                 is_sequential=is_seq,
                 is_flush=is_flush,
                 is_spinup=is_spinup,
-                impulse=impulse,
+                servo_mode=servo_mode,
+                track_delta=min(max(seek_dist / 1200.0, 0.0), 1.0) if seek_trigger else 0.0,
+                motion_duration_ms=2.4 if seek_trigger else 0.0,
+                settle_duration_ms=1.5 if (seek_trigger or is_cal or is_park) else 0.0,
+                transfer_activity=(
+                    0.86 if is_flush else 0.70 if op_kind == "writeback" else 0.62 if op_kind == "data" else 0.44
+                )
+                * (1.10 if is_seq else 1.0)
+                * (1.0 + 0.05 * max(queue_depth - 1, 0)),
                 seek_distance=seek_dist,
             )
         )
@@ -287,6 +340,81 @@ class HDDAudioEngine:
                 self.tee_recorder.write_chunk(chunk)
             self.last_render_at = self.clock.now()
             return chunk
+
+    def render_diagnostics(
+        self,
+        total_frames: int,
+        *,
+        chunk_size: int | None = None,
+    ) -> AudioDiagnosticTrace:
+        with self.render_lock:
+            frames_remaining = max(0, total_frames)
+            frames_per_chunk = max(1, chunk_size or self.chunk_size)
+            diagnostics: list[AudioDiagnosticTrace] = []
+            while frames_remaining > 0:
+                frames = min(frames_remaining, frames_per_chunk)
+                scheduled_events = self._schedule_events_for_chunk(frames)
+                diagnostics.append(
+                    self.synthesizer.render_diagnostic_chunk(
+                        frames,
+                        scheduled_events=scheduled_events,
+                    )
+                )
+                frames_remaining -= frames
+
+            if self.tee_recorder is not None and diagnostics:
+                self.tee_recorder.write_chunk(np.concatenate([trace.output for trace in diagnostics]))
+            self.last_render_at = self.clock.now()
+
+        if not diagnostics:
+            empty = np.zeros(0, dtype=np.float64)
+            return AudioDiagnosticTrace(
+                time_s=empty,
+                target_rpm=empty,
+                actual_rpm=empty,
+                actuator_pos=empty,
+                actuator_torque=empty,
+                structure_base_velocity=empty,
+                structure_cover_velocity=empty,
+                structure_desk_velocity=empty,
+                output=empty,
+            )
+        return AudioDiagnosticTrace(
+            time_s=np.concatenate([trace.time_s for trace in diagnostics]),
+            target_rpm=np.concatenate([trace.target_rpm for trace in diagnostics]),
+            actual_rpm=np.concatenate([trace.actual_rpm for trace in diagnostics]),
+            actuator_pos=np.concatenate([trace.actuator_pos for trace in diagnostics]),
+            actuator_torque=np.concatenate([trace.actuator_torque for trace in diagnostics]),
+            structure_base_velocity=np.concatenate([trace.structure_base_velocity for trace in diagnostics]),
+            structure_cover_velocity=np.concatenate([trace.structure_cover_velocity for trace in diagnostics]),
+            structure_desk_velocity=np.concatenate([trace.structure_desk_velocity for trace in diagnostics]),
+            output=np.concatenate([trace.output for trace in diagnostics]),
+        )
+
+    def export_diagnostics_json(
+        self,
+        path: str,
+        total_frames: int,
+        *,
+        chunk_size: int | None = None,
+    ) -> AudioDiagnosticTrace:
+        diagnostics = self.render_diagnostics(total_frames, chunk_size=chunk_size)
+        payload = {
+            "sample_rate": self.fs,
+            "time_s": diagnostics.time_s.tolist(),
+            "target_rpm": diagnostics.target_rpm.tolist(),
+            "actual_rpm": diagnostics.actual_rpm.tolist(),
+            "actuator_pos": diagnostics.actuator_pos.tolist(),
+            "actuator_torque": diagnostics.actuator_torque.tolist(),
+            "structure_base_velocity": diagnostics.structure_base_velocity.tolist(),
+            "structure_cover_velocity": diagnostics.structure_cover_velocity.tolist(),
+            "structure_desk_velocity": diagnostics.structure_desk_velocity.tolist(),
+            "output": diagnostics.output.tolist(),
+        }
+        output_path = Path(path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(payload), encoding="utf-8")
+        return diagnostics
 
     def _audio_callback(self, outdata: Any, frames: int, _time_info: Any, status: Any) -> None:
         outdata[:] = self.render_chunk(frames).reshape(-1, 1)
@@ -336,5 +464,11 @@ class HDDAudioEngine:
             self.tee_recorder = None
         self.last_render_at = None
 
+_runtime_engine: HDDAudioEngine | None = None
 
-engine = HDDAudioEngine()
+
+def get_runtime_engine() -> HDDAudioEngine:
+    global _runtime_engine
+    if _runtime_engine is None:
+        _runtime_engine = HDDAudioEngine()
+    return _runtime_engine

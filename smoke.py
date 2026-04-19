@@ -120,6 +120,8 @@ def run_main_boot_smoke(exercise_cli: bool = True) -> None:
         env["FAKE_HDD_AUDIO"] = "off"
         env["FAKE_HDD_PORT"] = str(port)
         env["FAKE_HDD_BACKING_DIR"] = str(backing_dir)
+        env["FAKE_HDD_COLD_START"] = "off"
+        env["FAKE_HDD_ASYNC_POWER_ON"] = "off"
 
         process = subprocess.Popen(
             [sys.executable, "main.py"],

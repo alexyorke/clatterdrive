@@ -11,8 +11,22 @@ requires-python = ">=3.12"
 dependencies = [
     "cheroot",
     "numpy",
+    "scipy",
     "sounddevice",
     "WsgiDAV",
+]
+
+[project.scripts]
+fake-hdd-fuse = "fake_hdd_fuse.__main__:main"
+
+[dependency-groups]
+dev = [
+    "mypy",
+    "pytest",
+    "pytest-timeout",
+    "pytest-xdist",
+    "ruff",
+    "vulture",
 ]
 
 [tool.setuptools.packages.find]

@@ -6,10 +6,12 @@ This file is intentionally pruned to unfinished work only. Completed items are r
 
 ### HDD Model Realism
 
-- [ ] Add optional retry / ECC / read-recovery behavior so rare long-tail reads exist.
-- [ ] Add optional thermal recalibration / background scan activity that competes with foreground I/O.
-- [ ] Add smarter writeback flush clustering so deferred writes drain as grouped media work.
-- [ ] Decide whether partial-block writes should remain block-granular or model read-modify-write on the tail block.
+### Mechanical / Acoustic Engine
+
+- [ ] Replace the remaining heuristic seek-target generation with a more explicit seek planner that uses velocity / acceleration / jerk limits.
+- [ ] Move windage and bearing generation fully to plant-driven disturbance channels and remove any remaining dependence on host op-kind heuristics.
+- [ ] Split airborne radiation and structure-borne transfer calibration more cleanly so acoustic profiles are output calibration only.
+- [ ] Decide whether to introduce a dedicated `audio/plant.py` module if `audio/core.py` grows again.
 
 ### WebDAV / Filesystem Semantics
 
@@ -19,16 +21,6 @@ This file is intentionally pruned to unfinished work only. Completed items are r
 - [ ] Add explicit support for overwrite-via-copy with partial destination reuse instead of always delete-then-recreate semantics.
 
 ## Correctness
-
-- [ ] Add tests for case-only `COPY` and `MOVE` paths on Windows-backed storage.
-- [ ] Add tests for large directory listings so `readdir` realism is validated beyond tiny trees.
-- [ ] Add tests for repeated `PROPFIND` traffic from real DAV-style clients to validate lookup/listing cache behavior.
-- [ ] Add tests for deleting or moving a directory while writeback is still queued for descendants.
-- [ ] Add tests for deleting a file immediately after a large buffered write before background flush completes.
-- [ ] Add tests for copy-overwrite of large files across multiple chunks while background writeback is active.
-- [ ] Add tests for deep nested rename followed by `PROPFIND` and `GET`.
-- [ ] Decide how much out-of-band backing-store mutation should be tolerated and document the resulting consistency model more precisely.
-- [ ] Add explicit detection or reconciliation for files that change on disk without going through the simulator.
 
 ## Audio / Synthesis
 

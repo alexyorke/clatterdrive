@@ -147,6 +147,28 @@ class FileSystemSimulator:
             self._state, inode = materialize_existing_file(self._state, path, size)
             return inode
 
+    def reconcile_existing_file(self, path: str, size: int) -> FileInode:
+        normalized = normalize_path(path)
+        with self.lock:
+            if normalized not in self._state.files:
+                self._state, inode = materialize_existing_file(self._state, normalized, size)
+                return inode
+
+            current = self._state.files[normalized]
+            if size < current.size:
+                self._state, _ = truncate(self._state, normalized, size=size)
+            elif size > current.size:
+                self._state, _ = write(self._state, normalized, current.size, size - current.size)
+            return self._state.files[normalized]
+
+    def reconcile_missing_path(self, path: str) -> None:
+        normalized = normalize_path(path)
+        with self.lock:
+            if normalized in self._state.files:
+                self._state, _ = delete(self._state, normalized)
+            elif normalized in self._state.directories and normalized != "/":
+                self._state, _ = delete_directory(self._state, normalized, recursive=True)
+
     def create_directory(self, path: str) -> list[IOOperation]:
         with self.lock:
             self._state, operations = create_directory(self._state, path)

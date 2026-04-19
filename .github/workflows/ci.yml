@@ -11,29 +11,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install cheroot mypy numpy pytest pytest-xdist requests ruff sounddevice vulture WsgiDAV
+      - name: Sync dependencies
+        run: uv sync --locked --group dev
 
       - name: Compile
-        run: python -m compileall -q fake_hdd_fuse tests main.py smoke.py profile_core.py profile_fragmentation.py generate_audio_samples.py generate_readme_demo_samples.py hdd_model.py
+        run: uv run python -m compileall -q fake_hdd_fuse tests main.py smoke.py profile_core.py profile_fragmentation.py generate_audio_samples.py generate_readme_demo_samples.py hdd_model.py
 
       - name: Lint
-        run: ruff check .
+        run: uv run ruff check .
 
       - name: Dead Code
-        run: python -m vulture . --min-confidence 80
+        run: uv run python -m vulture . --min-confidence 80
 
       - name: Type Check
-        run: python -m mypy .
+        run: uv run python -m mypy .
 
       - name: Test
-        run: python -m pytest -q
+        run: uv run python -m pytest -q
 
       - name: Smoke
-        run: python smoke.py
+        run: uv run python smoke.py

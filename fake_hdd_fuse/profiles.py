@@ -61,6 +61,8 @@ class AcousticProfile:
     platter_gain: float
     cover_gain: float
     actuator_gain: float
+    structure_gain: float
+    desk_coupling: float
     impulse_gain: float
     sequential_boundary_gain: float
     final_lowpass_hz: float
@@ -336,6 +338,8 @@ ACOUSTIC_PROFILES: dict[str, AcousticProfile] = {
         platter_gain=1.04,
         cover_gain=1.00,
         actuator_gain=1.14,
+        structure_gain=0.46,
+        desk_coupling=0.06,
         impulse_gain=1.12,
         sequential_boundary_gain=1.00,
         final_lowpass_hz=6200.0,
@@ -349,6 +353,8 @@ ACOUSTIC_PROFILES: dict[str, AcousticProfile] = {
         platter_gain=0.88,
         cover_gain=1.06,
         actuator_gain=0.88,
+        structure_gain=0.72,
+        desk_coupling=0.18,
         impulse_gain=0.82,
         sequential_boundary_gain=0.90,
         final_lowpass_hz=3600.0,
@@ -362,6 +368,8 @@ ACOUSTIC_PROFILES: dict[str, AcousticProfile] = {
         platter_gain=0.80,
         cover_gain=1.08,
         actuator_gain=0.82,
+        structure_gain=0.80,
+        desk_coupling=0.12,
         impulse_gain=0.74,
         sequential_boundary_gain=0.80,
         final_lowpass_hz=3000.0,
@@ -375,6 +383,8 @@ ACOUSTIC_PROFILES: dict[str, AcousticProfile] = {
         platter_gain=0.92,
         cover_gain=1.10,
         actuator_gain=0.95,
+        structure_gain=1.22,
+        desk_coupling=1.15,
         impulse_gain=0.92,
         sequential_boundary_gain=1.08,
         final_lowpass_hz=4300.0,

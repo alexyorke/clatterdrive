@@ -25,6 +25,10 @@ class DirtyWrite:
     op_kind: str
     enqueued_at: float
 
+    @property
+    def block_count(self) -> int:
+        return max(1, math.ceil(self.size_bytes / 4096))
+
 class VirtualHDD:
     def __init__(
         self,
@@ -59,7 +63,9 @@ class VirtualHDD:
         self.scheduler = None
         self.lookup_cache: dict[str, float] = {}
         self.lookup_cache_ttl_s = 0.35
+        self.backing_observed_paths: set[str] = set()
         self.copy_chunk_bytes = 1024 * 1024
+        self.writeback_cluster_gap_blocks = max(8, self.model.read_ahead_blocks // 8)
 
         self.writeback_lock = threading.Lock()
         self.writeback_queue: deque[DirtyWrite] = deque()
@@ -72,6 +78,33 @@ class VirtualHDD:
         self.writeback_thread.start()
         if async_power_on and cold_start:
             self.begin_async_power_on()
+
+    @property
+    def _case_insensitive_backing(self) -> bool:
+        return os.name == "nt"
+
+    def _resolve_existing_path(self, path: str) -> str:
+        normalized = self.fs._normalize_path(path)
+        if normalized in self.fs.files or normalized in self.fs.directories:
+            return normalized
+        if not self._case_insensitive_backing:
+            return normalized
+
+        folded = normalized.casefold()
+        for candidate in self.fs.files:
+            if candidate.casefold() == folded:
+                return candidate
+        for candidate in self.fs.directories:
+            if candidate.casefold() == folded:
+                return candidate
+        return normalized
+
+    def _paths_alias(self, left: str, right: str) -> bool:
+        left_path = self.fs._normalize_path(left)
+        right_path = self.fs._normalize_path(right)
+        if self._case_insensitive_backing:
+            return left_path.casefold() == right_path.casefold()
+        return left_path == right_path
 
     def stop(self) -> None:
         try:
@@ -93,6 +126,29 @@ class VirtualHDD:
         normalized = self.fs._normalize_path(path)
         return os.path.join(self.backing_dir, normalized.lstrip("/").replace("/", os.sep))
 
+    def _mark_backing_observed(self, path: str) -> None:
+        self.backing_observed_paths.add(self.fs._normalize_path(path))
+
+    def _forget_backing_prefix(self, path: str) -> None:
+        normalized = self.fs._normalize_path(path)
+        for observed_path in list(self.backing_observed_paths):
+            if observed_path == normalized or observed_path.startswith(f"{normalized}/"):
+                self.backing_observed_paths.discard(observed_path)
+
+    def _rename_backing_prefix(self, source_path: str, dest_path: str) -> None:
+        source = self.fs._normalize_path(source_path)
+        dest = self.fs._normalize_path(dest_path)
+        renamed_paths = {
+            observed_path: dest + observed_path[len(source) :]
+            for observed_path in self.backing_observed_paths
+            if observed_path == source or observed_path.startswith(f"{source}/")
+        }
+        if not renamed_paths:
+            return
+        for observed_path in renamed_paths:
+            self.backing_observed_paths.discard(observed_path)
+        self.backing_observed_paths.update(renamed_paths.values())
+
     def _invalidate_lookup_prefix(self, path: str) -> None:
         normalized = self.fs._normalize_path(path)
         for cached_path in list(self.lookup_cache):
@@ -105,15 +161,36 @@ class VirtualHDD:
         self.lookup_cache.pop(self.fs._parent_dir(normalized), None)
 
     def _ensure_known_path(self, path: str) -> None:
-        normalized = self.fs._normalize_path(path)
-        if normalized in self.fs.files or normalized in self.fs.directories:
+        normalized = self._resolve_existing_path(path)
+        real_path = self._real_path(normalized)
+        if normalized in self.fs.files and normalized in self.backing_observed_paths:
+            if os.path.isfile(real_path):
+                size = os.path.getsize(real_path)
+                if self.fs.files[normalized].size != size:
+                    self.fs.reconcile_existing_file(normalized, size)
+                return
+            if not os.path.exists(real_path):
+                self.fs.reconcile_missing_path(normalized)
+                self.backing_observed_paths.discard(normalized)
+                return
+        if normalized in self.fs.files:
+            return
+        if normalized in self.fs.directories and normalized in self.backing_observed_paths:
+            if os.path.isdir(real_path):
+                return
+            if not os.path.exists(real_path):
+                self.fs.reconcile_missing_path(normalized)
+                self._forget_backing_prefix(normalized)
+                return
+        if normalized in self.fs.directories:
             return
 
-        real_path = self._real_path(normalized)
         if os.path.isdir(real_path):
             self.fs.materialize_existing_directory(normalized)
+            self._mark_backing_observed(normalized)
         elif os.path.isfile(real_path):
             self.fs.materialize_existing_file(normalized, os.path.getsize(real_path))
+            self._mark_backing_observed(normalized)
 
     def _materialize_directory_children(self, path: str) -> None:
         normalized = self.fs._normalize_path(path)
@@ -125,11 +202,13 @@ class VirtualHDD:
             child_path = self.fs._normalize_path(f"{normalized}/{entry.name}")
             if entry.is_dir():
                 self.fs.materialize_existing_directory(child_path)
+                self._mark_backing_observed(child_path)
             elif entry.is_file():
                 self.fs.materialize_existing_file(child_path, entry.stat().st_size)
+                self._mark_backing_observed(child_path)
 
     def ensure_tree_known(self, path: str) -> None:
-        normalized = self.fs._normalize_path(path)
+        normalized = self._resolve_existing_path(path)
         self._ensure_known_path(normalized)
         real_path = self._real_path(normalized)
         if not os.path.isdir(real_path):
@@ -262,21 +341,41 @@ class VirtualHDD:
             batch = self._dequeue_writeback_batch(force=True)
             if not batch:
                 break
-            operations = [
-                IOOperation(
-                    dirty_write.lba,
-                    max(1, math.ceil(dirty_write.size_bytes / self.fs.block_size)),
-                    dirty_write.op_kind,
-                    "writeback",
-                )
-                for dirty_write in batch
-            ]
+            operations = self._cluster_writeback_operations(batch)
             total_ms += self._run_ops(operations, is_write=True)["total_ms"]
             if self.writeback_bytes <= target_bytes:
                 break
         if target_bytes <= 0:
             self._wait_for_writeback_idle()
         return total_ms
+
+    def _cluster_writeback_operations(self, batch: list[DirtyWrite]) -> list[IOOperation]:
+        if not batch:
+            return []
+
+        sorted_batch = sorted(
+            batch,
+            key=lambda dirty_write: (dirty_write.op_kind != "metadata", dirty_write.lba),
+        )
+        operations: list[IOOperation] = []
+        current_start = sorted_batch[0].lba
+        current_end = sorted_batch[0].lba + max(1, math.ceil(sorted_batch[0].size_bytes / self.fs.block_size))
+        current_kind = sorted_batch[0].op_kind
+
+        for dirty_write in sorted_batch[1:]:
+            block_count = max(1, math.ceil(dirty_write.size_bytes / self.fs.block_size))
+            dirty_start = dirty_write.lba
+            dirty_end = dirty_start + block_count
+            if dirty_write.op_kind == current_kind and dirty_start <= current_end + self.writeback_cluster_gap_blocks:
+                current_end = max(current_end, dirty_end)
+                continue
+            operations.append(IOOperation(current_start, current_end - current_start, current_kind, "writeback"))
+            current_start = dirty_start
+            current_end = dirty_end
+            current_kind = dirty_write.op_kind
+
+        operations.append(IOOperation(current_start, current_end - current_start, current_kind, "writeback"))
+        return operations
 
     def _writeback_loop(self) -> None:
         while self.running:
@@ -285,15 +384,7 @@ class VirtualHDD:
                 with self.writeback_lock:
                     self.inflight_writebacks += 1
                     self._refresh_writeback_idle_state_locked()
-                operations = [
-                    IOOperation(
-                        dirty_write.lba,
-                        max(1, math.ceil(dirty_write.size_bytes / self.fs.block_size)),
-                        dirty_write.op_kind,
-                        "writeback",
-                    )
-                    for dirty_write in batch
-                ]
+                operations = self._cluster_writeback_operations(batch)
                 try:
                     self._run_ops(operations, is_write=True)
                 finally:
@@ -316,23 +407,26 @@ class VirtualHDD:
     def _empty_stats(self, op_type: str, total_ms: float = 0.01) -> Stats:
         return empty_operation_stats(op_type, total_ms=total_ms)
 
-    def _merge_stats(self, op_type: str, *results: Stats) -> Stats:
+    def _merge_stats(self, op_type: str, *results: Stats | None) -> Stats:
         return merge_operation_stats(op_type, *results)
 
     def _apply_buffered_write(
         self,
         operations: list[IOOperation],
         data_extent_count: int,
+        pre_read_ops: list[IOOperation] | None = None,
         sync: bool = False,
     ) -> Stats:
         if not operations:
             return self._empty_stats("WRITE")
 
+        pre_read_stats = self._run_ops(pre_read_ops, is_write=False) if pre_read_ops else None
         if sync:
             sync_total = self.sync_all()
             stats = self._run_ops(operations, is_write=True, force_unit_access=True)
-            return stats.with_updates(
-                total_ms=stats.total_ms + sync_total,
+            combined = self._merge_stats("WRITE", pre_read_stats, stats)
+            return combined.with_updates(
+                total_ms=combined.total_ms + sync_total,
                 type="WRITE",
                 extents=data_extent_count,
             )
@@ -340,17 +434,45 @@ class VirtualHDD:
         journal_ops = [operation for operation in operations if operation.kind == "journal"]
         buffered_ops = [operation for operation in operations if operation.kind != "journal"]
         stats = self._run_ops(journal_ops, is_write=True) if journal_ops else OperationStats()
+        combined = self._merge_stats("WRITE", pre_read_stats, stats)
         blocked_ms = self._enqueue_writeback(buffered_ops)
-        return stats.with_updates(
-            total_ms=stats.total_ms + 0.08 + blocked_ms,
-            cache_hit=stats.cache_hit and blocked_ms == 0.0,
+        return combined.with_updates(
+            total_ms=combined.total_ms + 0.08 + blocked_ms,
+            cache_hit=combined.cache_hit and blocked_ms == 0.0,
             type="WRITE",
             extents=data_extent_count,
         )
 
+    def _partial_write_read_ops(self, path: str, offset: int, length: int) -> list[IOOperation]:
+        if length <= 0:
+            return []
+
+        block_size = self.fs.block_size
+        start_block = offset // block_size
+        end_offset = offset + length
+        end_block = (end_offset - 1) // block_size
+        candidate_offsets: list[int] = []
+
+        if offset % block_size != 0:
+            candidate_offsets.append(start_block * block_size)
+        if end_offset % block_size != 0:
+            candidate_offsets.append(end_block * block_size)
+
+        read_ops: list[IOOperation] = []
+        seen: set[tuple[int, int, str, str]] = set()
+        for block_offset in candidate_offsets:
+            for operation in self.fs.read(path, block_offset, block_size):
+                key = (operation.lba, operation.block_count, operation.kind, operation.source)
+                if key in seen:
+                    continue
+                seen.add(key)
+                read_ops.append(operation)
+        return read_ops
+
     def lookup_path(self, path: str) -> Stats:
-        path = self.fs._normalize_path(path)
+        path = self._resolve_existing_path(path)
         self._ensure_known_path(path)
+        path = self._resolve_existing_path(path)
         now = self.clock.now()
         if self.lookup_cache.get(path, 0.0) > now:
             return self._empty_stats("LOOKUP", total_ms=0.02)
@@ -360,8 +482,9 @@ class VirtualHDD:
         return stats.with_updates(type="LOOKUP")
 
     def list_directory(self, path: str) -> Stats:
-        path = self.fs._normalize_path(path)
+        path = self._resolve_existing_path(path)
         self._ensure_known_path(path)
+        path = self._resolve_existing_path(path)
         self._materialize_directory_children(path)
         operations = self.fs.list_directory(path)
         if not operations:
@@ -376,6 +499,8 @@ class VirtualHDD:
         if not operations:
             return self._empty_stats("MKCOL")
         stats = self._run_ops(operations, is_write=True, force_unit_access=True)
+        if os.path.isdir(self._real_path(path)):
+            self._mark_backing_observed(path)
         return stats.with_updates(type="MKCOL", extents=0)
 
     def refresh_directory(self, path: str) -> Stats:
@@ -393,15 +518,19 @@ class VirtualHDD:
         if not operations:
             return self._empty_stats("CREATE")
         stats = self._run_ops(operations, is_write=True, force_unit_access=True)
+        if os.path.exists(self._real_path(path)):
+            self._mark_backing_observed(path)
         return stats.with_updates(type="CREATE", extents=0)
 
     def copy_file(self, source_path: str, dest_path: str) -> Stats:
-        source_path = self.fs._normalize_path(source_path)
+        source_path = self._resolve_existing_path(source_path)
         dest_path = self.fs._normalize_path(dest_path)
         self._ensure_known_path(source_path)
         self._ensure_known_path(self.fs._parent_dir(dest_path))
 
         if source_path not in self.fs.files:
+            return self._empty_stats("COPY")
+        if self._paths_alias(source_path, dest_path):
             return self._empty_stats("COPY")
         if dest_path in self.fs.directories:
             raise IsADirectoryError(dest_path)
@@ -426,10 +555,12 @@ class VirtualHDD:
             copy_stats.append(self._merge_stats("COPY", read_stats, write_stats))
 
         self._invalidate_lookup(dest_path)
+        if os.path.exists(self._real_path(dest_path)):
+            self._mark_backing_observed(dest_path)
         return self._merge_stats("COPY", *copy_stats)
 
     def prepare_overwrite(self, path: str) -> Stats:
-        path = self.fs._normalize_path(path)
+        path = self._resolve_existing_path(path)
         self._ensure_known_path(path)
         if path not in self.fs.files:
             return empty_operation_stats("TRUNCATE", total_ms=0.0)
@@ -449,8 +580,10 @@ class VirtualHDD:
         is_write: bool = False,
         sync: bool = False,
     ) -> Stats:
-        path = self.fs._normalize_path(path)
+        path = self._resolve_existing_path(path)
         self._ensure_known_path(path)
+        path = self._resolve_existing_path(path)
+        pre_read_ops = self._partial_write_read_ops(path, offset, length) if is_write else []
         operations = self.fs.write(path, offset, length) if is_write else self.fs.read(path, offset, length)
         data_extent_count = len([operation for operation in operations if operation.kind == "data"])
 
@@ -459,15 +592,18 @@ class VirtualHDD:
 
         if is_write:
             self._invalidate_lookup(path)
-            return self._apply_buffered_write(operations, data_extent_count, sync=sync)
+            stats = self._apply_buffered_write(operations, data_extent_count, pre_read_ops=pre_read_ops, sync=sync)
+            if os.path.exists(self._real_path(path)):
+                self._mark_backing_observed(path)
+            return stats
 
         stats = self._run_ops(operations, is_write=False)
         return stats.with_updates(extents=data_extent_count)
 
     def rename_path(self, source_path: str, dest_path: str) -> Stats:
-        source_path = self.fs._normalize_path(source_path)
+        source_path = self._resolve_existing_path(source_path)
         dest_path = self.fs._normalize_path(dest_path)
-        self._ensure_known_path(self.fs._parent_dir(dest_path))
+        self._ensure_known_path(self._resolve_existing_path(self.fs._parent_dir(dest_path)))
         operations = self.fs.rename(source_path, dest_path)
         self._invalidate_lookup(source_path)
         self._invalidate_lookup(dest_path)
@@ -475,24 +611,30 @@ class VirtualHDD:
         if not operations:
             return self._empty_stats("MOVE")
         stats = self._run_ops(operations, is_write=True, force_unit_access=True)
+        self._rename_backing_prefix(source_path, dest_path)
         return stats.with_updates(type="MOVE", extents=0)
 
     def delete_path(self, path: str) -> Stats:
-        path = self.fs._normalize_path(path)
+        path = self._resolve_existing_path(path)
         self._ensure_known_path(path)
+        path = self._resolve_existing_path(path)
         self._invalidate_lookup(path)
+        sync_total = self.sync_all()
         operations = self.fs.delete(path)
         if not operations:
             return self._empty_stats("DELETE")
         stats = self._run_ops(operations, is_write=True, force_unit_access=True)
-        return stats.with_updates(type="DELETE", extents=0)
+        self._forget_backing_prefix(path)
+        return stats.with_updates(type="DELETE", extents=0, total_ms=stats.total_ms + sync_total)
 
     def delete_directory(self, path: str) -> Stats:
-        path = self.fs._normalize_path(path)
+        path = self._resolve_existing_path(path)
+        sync_total = self.sync_all()
         operations = self.fs.delete_directory(path)
         self._invalidate_lookup(path)
         self._invalidate_lookup_prefix(path)
         if not operations:
             return self._empty_stats("DELETE")
         stats = self._run_ops(operations, is_write=True, force_unit_access=True)
-        return stats.with_updates(type="DELETE", extents=0)
+        self._forget_backing_prefix(path)
+        return stats.with_updates(type="DELETE", extents=0, total_ms=stats.total_ms + sync_total)

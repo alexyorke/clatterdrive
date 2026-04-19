@@ -33,3 +33,10 @@ def tmp_path(request: FixtureRequest) -> Generator[Path, None, None]:
         yield path
     finally:
         shutil.rmtree(path, ignore_errors=True)
+
+
+@pytest.fixture
+def isolated_backing_dir(tmp_path: Path) -> Generator[Path, None, None]:
+    backing = tmp_path / "backing"
+    backing.mkdir()
+    yield backing
