@@ -3,9 +3,9 @@ requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "fake-hdd-fuse"
+name = "clatterdrive"
 version = "0.1.0"
-description = "Novelty HDD latency and audio simulator exposed over WebDAV."
+description = "ClatterDrive: novelty HDD latency and audio simulator exposed over WebDAV."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.scripts]
-fake-hdd-fuse = "fake_hdd_fuse.__main__:main"
+clatterdrive = "clatterdrive.__main__:main"
 
 [dependency-groups]
 dev = [
@@ -30,7 +30,7 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["fake_hdd_fuse*"]
+include = ["clatterdrive*"]
 
 [tool.ruff]
 target-version = "py312"

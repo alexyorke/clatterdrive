@@ -6,10 +6,10 @@ from typing import Any, cast
 
 from _pytest.monkeypatch import MonkeyPatch
 
-from fake_hdd_fuse.hdd import VirtualHDD
-from fake_hdd_fuse.profiles import resolve_acoustic_profile, resolve_drive_profile
-from fake_hdd_fuse.scheduler import OSScheduler
-from fake_hdd_fuse.storage_events import StorageEvent
+from clatterdrive.hdd import VirtualHDD
+from clatterdrive.profiles import resolve_acoustic_profile, resolve_drive_profile
+from clatterdrive.scheduler import OSScheduler
+from clatterdrive.storage_events import StorageEvent
 
 def test_virtual_hdd_writeback_queue_flushes(isolated_backing_dir: Path) -> None:
     vhdd = VirtualHDD(str(isolated_backing_dir), latency_scale=0.0)

@@ -13,8 +13,8 @@ from cheroot import wsgi
 import numpy as np
 from wsgidav.wsgidav_app import WsgiDAVApp
 
-from fake_hdd_fuse.audio import HDDAudioEvent
-from fake_hdd_fuse.webdav import HDDProvider
+from clatterdrive.audio import HDDAudioEvent
+from clatterdrive.webdav import HDDProvider
 
 
 class _NoAuthWsgiDAVApp(WsgiDAVApp):

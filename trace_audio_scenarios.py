@@ -7,8 +7,8 @@ from typing import cast
 import numpy as np
 import numpy.typing as npt
 
-from fake_hdd_fuse.audio import HDDAudioEngine
-from fake_hdd_fuse.storage_events import StorageEventRecorder, storage_event_to_dict
+from clatterdrive.audio import HDDAudioEngine
+from clatterdrive.storage_events import StorageEventRecorder, storage_event_to_dict
 from generate_audio_samples import (
     EXTRA_SCENARIOS,
     ROOT,
@@ -131,7 +131,7 @@ def _render_trace_svg(
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{int(width)}" height="{int(height)}" viewBox="0 0 {width} {height}">',
         '<style>text{font-family:Consolas,monospace;font-size:14px} .label{font-weight:bold}</style>',
         '<rect x="0" y="0" width="100%" height="100%" fill="#fafafa"/>',
-        '<text x="40" y="28" class="label">fake_hdd_fuse trace view</text>',
+        '<text x="40" y="28" class="label">ClatterDrive trace view</text>',
     ]
 
     for index, (label, values, color) in enumerate(panels):

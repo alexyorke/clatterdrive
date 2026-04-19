@@ -100,7 +100,7 @@ wheels = [
 ]
 
 [[package]]
-name = "fake-hdd-fuse"
+name = "clatterdrive"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

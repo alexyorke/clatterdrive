@@ -1,5 +1,5 @@
 services:
-  fake-hdd-fuse:
+  clatterdrive:
     build:
       context: .
       dockerfile: Dockerfile

@@ -8,8 +8,8 @@ from pathlib import Path
 import numpy as np
 from _pytest.monkeypatch import MonkeyPatch
 
-from fake_hdd_fuse.audio import HDDAudioEngine, HDDAudioEvent
-from fake_hdd_fuse.audio.core import render_chunk as render_audio_chunk
+from clatterdrive.audio import HDDAudioEngine, HDDAudioEvent
+from clatterdrive.audio.core import render_chunk as render_audio_chunk
 from tests.helpers import _audio_event, _wav_metrics
 
 

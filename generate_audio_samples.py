@@ -8,9 +8,9 @@ from pathlib import Path
 import numpy as np
 import numpy.typing as npt
 
-from fake_hdd_fuse.audio import HDDAudioEngine
-from fake_hdd_fuse.hdd import HDDLatencyModel, StartupTracePoint
-from fake_hdd_fuse.profiles import AcousticProfile, DriveProfile
+from clatterdrive.audio import HDDAudioEngine
+from clatterdrive.hdd import HDDLatencyModel, StartupTracePoint
+from clatterdrive.profiles import AcousticProfile, DriveProfile
 
 
 ROOT = Path(__file__).resolve().parent
@@ -273,9 +273,22 @@ def generate_readme_demo_samples() -> list[Path]:
             _load_power_on_trace()[1] + 3.0,
             update_spinup_idle,
             seed=7,
+            acoustic_profile="drive_on_desk",
         ),
-        render_scenario("sequential-read-stream", 6.0, update_sequential_read, seed=11),
-        render_scenario("random-seek-journal-flush", 6.0, update_random_flush, seed=13),
+        render_scenario(
+            "sequential-read-stream",
+            6.0,
+            update_sequential_read,
+            seed=11,
+            acoustic_profile="mounted_in_case",
+        ),
+        render_scenario(
+            "random-seek-journal-flush",
+            6.0,
+            update_random_flush,
+            seed=13,
+            acoustic_profile="bare_drive_lab",
+        ),
     ]
 
 

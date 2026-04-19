@@ -4,7 +4,7 @@ import random
 
 import pytest
 
-from fake_hdd_fuse.fs import FileSystemSimulator
+from clatterdrive.fs import FileSystemSimulator
 
 def test_filesystem_write_emits_metadata_and_data() -> None:
     fs = FileSystemSimulator(total_gb=1)

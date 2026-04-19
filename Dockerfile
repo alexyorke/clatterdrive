@@ -18,7 +18,7 @@ RUN apt-get update \
 COPY --from=uv /uv /uvx /bin/
 
 COPY pyproject.toml uv.lock README.md ./
-COPY fake_hdd_fuse ./fake_hdd_fuse
+COPY clatterdrive ./clatterdrive
 COPY main.py hdd_model.py smoke.py profile_core.py profile_fragmentation.py generate_audio_samples.py generate_readme_demo_samples.py ./
 
 RUN uv sync --locked --no-dev
@@ -26,4 +26,4 @@ RUN uv sync --locked --no-dev
 EXPOSE 8080
 VOLUME ["/data"]
 
-CMD ["uv", "run", "--locked", "python", "-m", "fake_hdd_fuse"]
+CMD ["uv", "run", "--locked", "python", "-m", "clatterdrive"]

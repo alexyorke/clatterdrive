@@ -6,8 +6,8 @@ from typing import Any
 
 import pytest
 
-from fake_hdd_fuse.scheduler import OSScheduler
-from fake_hdd_fuse.scheduler_core import (
+from clatterdrive.scheduler import OSScheduler
+from clatterdrive.scheduler_core import (
     build_request,
     can_submit,
     completion_ids,

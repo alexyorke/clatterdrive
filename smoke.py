@@ -12,7 +12,7 @@ import urllib.parse
 import urllib.request
 from typing import Final
 
-from fake_hdd_fuse.runtime.paths import ROOT, workspace_tempdir
+from clatterdrive.runtime.paths import ROOT, workspace_tempdir
 
 
 STARTUP_TIMEOUT_S: Final[float] = 20.0
@@ -177,7 +177,7 @@ def run_main_boot_smoke(exercise_cli: bool = True) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Quick local smoke validation for fake_hdd_fuse.")
+    parser = argparse.ArgumentParser(description="Quick local smoke validation for ClatterDrive.")
     parser.add_argument(
         "--skip-cli",
         action="store_true",

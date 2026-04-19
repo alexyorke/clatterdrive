@@ -5,9 +5,9 @@ import time
 import numpy as np
 import pytest
 
-from fake_hdd_fuse.hdd import HDDLatencyModel
-from fake_hdd_fuse.hdd.core import CacheSpan
-from fake_hdd_fuse.storage_events import StorageEvent
+from clatterdrive.hdd import HDDLatencyModel
+from clatterdrive.hdd.core import CacheSpan
+from clatterdrive.storage_events import StorageEvent
 
 def test_partial_read_cache_is_not_reported_as_full_hit() -> None:
     model = HDDLatencyModel(addressable_blocks=4096, latency_scale=0.0)
