@@ -45,6 +45,7 @@ def _concat_diagnostics(segments: list[DiagnosticPayload]) -> DiagnosticPayload:
             "actuator_torque": empty,
             "structure_base_velocity": empty,
             "structure_cover_velocity": empty,
+            "structure_enclosure_velocity": empty,
             "structure_desk_velocity": empty,
             "output": empty,
         }
@@ -217,6 +218,7 @@ def render_trace_scenario(
                 "actuator_torque": diagnostics.actuator_torque,
                 "structure_base_velocity": diagnostics.structure_base_velocity,
                 "structure_cover_velocity": diagnostics.structure_cover_velocity,
+                "structure_enclosure_velocity": diagnostics.structure_enclosure_velocity,
                 "structure_desk_velocity": diagnostics.structure_desk_velocity,
                 "output": diagnostics.output,
             }

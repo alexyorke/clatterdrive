@@ -112,6 +112,7 @@ class AudioRenderState:
     actuator_track_hz: float = 54.0
     actuator_damping_ratio: float = 0.86
     actuator_direction: float = 1.0
+    pending_contact_impulse: float = 0.0
     seek_plan: SeekPlan | None = None
     seek_plan_elapsed_s: float = 0.0
     settle_time_remaining: float = 0.0
@@ -125,7 +126,7 @@ class AudioRenderState:
     actuator_vel_modes: FloatArray = field(default_factory=lambda: np.zeros(0, dtype=np.float64))
     structure_disp: FloatArray = field(default_factory=lambda: np.zeros(0, dtype=np.float64))
     structure_vel: FloatArray = field(default_factory=lambda: np.zeros(0, dtype=np.float64))
-    structure_state: FloatArray = field(default_factory=lambda: np.zeros(6, dtype=np.float64))
+    structure_state: FloatArray = field(default_factory=lambda: np.zeros(8, dtype=np.float64))
     bearing_zi: FloatArray = field(default_factory=lambda: np.zeros((0, 2), dtype=np.float64))
     windage_zi: FloatArray = field(default_factory=lambda: np.zeros((0, 2), dtype=np.float64))
     final_highpass_zi: FloatArray = field(default_factory=lambda: np.zeros((0, 2), dtype=np.float64))
@@ -141,6 +142,7 @@ class AudioDiagnosticTrace:
     actuator_torque: FloatArray
     structure_base_velocity: FloatArray
     structure_cover_velocity: FloatArray
+    structure_enclosure_velocity: FloatArray
     structure_desk_velocity: FloatArray
     output: FloatArray
 
@@ -237,65 +239,102 @@ def _discretize_modes(modes: Sequence[MechanicalMode], sample_rate: int) -> Disc
     )
 
 
-def _build_structure_model(sample_rate: int, drive_profile: DriveProfile) -> CoupledStructureModel:
+def _build_structure_model(
+    sample_rate: int,
+    drive_profile: DriveProfile,
+    acoustic_profile: AcousticProfile,
+) -> CoupledStructureModel:
     dt = 1.0 / sample_rate
     masses = np.array(
         [
             1.0 + 0.14 * max(drive_profile.platters - 1, 0),
             0.82 + 0.06 * max(drive_profile.platters - 1, 0),
-            1.35 if drive_profile.helium else 1.65,
+            (1.10 if drive_profile.helium else 1.45) * acoustic_profile.enclosure_mass_scale,
+            2.8 * acoustic_profile.table_mass_scale,
         ],
         dtype=np.float64,
     )
     frequencies = np.array(
         [
-            72.0 * drive_profile.cover_frequency_scale,
-            120.0 * drive_profile.cover_frequency_scale,
-            167.0 * drive_profile.cover_frequency_scale,
+            82.0 * drive_profile.cover_frequency_scale,
+            134.0 * drive_profile.cover_frequency_scale,
+            96.0 * acoustic_profile.enclosure_resonance_scale,
+            58.0 * acoustic_profile.table_resonance_scale,
         ],
         dtype=np.float64,
     )
     stiffness = (2.0 * np.pi * frequencies) ** 2 * masses
-    k12 = 0.85 * stiffness[1]
-    k13 = 0.45 * stiffness[0]
-    k23 = 0.72 * stiffness[2]
+    k12 = 0.72 * min(stiffness[0], stiffness[1])
+    k13 = acoustic_profile.enclosure_coupling * 0.64 * min(stiffness[0], stiffness[2])
+    k23 = acoustic_profile.internal_air_coupling * 0.36 * min(stiffness[1], stiffness[2])
+    k34 = acoustic_profile.desk_coupling * 0.70 * min(stiffness[2], stiffness[3])
+    k14 = acoustic_profile.desk_coupling * 0.18 * min(stiffness[0], stiffness[3])
     k_matrix = np.array(
         [
-            [stiffness[0] + k12 + k13, -k12, -k13],
-            [-k12, stiffness[1] + k12 + k23, -k23],
-            [-k13, -k23, stiffness[2] + k13 + k23],
+            [stiffness[0] + k12 + k13 + k14, -k12, -k13, -k14],
+            [-k12, stiffness[1] + k12 + k23, -k23, 0.0],
+            [-k13, -k23, stiffness[2] + k13 + k23 + k34, -k34],
+            [-k14, 0.0, -k34, stiffness[3] + k14 + k34],
         ],
         dtype=np.float64,
     )
-    alpha = 7.5
-    beta = 6.0e-5
-    c_matrix = alpha * np.diag(masses) + beta * k_matrix
+    alpha = 6.5 * acoustic_profile.mount_damping_scale
+    beta = 5.4e-5 * acoustic_profile.mount_damping_scale
+    mass_damping = np.diag(
+        np.array(
+            [
+                0.0,
+                0.0,
+                5.2 * acoustic_profile.mount_damping_scale,
+                3.8 * acoustic_profile.table_damping_scale,
+            ],
+            dtype=np.float64,
+        )
+    )
+    c_matrix = alpha * np.diag(masses) + beta * k_matrix + mass_damping
     inv_mass = np.diag(1.0 / masses)
 
     g_matrix = np.array(
         [
-            [1.00, 0.42],
-            [0.28, 0.92],
-            [0.22, 0.34],
+            [1.00, 0.40, 0.05],
+            [0.18, 0.95, 0.26],
+            [
+                0.48 * acoustic_profile.enclosure_coupling,
+                0.28 * acoustic_profile.enclosure_coupling,
+                0.92 * acoustic_profile.internal_air_coupling,
+            ],
+            [
+                0.14 * acoustic_profile.desk_coupling,
+                0.12 * acoustic_profile.desk_coupling,
+                0.24 * acoustic_profile.desk_coupling,
+            ],
         ],
         dtype=np.float64,
     )
 
-    zeros = np.zeros((3, 3), dtype=np.float64)
-    identity = np.eye(3, dtype=np.float64)
+    zeros = np.zeros((4, 4), dtype=np.float64)
+    identity = np.eye(4, dtype=np.float64)
     a_matrix = np.block(
         [
             [zeros, identity],
             [-(inv_mass @ k_matrix), -(inv_mass @ c_matrix)],
         ]
     )
-    b_matrix = np.vstack([np.zeros((3, 2), dtype=np.float64), inv_mass @ g_matrix])
+    b_matrix = np.vstack([np.zeros((4, 3), dtype=np.float64), inv_mass @ g_matrix])
     ad, bd, _, _, _ = signal.cont2discrete(
-        (a_matrix, b_matrix, np.eye(6, dtype=np.float64), np.zeros((6, 2), dtype=np.float64)),
+        (a_matrix, b_matrix, np.eye(8, dtype=np.float64), np.zeros((8, 3), dtype=np.float64)),
         dt,
         method="zoh",
     )
-    velocity_readout = np.array([0.82, 0.74, 0.95], dtype=np.float64)
+    velocity_readout = np.array(
+        [
+            0.28,
+            0.18,
+            acoustic_profile.enclosure_radiation_gain,
+            acoustic_profile.table_radiation_gain,
+        ],
+        dtype=np.float64,
+    )
     return CoupledStructureModel(
         ad=np.asarray(ad, dtype=np.float64),
         bd=np.asarray(bd, dtype=np.float64),
@@ -409,7 +448,7 @@ def build_mode_bank(
         cover_step=_discretize_modes(cover_modes, sample_rate),
         actuator_step=_discretize_modes(actuator_modes, sample_rate),
         structure_step=_discretize_modes(structure_modes, sample_rate),
-        coupled_structure=_build_structure_model(sample_rate, drive_profile),
+        coupled_structure=_build_structure_model(sample_rate, drive_profile, acoustic_profile),
         plant_config=_build_plant_config(drive_profile),
         bearing_sos=np.asarray(bearing_sos, dtype=np.float64),
         windage_sos=np.asarray(windage_sos, dtype=np.float64),
@@ -434,7 +473,7 @@ def initialize_render_state(
         actuator_vel_modes=np.zeros(len(mode_bank.actuator_modes), dtype=np.float64),
         structure_disp=np.zeros(len(mode_bank.structure_modes), dtype=np.float64),
         structure_vel=np.zeros(len(mode_bank.structure_modes), dtype=np.float64),
-        structure_state=np.zeros(6, dtype=np.float64),
+        structure_state=np.zeros(8, dtype=np.float64),
         bearing_zi=np.zeros((mode_bank.bearing_sos.shape[0], 2), dtype=np.float64),
         windage_zi=np.zeros((mode_bank.windage_sos.shape[0], 2), dtype=np.float64),
         final_highpass_zi=np.zeros((mode_bank.final_highpass_sos.shape[0], 2), dtype=np.float64),
@@ -532,7 +571,7 @@ def _apply_motion_command(
 
     return replace(
         state,
-        heads_loaded=command_mode != "park",
+        heads_loaded=state.heads_loaded if command_mode == "park" else True,
         servo_mode=command_mode,
         actuator_target_pos=target_pos,
         actuator_seek_hz=seek_hz,
@@ -555,6 +594,8 @@ def apply_event(
 ) -> AudioRenderState:
     del start_frame
     target_rpm = event.target_rpm if event.target_rpm is not None else event.rpm
+    command_mode = _derive_servo_mode(event)
+    heads_loaded = state.heads_loaded if event.heads_loaded is None or command_mode == "park" else event.heads_loaded
     next_state = replace(
         state,
         target_rpm=target_rpm,
@@ -563,7 +604,7 @@ def apply_event(
         is_flush=event.is_flush,
         is_spinup=event.is_spinup,
         is_sequential=event.is_sequential,
-        heads_loaded=state.heads_loaded if event.heads_loaded is None else event.heads_loaded,
+        heads_loaded=heads_loaded,
         transfer_activity=_derive_transfer_activity(event),
     )
     if not event.is_spinup and target_rpm > 0.0 and state.spindle_omega <= 0.0:
@@ -580,9 +621,14 @@ def apply_event(
             heads_loaded=True,
         )
 
-    command_mode = _derive_servo_mode(event)
     if command_mode in {"seek", "park", "calibration"}:
-        return _apply_motion_command(next_state, event, mode_bank.plant_config, command_mode)
+        commanded = _apply_motion_command(next_state, event, mode_bank.plant_config, command_mode)
+        unpark_impulse = 0.0
+        if not state.heads_loaded and commanded.heads_loaded:
+            unpark_impulse = 0.24 if command_mode == "calibration" else 0.38
+        if unpark_impulse > 0.0:
+            commanded = replace(commanded, pending_contact_impulse=unpark_impulse)
+        return commanded
     if command_mode == "track":
         track_hz = _clamp(
             0.72 * _command_frequency(max(next_state.settle_time_remaining, drive_profile.settle_ms / 1000.0), 0.95),
@@ -632,17 +678,20 @@ def _simulate_modal_bank(
 def _simulate_coupled_structure(
     spindle_force: FloatArray,
     actuator_force: FloatArray,
+    enclosure_force: FloatArray,
     model: CoupledStructureModel,
     structure_state: FloatArray,
 ) -> tuple[FloatArray, FloatArray, FloatArray]:
     state = np.array(structure_state, copy=True)
     response = np.zeros(len(spindle_force), dtype=np.float64)
-    velocity_components = np.zeros((len(spindle_force), 3), dtype=np.float64)
-    for index, (spindle_sample, actuator_sample) in enumerate(zip(spindle_force, actuator_force, strict=True)):
-        inputs = np.array([spindle_sample, actuator_sample], dtype=np.float64)
+    velocity_components = np.zeros((len(spindle_force), 4), dtype=np.float64)
+    for index, (spindle_sample, actuator_sample, enclosure_sample) in enumerate(
+        zip(spindle_force, actuator_force, enclosure_force, strict=True)
+    ):
+        inputs = np.array([spindle_sample, actuator_sample, enclosure_sample], dtype=np.float64)
         state = model.ad @ state + model.bd @ inputs
-        velocity_components[index] = state[3:]
-        response[index] = float(np.dot(model.velocity_readout, state[3:]))
+        velocity_components[index] = state[4:]
+        response[index] = float(np.dot(model.velocity_readout, state[4:]))
     return response, state, velocity_components
 
 
@@ -669,6 +718,7 @@ def _render_segment_internal(
                 actuator_torque=empty,
                 structure_base_velocity=empty,
                 structure_cover_velocity=empty,
+                structure_enclosure_velocity=empty,
                 structure_desk_velocity=empty,
                 output=empty,
             )
@@ -686,6 +736,7 @@ def _render_segment_internal(
     actuator_torque = state.actuator_torque
     actuator_torque_cmd = state.actuator_torque_cmd
     actuator_integrator = state.actuator_integrator
+    pending_contact_impulse = state.pending_contact_impulse
     seek_plan = state.seek_plan
     seek_plan_elapsed_s = state.seek_plan_elapsed_s
     seek_time_remaining = state.seek_time_remaining
@@ -699,6 +750,9 @@ def _render_segment_internal(
     actuator_reaction = np.zeros(frames, dtype=np.float64)
     actuator_jerk = np.zeros(frames, dtype=np.float64)
     track_error_trace = np.zeros(frames, dtype=np.float64)
+    servo_wedge_trace = np.zeros(frames, dtype=np.float64)
+    servo_wedge_structure_trace = np.zeros(frames, dtype=np.float64)
+    contact_trace = np.zeros(frames, dtype=np.float64)
     actuator_pos_trace = np.zeros(frames, dtype=np.float64)
     actuator_torque_trace = np.zeros(frames, dtype=np.float64)
     target_rpm_trace = np.zeros(frames, dtype=np.float64)
@@ -706,6 +760,9 @@ def _render_segment_internal(
     prev_actuator_torque = actuator_torque
     nominal_omega = drive_profile.rpm * 2.0 * math.pi / 60.0
     target_omega = max(state.target_rpm, 0.0) * 2.0 * math.pi / 60.0
+    if pending_contact_impulse > 0.0 and frames > 0:
+        contact_trace[0] += pending_contact_impulse
+        pending_contact_impulse = 0.0
     for index in range(frames):
         target_omega = max(state.target_rpm, 0.0) * 2.0 * math.pi / 60.0
         omega_error = target_omega - omega
@@ -733,6 +790,7 @@ def _render_segment_internal(
 
         while heads_loaded and servo_phase >= 1.0:
             servo_phase -= 1.0
+            prev_torque_cmd = actuator_torque_cmd
             disturbance = (
                 config.rro_1x * math.sin(theta + 0.3)
                 + config.rro_2x * math.sin(2.0 * theta + 1.1)
@@ -767,6 +825,23 @@ def _render_segment_internal(
                 -config.actuator_torque_max,
                 config.actuator_torque_max,
             )
+            command_step = actuator_torque_cmd - prev_torque_cmd
+            wedge_scale = abs(command_step) / max(config.actuator_torque_max, 1e-9)
+            error_scale = min(abs(error) / 0.14, 1.8)
+            transfer_scale = 0.25 * state.transfer_activity
+            if servo_mode == "seek":
+                mode_scale = 1.0
+            elif servo_mode == "track":
+                mode_scale = 0.42
+            elif servo_mode == "calibration":
+                mode_scale = 1.25
+            else:
+                mode_scale = 1.55
+            wedge_mag = mode_scale * (0.010 + 0.060 * wedge_scale + 0.035 * error_scale + transfer_scale)
+            wedge_sign_source = command_step if abs(command_step) > 1e-9 else error
+            wedge_sign = math.copysign(1.0, wedge_sign_source if abs(wedge_sign_source) > 1e-9 else 1.0)
+            servo_wedge_trace[index] += wedge_sign * wedge_mag
+            servo_wedge_structure_trace[index] += wedge_sign * wedge_mag * (1.8 if servo_mode == "park" else 1.25)
 
         actuator_torque += (actuator_torque_cmd - actuator_torque) * min(
             dt / config.actuator_torque_time_constant_s,
@@ -783,7 +858,9 @@ def _render_segment_internal(
             and abs(actuator_vel) < 2.8
             and settle_time_remaining <= 0.0
         ):
-            servo_mode = "idle" if state.target_rpm <= 0.0 or state.servo_mode == "park" else "track"
+            if servo_mode == "park":
+                contact_trace[index] += math.copysign(1.45, actuator_vel if abs(actuator_vel) > 1e-9 else -state.actuator_direction)
+            servo_mode = "idle" if state.target_rpm <= 0.0 or servo_mode == "park" else "track"
             if servo_mode == "idle":
                 heads_loaded = False
             seek_plan = None
@@ -832,14 +909,32 @@ def _render_segment_internal(
 
     direct_force = imbalance * 0.72 + commutation * 0.58 + bearing_force * 0.34
     platter_force = imbalance * 0.30 + windage_force * 0.96 + 0.10 * commutation
-    cover_force = imbalance * 0.18 + windage_force * 0.30 + 0.18 * commutation
+    cover_force = imbalance * 0.18 + windage_force * 0.30 + 0.18 * commutation + 0.24 * servo_wedge_trace
     actuator_force = (
-        0.26 * actuator_reaction
-        + 0.00011 * actuator_jerk
+        0.18 * actuator_reaction
+        + 0.00008 * actuator_jerk
         + 0.075 * track_error_trace
+        + 0.42 * servo_wedge_trace
+        + 0.62 * contact_trace
     )
-    structure_force = 0.18 * imbalance + 0.85 * spindle_reaction
-    structure_actuator_force = 0.95 * actuator_reaction + 0.00018 * actuator_jerk
+    structure_force = drive_profile.boundary_excitation_gain * (
+        0.18 * imbalance
+        + 0.85 * spindle_reaction
+        + 0.55 * servo_wedge_structure_trace
+        + 1.65 * contact_trace
+    )
+    structure_actuator_force = drive_profile.boundary_excitation_gain * (
+        1.12 * actuator_reaction
+        + 0.00022 * actuator_jerk
+        + 0.70 * servo_wedge_structure_trace
+        + 2.40 * contact_trace
+    )
+    enclosure_internal_force = drive_profile.boundary_excitation_gain * (
+        0.62 * windage_force
+        + 0.24 * cover_force
+        + 0.16 * platter_force
+        + 0.08 * bearing_force
+    )
 
     platter, platter_disp, platter_vel = _simulate_modal_bank(
         platter_force,
@@ -868,6 +963,7 @@ def _render_segment_internal(
     coupled_structure, structure_state, structure_velocity_components = _simulate_coupled_structure(
         structure_force,
         structure_actuator_force,
+        enclosure_internal_force,
         mode_bank.coupled_structure,
         state.structure_state,
     )
@@ -878,7 +974,7 @@ def _render_segment_internal(
         cover=cover,
         actuator=actuator_modes,
         structure_modes=structure_modes,
-        coupled_structure=coupled_structure * (1.0 + acoustic_profile.desk_coupling),
+        coupled_structure=coupled_structure,
     )
     airborne = mix_voice_path(voices, "airborne")
     structure = mix_voice_path(voices, "structure")
@@ -913,6 +1009,7 @@ def _render_segment_internal(
         settle_time_remaining=settle_time_remaining,
         servo_mode=servo_mode,
         heads_loaded=heads_loaded,
+        pending_contact_impulse=pending_contact_impulse,
         platter_disp=platter_disp,
         platter_vel=platter_vel,
         cover_disp=cover_disp,
@@ -939,7 +1036,8 @@ def _render_segment_internal(
             actuator_torque=actuator_torque_trace,
             structure_base_velocity=structure_velocity_components[:, 0],
             structure_cover_velocity=structure_velocity_components[:, 1],
-            structure_desk_velocity=structure_velocity_components[:, 2],
+            structure_enclosure_velocity=structure_velocity_components[:, 2],
+            structure_desk_velocity=structure_velocity_components[:, 3],
             output=output,
         )
     return next_state, output, diagnostics
@@ -978,6 +1076,7 @@ def _concatenate_diagnostics(segments: Sequence[AudioDiagnosticTrace]) -> AudioD
             actuator_torque=empty,
             structure_base_velocity=empty,
             structure_cover_velocity=empty,
+            structure_enclosure_velocity=empty,
             structure_desk_velocity=empty,
             output=empty,
         )
@@ -989,6 +1088,7 @@ def _concatenate_diagnostics(segments: Sequence[AudioDiagnosticTrace]) -> AudioD
         actuator_torque=np.concatenate([segment.actuator_torque for segment in segments]),
         structure_base_velocity=np.concatenate([segment.structure_base_velocity for segment in segments]),
         structure_cover_velocity=np.concatenate([segment.structure_cover_velocity for segment in segments]),
+        structure_enclosure_velocity=np.concatenate([segment.structure_enclosure_velocity for segment in segments]),
         structure_desk_velocity=np.concatenate([segment.structure_desk_velocity for segment in segments]),
         output=np.concatenate([segment.output for segment in segments]),
     )
@@ -1018,6 +1118,7 @@ def render_diagnostic_chunk(
                 actuator_torque=empty,
                 structure_base_velocity=empty,
                 structure_cover_velocity=empty,
+                structure_enclosure_velocity=empty,
                 structure_desk_velocity=empty,
                 output=empty,
             ),

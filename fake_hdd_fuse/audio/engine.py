@@ -179,6 +179,7 @@ class HDDAudioSynthesizer:
                 actuator_torque=empty,
                 structure_base_velocity=empty,
                 structure_cover_velocity=empty,
+                structure_enclosure_velocity=empty,
                 structure_desk_velocity=empty,
                 output=empty,
             )
@@ -391,6 +392,7 @@ class HDDAudioEngine:
                 actuator_torque=empty,
                 structure_base_velocity=empty,
                 structure_cover_velocity=empty,
+                structure_enclosure_velocity=empty,
                 structure_desk_velocity=empty,
                 output=empty,
             )
@@ -402,6 +404,7 @@ class HDDAudioEngine:
             actuator_torque=np.concatenate([trace.actuator_torque for trace in diagnostics]),
             structure_base_velocity=np.concatenate([trace.structure_base_velocity for trace in diagnostics]),
             structure_cover_velocity=np.concatenate([trace.structure_cover_velocity for trace in diagnostics]),
+            structure_enclosure_velocity=np.concatenate([trace.structure_enclosure_velocity for trace in diagnostics]),
             structure_desk_velocity=np.concatenate([trace.structure_desk_velocity for trace in diagnostics]),
             output=np.concatenate([trace.output for trace in diagnostics]),
         )
@@ -423,6 +426,7 @@ class HDDAudioEngine:
             "actuator_torque": diagnostics.actuator_torque.tolist(),
             "structure_base_velocity": diagnostics.structure_base_velocity.tolist(),
             "structure_cover_velocity": diagnostics.structure_cover_velocity.tolist(),
+            "structure_enclosure_velocity": diagnostics.structure_enclosure_velocity.tolist(),
             "structure_desk_velocity": diagnostics.structure_desk_velocity.tolist(),
             "output": diagnostics.output.tolist(),
         }

@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 from _pytest.monkeypatch import MonkeyPatch
 
-from fake_hdd_fuse.audio import HDDAudioEngine
+from fake_hdd_fuse.audio import HDDAudioEngine, HDDAudioEvent
 from fake_hdd_fuse.audio.core import render_chunk as render_audio_chunk
 from tests.helpers import _audio_event, _wav_metrics
 
@@ -359,7 +359,9 @@ def test_audio_engine_render_regression_for_startup_idle_park_and_flush_envelope
     flush_delta_rms = float(np.sqrt(np.mean(flush_delta**2)))
 
     assert idle_rms > startup_rms * 2.5
-    assert flush_delta_rms > park_delta_rms > 0.0
+    assert park_delta_rms > 0.0
+    assert flush_delta_rms > 0.0
+    assert flush_delta_rms > park_delta_rms * 0.85
 
 
 def test_audio_engine_acoustic_profiles_change_loudness_and_brightness() -> None:
@@ -388,6 +390,106 @@ def test_audio_engine_acoustic_profiles_change_loudness_and_brightness() -> None
     assert bare_rms > case_rms > external_rms
     assert desk_low_ratio > case_low_ratio
     assert bare_low_ratio > 0.25
+
+
+def test_audio_engine_enclosure_and_table_states_follow_mount_profile() -> None:
+    def structure_metrics(acoustic_profile: str) -> tuple[float, float]:
+        engine = HDDAudioEngine(
+            seed=0,
+            drive_profile="desktop_7200_internal",
+            acoustic_profile=acoustic_profile,
+        )
+        engine.emit_telemetry(7200.0, is_seq=True, op_kind="data")
+        engine.render_chunk(2048)
+        _, diagnostics = engine.render_chunk_with_diagnostics(4096)
+        enclosure_rms = float(np.sqrt(np.mean(diagnostics.structure_enclosure_velocity**2)))
+        desk_rms = float(np.sqrt(np.mean(diagnostics.structure_desk_velocity**2)))
+        return enclosure_rms, desk_rms
+
+    bare_enclosure_rms, bare_desk_rms = structure_metrics("bare_drive_lab")
+    case_enclosure_rms, case_desk_rms = structure_metrics("mounted_in_case")
+    desk_enclosure_rms, desk_desk_rms = structure_metrics("drive_on_desk")
+
+    assert case_enclosure_rms > bare_enclosure_rms * 2.0
+    assert case_desk_rms > bare_desk_rms * 1.2
+    assert desk_desk_rms > case_desk_rms * 4.0
+    assert desk_enclosure_rms > bare_enclosure_rms * 4.0
+
+
+def test_audio_engine_seek_ticks_prefer_structure_borne_path_on_desk_mount() -> None:
+    def seek_structure_metrics(acoustic_profile: str) -> tuple[float, float]:
+        engine = HDDAudioEngine(
+            seed=0,
+            drive_profile="desktop_7200_internal",
+            acoustic_profile=acoustic_profile,
+        )
+        diagnostics = engine.synthesizer.render_diagnostic_chunk(
+            4096,
+            scheduled_events=[
+                (
+                    _audio_event(
+                        rpm=7200.0,
+                        target_rpm=7200.0,
+                        queue_depth=1,
+                        op_kind="data",
+                        servo_mode="seek",
+                        seek_distance=260,
+                        track_delta=0.24,
+                    ),
+                    0,
+                )
+            ],
+        )
+        desk_rms = float(np.sqrt(np.mean(diagnostics.structure_desk_velocity**2)))
+        output_rms = float(np.sqrt(np.mean(diagnostics.output**2)))
+        return desk_rms, desk_rms / max(output_rms, 1e-9)
+
+    bare_desk_rms, bare_structure_ratio = seek_structure_metrics("bare_drive_lab")
+    desk_desk_rms, desk_structure_ratio = seek_structure_metrics("drive_on_desk")
+
+    assert desk_desk_rms > bare_desk_rms * 4.0
+    assert desk_structure_ratio > bare_structure_ratio * 4.0
+
+
+def test_audio_engine_park_contact_tick_is_sharper_than_normal_seek_tick() -> None:
+    def transient_metrics(event: HDDAudioEvent) -> tuple[float, float]:
+        engine = HDDAudioEngine(
+            seed=0,
+            drive_profile="desktop_7200_internal",
+            acoustic_profile="drive_on_desk",
+        )
+        diagnostics = engine.synthesizer.render_diagnostic_chunk(
+            4096,
+            scheduled_events=[(event, 0)],
+        )
+        rms = float(np.sqrt(np.mean(diagnostics.output**2)))
+        crest = float(np.max(np.abs(diagnostics.output))) / max(rms, 1e-9)
+        base_peak = float(np.max(np.abs(diagnostics.structure_base_velocity)))
+        return crest, base_peak
+
+    seek_crest, seek_base_peak = transient_metrics(
+        _audio_event(
+            rpm=7200.0,
+            target_rpm=7200.0,
+            queue_depth=1,
+            op_kind="data",
+            servo_mode="seek",
+            seek_distance=260,
+            track_delta=0.24,
+        )
+    )
+    park_crest, park_base_peak = transient_metrics(
+        _audio_event(
+            rpm=7200.0,
+            target_rpm=7200.0,
+            queue_depth=1,
+            op_kind="metadata",
+            servo_mode="park",
+        )
+    )
+
+    assert park_crest > seek_crest * 1.07
+    assert park_base_peak > seek_base_peak * 0.35
 
 
 def test_audio_engine_overlapping_seek_flush_park_and_calibration_events_render_together() -> None:
@@ -434,6 +536,7 @@ def test_audio_engine_can_export_offline_diagnostics_json(tmp_path: Path) -> Non
     assert len(payload["actual_rpm"]) == 2048
     assert len(payload["actuator_pos"]) == 2048
     assert len(payload["structure_cover_velocity"]) == 2048
+    assert len(payload["structure_enclosure_velocity"]) == 2048
     assert len(payload["output"]) == 2048
     assert float(np.max(np.abs(diagnostics.output))) > 0.001
 

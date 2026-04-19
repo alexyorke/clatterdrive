@@ -104,7 +104,7 @@ Important files:
 - [fake_hdd_fuse/storage_events.py](fake_hdd_fuse/storage_events.py): storage-event protocol and event bus
 - [fake_hdd_fuse/audio/plant.py](fake_hdd_fuse/audio/plant.py): constrained seek planning and plant-side motion helpers
 - [fake_hdd_fuse/audio/voices.py](fake_hdd_fuse/audio/voices.py): first-class audio voice grouping and voice-path mixing
-- [fake_hdd_fuse/audio/core.py](fake_hdd_fuse/audio/core.py): plant/voice orchestration and render chunk coordination
+- [fake_hdd_fuse/audio/core.py](fake_hdd_fuse/audio/core.py): plant/voice orchestration, explicit enclosure/table coupling, and render chunk coordination
 - [fake_hdd_fuse/audio/engine.py](fake_hdd_fuse/audio/engine.py): live engine shell, event scheduling, tee output, and diagnostics export
 
 ## Running It
