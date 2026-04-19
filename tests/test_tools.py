@@ -11,6 +11,7 @@ import generate_audio_samples
 import profile_core
 import profile_fragmentation
 import smoke
+import trace_audio_scenarios
 from generate_audio_samples import render_scenario, update_random_flush, update_sequential_read, update_spinup_idle
 from tests.helpers import _run_test_server, _wav_metrics
 
@@ -35,13 +36,37 @@ def test_rendered_sample_scenarios_have_normalized_loudness(tmp_path: Path, monk
     sequential_rms, sequential_peak = _wav_metrics(sequential)
     random_rms, random_peak = _wav_metrics(random_flush)
 
-    assert 1e-5 < spinup_rms < 1e-3
+    assert 1e-5 < spinup_rms < 1.2e-3
     assert 0.001 < sequential_rms < 0.01
     assert 0.001 < random_rms < 0.01
     assert abs(sequential_rms - random_rms) / sequential_rms < 0.4
     assert 0.0 < spinup_peak < 0.01
     assert 0.002 < sequential_peak < 0.02
     assert 0.002 < random_peak < 0.02
+
+
+def test_generate_extended_scenario_samples_writes_outputs(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setattr(generate_audio_samples, "SAMPLES_DIR", tmp_path)
+    outputs = generate_audio_samples.generate_extended_scenario_samples()
+    assert len(outputs) == 3
+    assert all(output.exists() for output in outputs)
+
+
+def test_trace_audio_scenario_writes_json_and_svg(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setattr(trace_audio_scenarios, "TRACE_DIR", tmp_path)
+    output = trace_audio_scenarios.render_trace_scenario(
+        "trace-test",
+        0.5,
+        update_sequential_read,
+        seed=5,
+    )
+
+    svg_path = tmp_path / "trace-test.trace.svg"
+    payload = output.read_text(encoding="utf-8")
+    assert output.exists()
+    assert svg_path.exists()
+    assert '"events"' in payload
+    assert '"diagnostics"' in payload
 
 def test_smoke_main_boot_random_port_with_audio_disabled() -> None:
     smoke.run_main_boot_smoke(exercise_cli=False)

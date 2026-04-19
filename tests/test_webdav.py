@@ -324,6 +324,65 @@ def test_webdav_range_get_keeps_offsets_and_lengths_consistent(tmp_path: Path) -
         assert provider.vhdd.fs.files["/range.bin"].size == len(payload)
         _assert_provider_tree_matches_disk(provider, backing)
 
+
+def test_webdav_proppatch_round_trips_dead_properties_and_models_metadata(tmp_path: Path) -> None:
+    backing = tmp_path / "backing"
+    backing.mkdir()
+    body = (
+        b'<?xml version="1.0" encoding="utf-8"?>'
+        b'<D:propertyupdate xmlns:D="DAV:" xmlns:Z="urn:example">'
+        b"<D:set><D:prop><Z:color>blue</Z:color></D:prop></D:set>"
+        b"</D:propertyupdate>"
+    )
+
+    with _run_test_server(backing) as (base_url, provider):
+        status, _, _ = _request(base_url, "PUT", "/file.txt", b"data")
+        assert status in (200, 201, 204)
+
+        status, _, _ = _request(
+            base_url,
+            "PROPPATCH",
+            "/file.txt",
+            body,
+            headers={"Content-Type": "application/xml"},
+        )
+        assert status == 207
+
+        status, propfind_body, _ = _request(base_url, "PROPFIND", "/file.txt", headers={"Depth": "0"})
+        assert status == 207
+        assert b"<ns1:color>blue</ns1:color>" in propfind_body or b"<Z:color>blue</Z:color>" in propfind_body
+        assert provider.prop_manager.get_property("/file.txt", "{urn:example}color") is not None
+
+
+def test_webdav_lock_is_intentionally_rejected_without_mutating_state(tmp_path: Path) -> None:
+    backing = tmp_path / "backing"
+    backing.mkdir()
+    lock_body = (
+        b'<?xml version="1.0" encoding="utf-8"?>'
+        b'<D:lockinfo xmlns:D="DAV:">'
+        b"<D:lockscope><D:exclusive/></D:lockscope>"
+        b"<D:locktype><D:write/></D:locktype>"
+        b"<D:owner><D:href>codex</D:href></D:owner>"
+        b"</D:lockinfo>"
+    )
+
+    with _run_test_server(backing) as (base_url, provider):
+        status, _, _ = _request(base_url, "PUT", "/file.txt", b"data")
+        assert status in (200, 201, 204)
+
+        before_children = {path: set(children) for path, children in provider.vhdd.fs.dir_children.items()}
+        status, _, _ = _request(
+            base_url,
+            "LOCK",
+            "/file.txt",
+            lock_body,
+            headers={"Content-Type": "application/xml", "Timeout": "Second-60"},
+        )
+
+        assert status == 403
+        assert before_children == {path: set(children) for path, children in provider.vhdd.fs.dir_children.items()}
+        _assert_provider_tree_matches_disk(provider, backing)
+
 def test_webdav_handles_spaces_quotes_and_punctuation_in_names(tmp_path: Path) -> None:
     backing = tmp_path / "backing"
     backing.mkdir()

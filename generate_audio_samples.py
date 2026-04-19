@@ -199,6 +199,69 @@ def update_random_flush(engine: HDDAudioEngine, t: float, emitted_flags: set[str
     )
 
 
+def update_copy_heavy(engine: HDDAudioEngine, t: float, emitted_flags: set[str]) -> None:
+    target_rpm = float(engine.synthesizer.drive_profile.rpm)
+    step = int(t * 10)
+    event_key = f"copy-{step}"
+    if event_key in emitted_flags:
+        return
+    emitted_flags.add(event_key)
+    seek_dist = 28 + ((step * 71) % 240)
+    op_kind = "writeback" if step % 2 else "data"
+    queue_depth = 3 + (step % 4)
+    engine.emit_telemetry(
+        target_rpm,
+        seek_trigger=True,
+        seek_dist=seek_dist,
+        queue_depth=queue_depth,
+        op_kind=op_kind,
+        is_seq=(step % 3 == 0),
+    )
+
+
+def update_idle_to_standby_wake(engine: HDDAudioEngine, t: float, emitted_flags: set[str]) -> None:
+    target_rpm = float(engine.synthesizer.drive_profile.rpm)
+    if t < 1.0:
+        engine.emit_telemetry(target_rpm, is_seq=True, queue_depth=1, op_kind="data")
+        return
+    if t < 3.4:
+        if "park" not in emitted_flags:
+            emitted_flags.add("park")
+            engine.emit_telemetry(target_rpm, is_park=True, queue_depth=1, op_kind="metadata")
+        return
+    if "wake" not in emitted_flags:
+        emitted_flags.add("wake")
+        engine.emit_telemetry(600.0, queue_depth=1, op_kind="metadata", is_spinup=True)
+        return
+    if t < 5.4:
+        engine.emit_telemetry(target_rpm, seek_trigger=True, seek_dist=180, queue_depth=2, op_kind="data")
+        return
+    engine.emit_telemetry(target_rpm, is_seq=True, queue_depth=2, op_kind="data")
+
+
+def update_metadata_storm(engine: HDDAudioEngine, t: float, emitted_flags: set[str]) -> None:
+    target_rpm = float(engine.synthesizer.drive_profile.rpm)
+    step = int(t * 18)
+    event_key = f"meta-{step}"
+    if event_key in emitted_flags:
+        return
+    emitted_flags.add(event_key)
+    if step % 5 == 0:
+        engine.emit_telemetry(target_rpm, is_cal=True, queue_depth=1, op_kind="metadata")
+        return
+    if step % 3 == 0:
+        engine.emit_telemetry(target_rpm, seek_trigger=True, seek_dist=48, queue_depth=2, op_kind="journal")
+        return
+    engine.emit_telemetry(target_rpm, seek_trigger=True, seek_dist=22, queue_depth=2 + (step % 3), op_kind="metadata")
+
+
+EXTRA_SCENARIOS: tuple[tuple[str, float, ScenarioUpdater, int], ...] = (
+    ("copy-heavy-writeback", 6.0, update_copy_heavy, 17),
+    ("idle-standby-wake", 7.0, update_idle_to_standby_wake, 19),
+    ("metadata-storm", 6.0, update_metadata_storm, 23),
+)
+
+
 def generate_readme_demo_samples() -> list[Path]:
     random.seed(7)
     np.random.seed(7)
@@ -213,6 +276,16 @@ def generate_readme_demo_samples() -> list[Path]:
         ),
         render_scenario("sequential-read-stream", 6.0, update_sequential_read, seed=11),
         render_scenario("random-seek-journal-flush", 6.0, update_random_flush, seed=13),
+    ]
+
+
+def generate_extended_scenario_samples() -> list[Path]:
+    random.seed(7)
+    np.random.seed(7)
+    SAMPLES_DIR.mkdir(parents=True, exist_ok=True)
+    return [
+        render_scenario(name, duration_s, update_func, seed=seed)
+        for name, duration_s, update_func, seed in EXTRA_SCENARIOS
     ]
 
 

@@ -254,6 +254,26 @@ def test_virtual_hdd_copy_overwrite_large_file_succeeds_while_background_writeba
         vhdd.stop()
 
 
+def test_virtual_hdd_copy_overwrite_reuses_existing_destination_extents(tmp_path: Path) -> None:
+    backing = tmp_path / "backing"
+    backing.mkdir()
+
+    vhdd = VirtualHDD(str(backing), latency_scale=0.0)
+    try:
+        vhdd.create_directory("/docs")
+        vhdd.access_file("/docs/source.bin", 0, 16384, is_write=True)
+        vhdd.access_file("/docs/dest.bin", 0, 16384, is_write=True)
+        vhdd.sync_all()
+
+        original_extent = vhdd.fs.files["/docs/dest.bin"].extents[0]
+        stats = vhdd.copy_file("/docs/source.bin", "/docs/dest.bin")
+
+        assert stats["type"] == "COPY"
+        assert vhdd.fs.files["/docs/dest.bin"].extents[0] == original_extent
+    finally:
+        vhdd.stop()
+
+
 def test_virtual_hdd_partial_block_write_performs_read_modify_write(
     isolated_backing_dir: Path,
     monkeypatch: MonkeyPatch,

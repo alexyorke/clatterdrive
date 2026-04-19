@@ -1,5 +1,7 @@
 import os
+import shutil
 import sys
+import threading
 from collections.abc import Iterable
 from typing import Any
 
@@ -20,6 +22,140 @@ def _resource_file_path(resource: Any) -> str:
     if hasattr(resource, "file_path"):
         return resource.file_path
     return resource._file_path
+
+
+def _copy_directory_contents(source_dir: str, dest_dir: str) -> None:
+    os.makedirs(dest_dir, exist_ok=True)
+    source_names = {entry.name for entry in os.scandir(source_dir)}
+    for name in list(os.listdir(dest_dir)):
+        if name in source_names:
+            continue
+        stale_path = os.path.join(dest_dir, name)
+        if os.path.isdir(stale_path):
+            shutil.rmtree(stale_path)
+        else:
+            os.remove(stale_path)
+
+    for entry in os.scandir(source_dir):
+        src_path = entry.path
+        dest_path = os.path.join(dest_dir, entry.name)
+        if entry.is_dir():
+            _copy_directory_contents(src_path, dest_path)
+        elif entry.is_file():
+            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+            shutil.copy2(src_path, dest_path)
+
+
+class _InMemoryPropertyManager:
+    def __init__(self) -> None:
+        self._properties: dict[str, dict[str, bytes]] = {}
+        self._lock = threading.Lock()
+
+    def get_properties(self, norm_url: str, environ: dict[str, Any] | None = None) -> list[str]:
+        del environ
+        with self._lock:
+            return sorted(self._properties.get(norm_url, {}))
+
+    def get_property(self, norm_url: str, name: str, environ: dict[str, Any] | None = None) -> bytes | None:
+        del environ
+        with self._lock:
+            return self._properties.get(norm_url, {}).get(name)
+
+    def write_property(
+        self,
+        norm_url: str,
+        name: str,
+        property_value: bytes,
+        dry_run: bool = False,
+        environ: dict[str, Any] | None = None,
+    ) -> bool:
+        del environ
+        if dry_run:
+            return True
+        with self._lock:
+            self._properties.setdefault(norm_url, {})[name] = property_value
+        return True
+
+    def remove_property(
+        self,
+        norm_url: str,
+        name: str,
+        dry_run: bool = False,
+        environ: dict[str, Any] | None = None,
+    ) -> bool:
+        del environ
+        if dry_run:
+            return True
+        with self._lock:
+            properties = self._properties.get(norm_url)
+            if properties is None:
+                return True
+            properties.pop(name, None)
+            if not properties:
+                self._properties.pop(norm_url, None)
+        return True
+
+    def remove_properties(self, norm_url: str, environ: dict[str, Any] | None = None) -> None:
+        del environ
+        with self._lock:
+            self._properties.pop(norm_url, None)
+
+    def copy_properties(self, src_url: str, dest_url: str, environ: dict[str, Any] | None = None) -> None:
+        del environ
+        with self._lock:
+            properties = dict(self._properties.get(src_url, {}))
+            if properties:
+                self._properties[dest_url] = properties
+
+    def move_properties(
+        self,
+        src_url: str,
+        dest_url: str,
+        with_children: bool,
+        environ: dict[str, Any] | None = None,
+    ) -> None:
+        del environ
+        with self._lock:
+            if with_children:
+                renamed = {
+                    path: props
+                    for path, props in self._properties.items()
+                    if path == src_url or path.startswith(f"{src_url}/")
+                }
+                for path in renamed:
+                    self._properties.pop(path, None)
+                for path, props in renamed.items():
+                    self._properties[dest_url + path[len(src_url) :]] = props
+            elif src_url in self._properties:
+                self._properties[dest_url] = self._properties.pop(src_url)
+
+    def copy_tree_properties(self, src_url: str, dest_url: str) -> None:
+        with self._lock:
+            copied = {
+                dest_url + path[len(src_url) :]: dict(props)
+                for path, props in self._properties.items()
+                if path == src_url or path.startswith(f"{src_url}/")
+            }
+            self._properties.update(copied)
+
+
+class _LatencyResourceMixin:
+    _vhdd: VirtualHDD
+    path: str
+
+    @property
+    def vhdd(self) -> VirtualHDD:
+        return self._vhdd
+
+    def prevent_locking(self) -> bool:
+        return True
+
+    def set_property_value(self, name: str, value: Any, *, dry_run: bool = False) -> Any:
+        resource_super: Any = super()
+        result = resource_super.set_property_value(name, value, dry_run=dry_run)
+        if not dry_run and not name.startswith("{DAV:}"):
+            _log_op("PROPPATCH", self.path, self.vhdd.touch_metadata(self.path))
+        return result
 
 
 def _stats_flags(stats: OperationStats, writeback: bool = False) -> str:
@@ -52,10 +188,10 @@ def _log_op(label: str, path: str, stats: OperationStats, writeback: bool = Fals
     )
 
 
-class LatencyFileResource(FileResource):
+class LatencyFileResource(_LatencyResourceMixin, FileResource):
     def __init__(self, path: str, environ: dict[str, Any], file_path: str, vhdd: VirtualHDD) -> None:
         super().__init__(path, environ, file_path)
-        self.vhdd = vhdd
+        self._vhdd = vhdd
 
     def get_content(self) -> Any:
         original_reader = super().get_content()
@@ -73,11 +209,16 @@ class LatencyFileResource(FileResource):
         _log_op("DELETE", self.path, self.vhdd.delete_path(self.path))
 
     def handle_move(self, dest_path: str) -> bool:
-        if not _is_case_only_alias(self.path, dest_path):
-            return False
         self.vhdd.ensure_tree_known(self.path)
+        self.vhdd.ensure_tree_known(self.vhdd.fs._parent_dir(dest_path))
         dest_file_path = os.path.join(self.provider.root_folder_path, dest_path.lstrip("/"))
-        os.rename(_resource_file_path(self), dest_file_path)
+        os.makedirs(os.path.dirname(dest_file_path), exist_ok=True)
+        if _is_case_only_alias(self.path, dest_path):
+            os.rename(_resource_file_path(self), dest_file_path)
+        else:
+            if dest_path in self.vhdd.fs.files:
+                self.vhdd.delete_path(dest_path)
+            os.replace(_resource_file_path(self), dest_file_path)
         _log_op("MOVE", f"{self.path} -> {dest_path}", self.vhdd.rename_path(self.path, dest_path))
         return True
 
@@ -109,10 +250,10 @@ class LatencyFileResource(FileResource):
         return True
 
 
-class LatencyFolderResource(FolderResource):
+class LatencyFolderResource(_LatencyResourceMixin, FolderResource):
     def __init__(self, path: str, environ: dict[str, Any], file_path: str, vhdd: VirtualHDD) -> None:
         super().__init__(path, environ, file_path)
-        self.vhdd = vhdd
+        self._vhdd = vhdd
 
     def get_member_names(self) -> list[str]:
         stats = self.vhdd.list_directory(self.path)
@@ -140,18 +281,33 @@ class LatencyFolderResource(FolderResource):
         _log_op("DELETE", self.path, self.vhdd.delete_directory(self.path))
 
     def handle_move(self, dest_path: str) -> bool:
-        if not _is_case_only_alias(self.path, dest_path):
-            return False
         self.vhdd.ensure_tree_known(self.path)
+        self.vhdd.ensure_tree_known(self.vhdd.fs._parent_dir(dest_path))
         dest_file_path = os.path.join(self.provider.root_folder_path, dest_path.lstrip("/"))
-        os.rename(_resource_file_path(self), dest_file_path)
+        if _is_case_only_alias(self.path, dest_path):
+            os.rename(_resource_file_path(self), dest_file_path)
+        else:
+            if dest_path in self.vhdd.fs.directories:
+                self.vhdd.delete_directory(dest_path)
+            elif dest_path in self.vhdd.fs.files:
+                self.vhdd.delete_path(dest_path)
+            shutil.move(_resource_file_path(self), dest_file_path)
         _log_op("MOVE", f"{self.path} -> {dest_path}", self.vhdd.rename_path(self.path, dest_path))
         return True
 
     def handle_copy(self, dest_path: str, *, depth_infinity: bool) -> bool:
-        if not _is_case_only_alias(self.path, dest_path):
+        if _is_case_only_alias(self.path, dest_path):
+            _log_op("COPY", f"{self.path} -> {dest_path}", OperationStats(op_type="COPY"))
+            return True
+        if not depth_infinity:
             return False
-        _log_op("COPY", f"{self.path} -> {dest_path}", OperationStats(op_type="COPY"))
+
+        source_file_path = _resource_file_path(self)
+        dest_file_path = os.path.join(self.provider.root_folder_path, dest_path.lstrip("/"))
+        _copy_directory_contents(source_file_path, dest_file_path)
+        if isinstance(getattr(self.provider, "prop_manager", None), _InMemoryPropertyManager):
+            self.provider.prop_manager.copy_tree_properties(self.get_ref_url(), dest_path)
+        _log_op("COPY", f"{self.path} -> {dest_path}", self.vhdd.copy_directory_tree(self.path, dest_path))
         return True
 
     def move_recursive(self, dest_path: str) -> None:
@@ -295,6 +451,8 @@ class HDDProvider(FilesystemProvider):
         async_power_on: bool = True,
     ) -> None:
         super().__init__(root_folder_path)
+        self._dead_prop_manager = _InMemoryPropertyManager()
+        self.prop_manager = self._dead_prop_manager
         self.vhdd = VirtualHDD(
             root_folder_path,
             cold_start=cold_start,
@@ -305,6 +463,9 @@ class HDDProvider(FilesystemProvider):
         )
         self.scheduler = OSScheduler(self.vhdd.model)
         self.vhdd.set_scheduler(self.scheduler)
+
+    def set_prop_manager(self, prop_manager: Any) -> None:
+        self.prop_manager = prop_manager or self._dead_prop_manager
 
     def get_resource_inst(self, path: str, environ: dict[str, Any]) -> Any:
         self.vhdd.lookup_path(path)

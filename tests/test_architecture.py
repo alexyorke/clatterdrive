@@ -6,6 +6,8 @@ from pathlib import Path
 
 PURE_MODULES = (
     "fake_hdd_fuse/audio/core.py",
+    "fake_hdd_fuse/audio/plant.py",
+    "fake_hdd_fuse/audio/voices.py",
     "fake_hdd_fuse/fs/core.py",
     "fake_hdd_fuse/hdd/core.py",
     "fake_hdd_fuse/scheduler_core.py",

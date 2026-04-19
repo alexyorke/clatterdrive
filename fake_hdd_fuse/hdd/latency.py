@@ -909,6 +909,8 @@ class HDDLatencyModel:
                 is_sequential=is_seq,
                 is_flush=is_flush,
                 is_spinup=is_spinup,
+                power_state=self.power_state,
+                heads_loaded=self.heads_loaded,
                 servo_mode=servo_mode,
                 track_delta=min(max(seek_dist / max(self.total_cylinders, 1), 0.0), 1.0),
                 transfer_activity=transfer_activity,

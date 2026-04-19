@@ -8,6 +8,8 @@ import numpy as np
 import numpy.typing as npt
 from scipy import signal
 
+from .plant import SeekPlan, clamp as _clamp, plan_seek_motion, sample_seek_reference
+from .voices import AudioVoice, build_voices, mix_voice_path
 from ..profiles import AcousticProfile, DriveProfile
 from ..storage_events import ScheduledStorageEvent, StorageEvent
 
@@ -56,6 +58,9 @@ class MechanicalPlantConfig:
     actuator_damping: float
     actuator_torque_max: float
     actuator_torque_time_constant_s: float
+    actuator_max_velocity: float
+    actuator_max_accel: float
+    actuator_max_jerk: float
     track_integral_gain: float
     rro_1x: float
     rro_2x: float
@@ -107,6 +112,8 @@ class AudioRenderState:
     actuator_track_hz: float = 54.0
     actuator_damping_ratio: float = 0.86
     actuator_direction: float = 1.0
+    seek_plan: SeekPlan | None = None
+    seek_plan_elapsed_s: float = 0.0
     settle_time_remaining: float = 0.0
     seek_time_remaining: float = 0.0
     output_gain: float = 0.88
@@ -312,6 +319,9 @@ def _build_plant_config(drive_profile: DriveProfile) -> MechanicalPlantConfig:
     actuator_torque_max = 0.82 * (1.0 + 0.08 * max(drive_profile.platters - 1, 0))
     actuator_torque_tau = 0.00085 if drive_profile.helium else 0.00105
     servo_sectors = 120 if drive_profile.helium else 96
+    actuator_velocity = 420.0 * drive_profile.actuator_frequency_scale
+    actuator_accel = 2.8e5 * drive_profile.actuator_frequency_scale
+    actuator_jerk = 1.8e8 * drive_profile.actuator_frequency_scale
 
     return MechanicalPlantConfig(
         spindle_inertia=spindle_inertia,
@@ -326,6 +336,9 @@ def _build_plant_config(drive_profile: DriveProfile) -> MechanicalPlantConfig:
         actuator_damping=actuator_damping,
         actuator_torque_max=actuator_torque_max,
         actuator_torque_time_constant_s=actuator_torque_tau,
+        actuator_max_velocity=actuator_velocity,
+        actuator_max_accel=actuator_accel,
+        actuator_max_jerk=actuator_jerk,
         track_integral_gain=0.32,
         rro_1x=0.00125 * (0.82 if drive_profile.helium else 1.0),
         rro_2x=0.00072 * (0.82 if drive_profile.helium else 1.0),
@@ -439,26 +452,14 @@ def reinitialize_mode_state(
     return fresh_state
 
 
-def _clamp(value: float, low: float, high: float) -> float:
-    return min(max(value, low), high)
-
-
 def _derive_transfer_activity(event: StorageEvent) -> float:
     if event.transfer_activity > 0.0:
         return event.transfer_activity
-    base = {
-        "metadata": 0.22,
-        "journal": 0.44,
-        "data": 0.58,
-        "writeback": 0.64,
-        "flush": 0.80,
-    }.get(event.op_kind, 0.40)
-    if event.is_sequential:
-        base *= 1.12
-    if event.is_flush:
-        base *= 1.16
-    base *= 1.0 + 0.05 * max(event.queue_depth - 1, 0)
-    return base
+    motion_activity = 0.22 + 0.44 * _normalized_track_delta(event)
+    sequential_bias = 0.20 if event.is_sequential else 0.0
+    flush_bias = 0.10 if event.is_flush else 0.0
+    queue_scale = 1.0 + 0.04 * max(event.queue_depth - 1, 0)
+    return (motion_activity + sequential_bias + flush_bias) * queue_scale
 
 
 def _normalized_track_delta(event: StorageEvent) -> float:
@@ -474,7 +475,9 @@ def _derive_servo_mode(event: StorageEvent) -> str:
         return event.servo_mode
     if event.track_delta > 0.0 or event.seek_distance > 0.0:
         return "seek"
-    return "track" if event.is_sequential or event.op_kind in {"data", "flush", "writeback"} else "idle"
+    if event.is_sequential or event.transfer_activity > 0.18:
+        return "track"
+    return "idle"
 
 
 def _command_frequency(duration_s: float, damping_ratio: float) -> float:
@@ -483,13 +486,28 @@ def _command_frequency(duration_s: float, damping_ratio: float) -> float:
     return _clamp(4.0 / (duration_s * 2.0 * math.pi * damping_ratio), 40.0, 520.0)
 
 
+def _command_target_position(
+    state: AudioRenderState,
+    normalized_delta: float,
+    command_mode: str,
+) -> tuple[float, float]:
+    direction = -state.actuator_direction
+    if command_mode == "park":
+        return -1.08, -1.0
+    if command_mode == "calibration":
+        return _clamp(state.actuator_target_pos + direction * 0.08, -0.92, 0.92), direction
+    span = 0.07 + 0.93 * math.sqrt(max(normalized_delta, 0.0))
+    return _clamp(state.actuator_target_pos + direction * span, -0.96, 0.96), direction
+
+
 def _apply_motion_command(
     state: AudioRenderState,
     event: StorageEvent,
+    plant_config: MechanicalPlantConfig,
     command_mode: str,
 ) -> AudioRenderState:
     normalized_delta = _normalized_track_delta(event)
-    duration_s = max(
+    minimum_duration_s = max(
         max(event.motion_duration_ms, event.actuator_duration_ms) / 1000.0,
         0.0012 + 0.0045 * math.sqrt(max(normalized_delta, 0.0)),
     )
@@ -497,18 +515,18 @@ def _apply_motion_command(
         max(event.settle_duration_ms, event.actuator_settle_ms) / 1000.0,
         0.0010 + 0.0020 * math.sqrt(max(normalized_delta, 0.0)),
     )
-    direction = -state.actuator_direction
+    target_pos, direction = _command_target_position(state, normalized_delta, command_mode)
+    seek_plan = plan_seek_motion(
+        state.actuator_pos,
+        target_pos,
+        minimum_duration_s=minimum_duration_s,
+        settle_s=settle_s,
+        max_velocity=plant_config.actuator_max_velocity,
+        max_accel=plant_config.actuator_max_accel,
+        max_jerk=plant_config.actuator_max_jerk,
+    )
 
-    if command_mode == "park":
-        target_pos = -1.08
-        direction = -1.0
-    elif command_mode == "calibration":
-        target_pos = _clamp(state.actuator_target_pos + direction * 0.08, -0.92, 0.92)
-    else:
-        span = 0.07 + 0.93 * math.sqrt(max(normalized_delta, 0.0))
-        target_pos = _clamp(state.actuator_target_pos + direction * span, -0.96, 0.96)
-
-    seek_hz = _command_frequency(duration_s, 0.82)
+    seek_hz = _command_frequency(seek_plan.duration_s, 0.82)
     track_hz = _clamp(_command_frequency(settle_s * 1.2, 0.95), 28.0, seek_hz)
     damping = 0.92 if command_mode == "park" else 0.86 if command_mode == "calibration" else 0.82
 
@@ -521,7 +539,9 @@ def _apply_motion_command(
         actuator_track_hz=track_hz,
         actuator_damping_ratio=damping,
         actuator_direction=direction,
-        seek_time_remaining=duration_s,
+        seek_plan=seek_plan,
+        seek_plan_elapsed_s=0.0,
+        seek_time_remaining=seek_plan.duration_s,
         settle_time_remaining=settle_s,
     )
 
@@ -543,6 +563,7 @@ def apply_event(
         is_flush=event.is_flush,
         is_spinup=event.is_spinup,
         is_sequential=event.is_sequential,
+        heads_loaded=state.heads_loaded if event.heads_loaded is None else event.heads_loaded,
         transfer_activity=_derive_transfer_activity(event),
     )
     if not event.is_spinup and target_rpm > 0.0 and state.spindle_omega <= 0.0:
@@ -561,7 +582,7 @@ def apply_event(
 
     command_mode = _derive_servo_mode(event)
     if command_mode in {"seek", "park", "calibration"}:
-        return _apply_motion_command(next_state, event, command_mode)
+        return _apply_motion_command(next_state, event, mode_bank.plant_config, command_mode)
     if command_mode == "track":
         track_hz = _clamp(
             0.72 * _command_frequency(max(next_state.settle_time_remaining, drive_profile.settle_ms / 1000.0), 0.95),
@@ -573,8 +594,10 @@ def apply_event(
             heads_loaded=True,
             servo_mode="track",
             actuator_track_hz=track_hz,
+            seek_plan=None,
+            seek_plan_elapsed_s=0.0,
         )
-    return replace(next_state, servo_mode="idle")
+    return replace(next_state, servo_mode="idle", seek_plan=None, seek_plan_elapsed_s=0.0)
 
 
 def _sosfilt(
@@ -663,9 +686,12 @@ def _render_segment_internal(
     actuator_torque = state.actuator_torque
     actuator_torque_cmd = state.actuator_torque_cmd
     actuator_integrator = state.actuator_integrator
+    seek_plan = state.seek_plan
+    seek_plan_elapsed_s = state.seek_plan_elapsed_s
     seek_time_remaining = state.seek_time_remaining
     settle_time_remaining = state.settle_time_remaining
     servo_mode = state.servo_mode
+    heads_loaded = state.heads_loaded
 
     omega_trace = np.zeros(frames, dtype=np.float64)
     theta_trace = np.zeros(frames, dtype=np.float64)
@@ -701,10 +727,11 @@ def _render_segment_internal(
         servo_phase += rev_hz * config.servo_sectors_per_rev * dt
         if seek_time_remaining > 0.0:
             seek_time_remaining = max(0.0, seek_time_remaining - dt)
+            seek_plan_elapsed_s += dt
         if settle_time_remaining > 0.0:
             settle_time_remaining = max(0.0, settle_time_remaining - dt)
 
-        while state.heads_loaded and servo_phase >= 1.0:
+        while heads_loaded and servo_phase >= 1.0:
             servo_phase -= 1.0
             disturbance = (
                 config.rro_1x * math.sin(theta + 0.3)
@@ -713,7 +740,15 @@ def _render_segment_internal(
                 + 0.00022 * state.transfer_activity * math.sin(23.0 * theta + 0.6)
             )
             measurement = actuator_pos + disturbance
-            error = state.actuator_target_pos - measurement
+            reference_pos = state.actuator_target_pos
+            reference_vel = 0.0
+            reference_accel = 0.0
+            if servo_mode in {"seek", "calibration", "park"} and seek_plan is not None:
+                reference_pos, reference_vel, reference_accel = sample_seek_reference(
+                    seek_plan,
+                    seek_plan_elapsed_s,
+                )
+            error = reference_pos - measurement
             track_error_trace[index] = error
             actuator_integrator = _clamp(actuator_integrator + error * dt, -0.35, 0.35)
 
@@ -724,7 +759,7 @@ def _render_segment_internal(
                 control_hz = state.actuator_track_hz
                 damping = 0.95
             wn = 2.0 * math.pi * control_hz
-            desired_accel = wn * wn * error - 2.0 * damping * wn * actuator_vel
+            desired_accel = reference_accel + wn * wn * error + 2.0 * damping * wn * (reference_vel - actuator_vel)
             if servo_mode == "track":
                 desired_accel += config.track_integral_gain * actuator_integrator
             actuator_torque_cmd = _clamp(
@@ -749,6 +784,10 @@ def _render_segment_internal(
             and settle_time_remaining <= 0.0
         ):
             servo_mode = "idle" if state.target_rpm <= 0.0 or state.servo_mode == "park" else "track"
+            if servo_mode == "idle":
+                heads_loaded = False
+            seek_plan = None
+            seek_plan_elapsed_s = 0.0
 
         theta_trace[index] = theta
         omega_trace[index] = omega
@@ -787,7 +826,6 @@ def _render_segment_internal(
     windage_force = windage_colored * (
         (0.0009 * omega_ratio**1.2 + 0.0046 * omega_ratio**2.15)
         * drive_profile.windage_gain
-        * (1.0 + 0.18 * state.transfer_activity)
     )
     if state.is_spinup:
         windage_force *= 1.16
@@ -834,14 +872,17 @@ def _render_segment_internal(
         state.structure_state,
     )
 
-    radiated = (
-        direct_force * acoustic_profile.direct_gain
-        + platter * acoustic_profile.platter_gain
-        + cover * acoustic_profile.cover_gain
-        + actuator_modes * acoustic_profile.actuator_gain
-        + (structure_modes + coupled_structure * (1.0 + acoustic_profile.desk_coupling))
-        * acoustic_profile.structure_gain
+    voices: tuple[AudioVoice, ...] = build_voices(
+        direct_force=direct_force,
+        platter=platter,
+        cover=cover,
+        actuator=actuator_modes,
+        structure_modes=structure_modes,
+        coupled_structure=coupled_structure * (1.0 + acoustic_profile.desk_coupling),
     )
+    airborne = mix_voice_path(voices, "airborne")
+    structure = mix_voice_path(voices, "structure")
+    radiated = airborne * acoustic_profile.direct_gain + structure * acoustic_profile.structure_gain
     highpassed, final_highpass_zi = _sosfilt(
         mode_bank.final_highpass_sos,
         radiated,
@@ -866,9 +907,12 @@ def _render_segment_internal(
         actuator_torque=actuator_torque,
         actuator_torque_cmd=actuator_torque_cmd,
         actuator_integrator=actuator_integrator,
+        seek_plan=seek_plan,
+        seek_plan_elapsed_s=seek_plan_elapsed_s,
         seek_time_remaining=seek_time_remaining,
         settle_time_remaining=settle_time_remaining,
         servo_mode=servo_mode,
+        heads_loaded=heads_loaded,
         platter_disp=platter_disp,
         platter_vel=platter_vel,
         cover_disp=cover_disp,

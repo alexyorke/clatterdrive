@@ -7,6 +7,7 @@ from cheroot import wsgi
 from wsgidav.wsgidav_app import WsgiDAVApp
 
 from .audio.engine import get_runtime_engine
+from .storage_events import CompositeStorageEventSink, DebugStorageEventSink, StorageEventRecorder, StorageEventSink
 from .webdav.provider import HDDProvider
 
 
@@ -28,6 +29,8 @@ def start_server() -> None:
     audio = get_runtime_engine()
     provider: HDDProvider | None = None
     server: wsgi.Server | None = None
+    event_recorder: StorageEventRecorder | None = None
+    event_trace_path: str | None = None
     audio_started = False
     drive_profile = os.environ.get("FAKE_HDD_DRIVE_PROFILE")
     acoustic_profile = os.environ.get("FAKE_HDD_ACOUSTIC_PROFILE")
@@ -47,9 +50,18 @@ def start_server() -> None:
         if not os.path.exists(root_path):
             os.makedirs(root_path)
 
+        event_sinks: list[StorageEventSink] = [audio]
+        if _env_flag("FAKE_HDD_TRACE_EVENTS", False):
+            event_sinks.append(DebugStorageEventSink())
+        event_trace_path = os.environ.get("FAKE_HDD_EVENT_TRACE_PATH")
+        if event_trace_path:
+            event_recorder = StorageEventRecorder()
+            event_sinks.append(event_recorder)
+        event_sink = CompositeStorageEventSink(event_sinks)
+
         provider = HDDProvider(
             root_path,
-            event_sink=audio,
+            event_sink=event_sink,
             drive_profile=drive_profile,
             acoustic_profile=acoustic_profile,
             cold_start=_env_flag("FAKE_HDD_COLD_START", True),
@@ -95,6 +107,8 @@ def start_server() -> None:
             provider.vhdd.stop()
         if audio_started:
             audio.stop()
+        if event_recorder is not None and event_trace_path:
+            event_recorder.export_json(event_trace_path)
 
 
 if __name__ == "__main__":

@@ -511,6 +511,20 @@ class VirtualHDD:
         stats = self._run_ops(operations, is_write=True, force_unit_access=True)
         return stats.with_updates(type="COPY", extents=0)
 
+    def touch_metadata(self, path: str, source: str = "dav_prop_update") -> Stats:
+        path = self._resolve_existing_path(path)
+        self._ensure_known_path(path)
+        if path in self.fs.directories:
+            operations = self.fs.update_directory(path, source=source)
+        elif path in self.fs.files:
+            operations = self.fs.update_file_metadata(path, source=source)
+        else:
+            return self._empty_stats("PROPPATCH")
+        if not operations:
+            return self._empty_stats("PROPPATCH")
+        stats = self._run_ops(operations, is_write=True, force_unit_access=True)
+        return stats.with_updates(type="PROPPATCH", extents=0)
+
     def create_empty_file(self, path: str) -> Stats:
         path = self.fs._normalize_path(path)
         operations = self.fs.create_empty_file(path)
@@ -534,16 +548,21 @@ class VirtualHDD:
             return self._empty_stats("COPY")
         if dest_path in self.fs.directories:
             raise IsADirectoryError(dest_path)
-        if dest_path in self.fs.files:
-            self.delete_path(dest_path)
 
         source_inode = self.fs.files[source_path]
         source_size = source_inode.size
+        copy_stats: list[Stats] = []
+        existing_dest_size = self.fs.files[dest_path].size if dest_path in self.fs.files else None
         if source_size <= 0:
+            if dest_path in self.fs.files:
+                operations = self.fs.truncate(dest_path, size=0)
+                if operations:
+                    copy_stats.append(self._run_ops(operations, is_write=True, force_unit_access=True))
+                result = self._merge_stats("COPY", *copy_stats)
+                return result.with_updates(type="COPY", extents=0)
             return self._merge_stats("COPY", self.create_empty_file(dest_path))
 
         chunk_size = max(self.fs.block_size, self.copy_chunk_bytes)
-        copy_stats = []
         for offset in range(0, source_size, chunk_size):
             length = min(chunk_size, source_size - offset)
             read_ops = self.fs.read(source_path, offset, length)
@@ -554,8 +573,69 @@ class VirtualHDD:
             write_stats = self._apply_buffered_write(write_ops, data_extent_count, sync=False)
             copy_stats.append(self._merge_stats("COPY", read_stats, write_stats))
 
+        if existing_dest_size is not None and existing_dest_size > source_size:
+            truncate_ops = self.fs.truncate(dest_path, size=source_size)
+            if truncate_ops:
+                truncate_stats = self._run_ops(truncate_ops, is_write=True, force_unit_access=True)
+                copy_stats.append(truncate_stats.with_updates(type="COPY", extents=0))
+
         self._invalidate_lookup(dest_path)
         if os.path.exists(self._real_path(dest_path)):
+            self._mark_backing_observed(dest_path)
+        return self._merge_stats("COPY", *copy_stats)
+
+    def copy_directory_tree(self, source_path: str, dest_path: str) -> Stats:
+        source_path = self._resolve_existing_path(source_path)
+        dest_path = self.fs._normalize_path(dest_path)
+        self.ensure_tree_known(source_path)
+        self.ensure_tree_known(dest_path)
+
+        if source_path not in self.fs.directories:
+            return self._empty_stats("COPY")
+        if self._paths_alias(source_path, dest_path):
+            return self._empty_stats("COPY")
+        if dest_path in self.fs.files:
+            raise NotADirectoryError(dest_path)
+
+        source_dirs = sorted(
+            [path for path in self.fs.directories if path == source_path or path.startswith(f"{source_path}/")],
+            key=lambda item: item.count("/"),
+        )
+        source_files = sorted(
+            [path for path in self.fs.files if path.startswith(f"{source_path}/")],
+            key=lambda item: item.count("/"),
+        )
+
+        expected_dirs = {dest_path + directory[len(source_path) :] for directory in source_dirs}
+        expected_files = {dest_path + file_path[len(source_path) :] for file_path in source_files}
+        existing_dest_dirs = {
+            path for path in self.fs.directories if path == dest_path or path.startswith(f"{dest_path}/")
+        }
+        existing_dest_files = {path for path in self.fs.files if path.startswith(f"{dest_path}/")}
+
+        copy_stats: list[Stats] = []
+        for directory in source_dirs:
+            target_directory = dest_path + directory[len(source_path) :]
+            if target_directory in self.fs.directories:
+                copy_stats.append(self.refresh_directory(target_directory))
+            else:
+                copy_stats.append(self.create_directory(target_directory))
+
+        for file_path in source_files:
+            target_file = dest_path + file_path[len(source_path) :]
+            copy_stats.append(self.copy_file(file_path, target_file))
+
+        stale_files = sorted(existing_dest_files - expected_files)
+        stale_dirs = sorted(existing_dest_dirs - expected_dirs, key=lambda item: item.count("/"), reverse=True)
+        for file_path in stale_files:
+            copy_stats.append(self.delete_path(file_path))
+        for directory in stale_dirs:
+            if directory == dest_path:
+                continue
+            copy_stats.append(self.delete_directory(directory))
+
+        self._invalidate_lookup(dest_path)
+        if os.path.isdir(self._real_path(dest_path)):
             self._mark_backing_observed(dest_path)
         return self._merge_stats("COPY", *copy_stats)
 

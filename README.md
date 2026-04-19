@@ -102,7 +102,10 @@ Important files:
 - [fake_hdd_fuse/scheduler.py](fake_hdd_fuse/scheduler.py): request merging and dispatch policy
 - [hdd_model.py](hdd_model.py): geometry, caches, timing, power states, write-back flushing
 - [fake_hdd_fuse/storage_events.py](fake_hdd_fuse/storage_events.py): storage-event protocol and event bus
-- [fake_hdd_fuse/audio/engine.py](fake_hdd_fuse/audio/engine.py): procedural HDD sound synthesis driven by the event stream
+- [fake_hdd_fuse/audio/plant.py](fake_hdd_fuse/audio/plant.py): constrained seek planning and plant-side motion helpers
+- [fake_hdd_fuse/audio/voices.py](fake_hdd_fuse/audio/voices.py): first-class audio voice grouping and voice-path mixing
+- [fake_hdd_fuse/audio/core.py](fake_hdd_fuse/audio/core.py): plant/voice orchestration and render chunk coordination
+- [fake_hdd_fuse/audio/engine.py](fake_hdd_fuse/audio/engine.py): live engine shell, event scheduling, tee output, and diagnostics export
 
 ## Running It
 
@@ -152,6 +155,8 @@ Useful environment variables:
 - `FAKE_HDD_ASYNC_POWER_ON=off`: disable background startup sequencing at boot
 - `FAKE_HDD_AUDIO=off`: disable live audio output while keeping offline rendering/tests working
 - `FAKE_HDD_AUDIO_TEE_PATH`: also record the rendered live output stream to a WAV file
+- `FAKE_HDD_TRACE_EVENTS=on`: print emitted storage/audio events separately from the filesystem and latency logs
+- `FAKE_HDD_EVENT_TRACE_PATH`: write the emitted storage event stream to JSON when the server shuts down
 - `FAKE_HDD_DRIVE_PROFILE`: select a modeled drive preset such as `desktop_7200_internal` or `archive_5900_internal`
 - `FAKE_HDD_ACOUSTIC_PROFILE`: select an installation/acoustic preset such as `mounted_in_case` or `bare_drive_lab`
 
@@ -259,6 +264,23 @@ uv run python -m pytest -q
 
 CI also uses `uv sync --locked --group dev` and then runs lint, dead-code, compile, type-check, test, and smoke passes from the locked environment.
 
+Trace and visualization tooling:
+
+```powershell
+uv run python trace_audio_scenarios.py
+```
+
+That runs a silent offline render for the built-in scenarios and writes:
+
+- `.runtime/traces/*.trace.json`: emitted event stream plus diagnostic arrays
+- `.runtime/traces/*.trace.svg`: a simple visualization of RPM, queue depth, head position, output, and power-state spans
+
+The current built-in extra scenarios include:
+
+- `copy-heavy-writeback`
+- `idle-standby-wake`
+- `metadata-storm`
+
 Dead-code policy:
 
 - `ruff` enforces annotations plus bug-finding rule families from `flake8-bugbear` (`B`), `pyupgrade` (`UP`), `flake8-return` (`RET`), `flake8-simplify` (`SIM`), `pygrep-hooks` (`PGH`), `Pylint` errors (`PLE`), Ruff's own suppression/config checks (`RUF`), and ordinary unused-code/unused-import issues (`F`)
@@ -312,7 +334,7 @@ The audio radiation and filtering path mostly lives in [fake_hdd_fuse/audio/engi
 This is still a simulation, not a real block device:
 
 - it is not implementing a full kernel page cache or full filesystem semantics
-- DAV properties and lock semantics are still much lighter than file-content paths
+- DAV dead-property churn is modeled, but locking is intentionally rejected instead of being simulated as media traffic
 - out-of-band backing-store mutations are only partially reconciled: file size changes and deletion are handled lazily for disk-observed paths, but broader external tree churn is still intentionally loose
 - it is intentionally compact and hackable, not a complete storage emulator
 

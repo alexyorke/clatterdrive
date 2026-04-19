@@ -25,6 +25,7 @@ from .core import (
     rename,
     truncate,
     update_directory,
+    update_file_metadata,
     write,
 )
 
@@ -177,6 +178,11 @@ class FileSystemSimulator:
     def update_directory(self, path: str, source: str = "dir_attr_update") -> list[IOOperation]:
         with self.lock:
             self._state, operations = update_directory(self._state, path, source=source)
+            return operations
+
+    def update_file_metadata(self, path: str, source: str = "file_attr_update") -> list[IOOperation]:
+        with self.lock:
+            self._state, operations = update_file_metadata(self._state, path, source=source)
             return operations
 
     def create_empty_file(self, path: str) -> list[IOOperation]:

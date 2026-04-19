@@ -493,6 +493,23 @@ def update_directory(
     ]
 
 
+def update_file_metadata(
+    state: FileSystemState,
+    path: str,
+    source: str = "file_attr_update",
+) -> tuple[FileSystemState, list[IOOperation]]:
+    normalized = normalize_path(path)
+    if normalized not in state.files:
+        return state, []
+    next_state = clone_state(state)
+    inode = next_state.files[normalized]
+    next_state, journal = journal_op(next_state, 1, source)
+    return next_state, [
+        journal,
+        IOOperation(inode.inode_block, 1, "metadata", "inode_metadata"),
+    ]
+
+
 def create_empty_file(state: FileSystemState, path: str) -> tuple[FileSystemState, list[IOOperation]]:
     normalized = normalize_path(path)
     if normalized in state.directories:

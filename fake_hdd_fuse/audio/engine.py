@@ -30,7 +30,7 @@ from ..profiles import (
     resolve_selected_profiles_from_env,
 )
 from ..runtime.deps import RuntimeDeps
-from ..storage_events import StorageEvent, StorageEventBus
+from ..storage_events import StorageEvent, StorageEventBus, StorageEventSink
 
 
 FloatArray = npt.NDArray[np.float64]
@@ -216,6 +216,7 @@ class HDDAudioEngine:
         drive_profile: str | DriveProfile | None = None,
         acoustic_profile: str | AcousticProfile | None = None,
         tee_path: str | None = None,
+        event_trace_sink: StorageEventSink | None = None,
         deps: RuntimeDeps | None = None,
     ) -> None:
         self.deps = deps or RuntimeDeps()
@@ -234,9 +235,12 @@ class HDDAudioEngine:
         self.stream: Any | None = None
         self.render_lock = threading.Lock()
         self.last_render_at: float | None = None
+        self.time_origin: float | None = None
+        self.render_frame_cursor = 0
         self.output_enabled = True
         self.tee_path: str | None = tee_path
         self.tee_recorder: _WaveTeeRecorder | None = None
+        self.event_trace_sink = event_trace_sink
         self.configure_tee(tee_path)
 
     def configure_tee(self, tee_path: str | None) -> None:
@@ -285,6 +289,8 @@ class HDDAudioEngine:
                 is_sequential=is_seq,
                 is_flush=is_flush,
                 is_spinup=is_spinup,
+                power_state="active" if rpm > 0.0 else "standby",
+                heads_loaded=not is_park,
                 servo_mode=servo_mode,
                 track_delta=min(max(seek_dist / 1200.0, 0.0), 1.0) if seek_trigger else 0.0,
                 motion_duration_ms=2.4 if seek_trigger else 0.0,
@@ -300,6 +306,8 @@ class HDDAudioEngine:
 
     def publish_event(self, event: HDDAudioEvent) -> None:
         self.events.publish(event)
+        if self.event_trace_sink is not None:
+            self.event_trace_sink.publish_event(event)
 
     def _update_telemetry(self, *args: Any, **kwargs: Any) -> None:
         self.emit_telemetry(*args, **kwargs)
@@ -316,18 +324,13 @@ class HDDAudioEngine:
         if not events:
             return []
 
-        if self.stream is None:
-            return [(event, 0) for event in events]
+        if self.time_origin is None:
+            self.time_origin = min(event.emitted_at for event in events)
 
-        now = self.clock.now()
-        chunk_duration_s = frames / self.fs
-        chunk_start = self.last_render_at
-        if chunk_start is None:
-            chunk_start = now - chunk_duration_s
         scheduled = []
         for event in events:
-            frame_offset = round((event.emitted_at - chunk_start) * self.fs)
-            frame_offset = max(0, min(frames - 1, frame_offset))
+            absolute_frame = round((event.emitted_at - self.time_origin) * self.fs)
+            frame_offset = max(0, absolute_frame - self.render_frame_cursor)
             scheduled.append((event, frame_offset))
         scheduled.sort(key=lambda item: item[1])
         return scheduled
@@ -338,8 +341,19 @@ class HDDAudioEngine:
             chunk = self.synthesizer.render_chunk(frames, scheduled_events=scheduled_events)
             if self.tee_recorder is not None:
                 self.tee_recorder.write_chunk(chunk)
+            self.render_frame_cursor += frames
             self.last_render_at = self.clock.now()
             return chunk
+
+    def render_chunk_with_diagnostics(self, frames: int) -> tuple[FloatArray, AudioDiagnosticTrace]:
+        with self.render_lock:
+            scheduled_events = self._schedule_events_for_chunk(frames)
+            diagnostics = self.synthesizer.render_diagnostic_chunk(frames, scheduled_events=scheduled_events)
+            if self.tee_recorder is not None:
+                self.tee_recorder.write_chunk(diagnostics.output)
+            self.render_frame_cursor += frames
+            self.last_render_at = self.clock.now()
+            return diagnostics.output, diagnostics
 
     def render_diagnostics(
         self,
@@ -360,6 +374,7 @@ class HDDAudioEngine:
                         scheduled_events=scheduled_events,
                     )
                 )
+                self.render_frame_cursor += frames
                 frames_remaining -= frames
 
             if self.tee_recorder is not None and diagnostics:
@@ -436,6 +451,8 @@ class HDDAudioEngine:
         if audio_setting in {"0", "off", "false", "disabled", "none"}:
             self.output_enabled = False
             self.last_render_at = None
+            self.time_origin = None
+            self.render_frame_cursor = 0
             return
         self.output_enabled = True
         stream = sd.OutputStream(
@@ -450,6 +467,8 @@ class HDDAudioEngine:
             stream.close()
             raise
         self.stream = stream
+        self.time_origin = self.clock.now()
+        self.render_frame_cursor = 0
         self.last_render_at = self.clock.now()
 
     def stop(self) -> None:
@@ -463,6 +482,8 @@ class HDDAudioEngine:
             self.tee_recorder.close()
             self.tee_recorder = None
         self.last_render_at = None
+        self.time_origin = None
+        self.render_frame_cursor = 0
 
 _runtime_engine: HDDAudioEngine | None = None
 

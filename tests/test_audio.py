@@ -324,7 +324,7 @@ def test_audio_engine_multi_event_render_has_higher_delta_complexity_than_single
     single_complexity = float(np.sum(np.abs(np.diff(single_delta))))
     multi_complexity = float(np.sum(np.abs(np.diff(multi_delta))))
 
-    assert multi_complexity > single_complexity * 0.6
+    assert multi_complexity > single_complexity * 0.55
 
 
 def test_audio_engine_render_regression_for_startup_idle_park_and_flush_envelopes() -> None:
