@@ -7,12 +7,12 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Any
 
-from fs_simulator import FileSystemSimulator, IOOperation
-from hdd_core import OperationStats, empty_operation_stats, merge_operation_stats
-from hdd_latency import HDDLatencyModel
-from profiles import AcousticProfile, DriveProfile, resolve_selected_profiles_from_env
-from runtime_deps import RuntimeDeps
-from storage_events import StorageEventSink
+from ..fs.simulator import FileSystemSimulator, IOOperation
+from ..profiles import AcousticProfile, DriveProfile, resolve_selected_profiles_from_env
+from ..runtime.deps import RuntimeDeps
+from ..storage_events import StorageEventSink
+from .core import OperationStats, empty_operation_stats, merge_operation_stats
+from .latency import HDDLatencyModel
 
 
 Stats = OperationStats

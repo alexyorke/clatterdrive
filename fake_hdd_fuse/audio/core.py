@@ -6,8 +6,8 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 import numpy.typing as npt
 
-from profiles import AcousticProfile, DriveProfile
-from storage_events import ScheduledStorageEvent, StorageEvent
+from ..profiles import AcousticProfile, DriveProfile
+from ..storage_events import ScheduledStorageEvent, StorageEvent
 
 
 FloatArray = npt.NDArray[np.float64]

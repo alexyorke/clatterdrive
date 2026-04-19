@@ -10,7 +10,7 @@ import numpy as np
 import numpy.typing as npt
 import sounddevice as sd
 
-from audio_core import (
+from .core import (
     AudioModeBank,
     AudioRenderState,
     ScheduledEvent,
@@ -21,14 +21,14 @@ from audio_core import (
     reinitialize_mode_state,
     render_chunk as render_audio_chunk,
 )
-from profiles import (
+from ..profiles import (
     AcousticProfile,
     DriveProfile,
     resolve_selected_profiles,
     resolve_selected_profiles_from_env,
 )
-from runtime_deps import RuntimeDeps
-from storage_events import StorageEvent, StorageEventBus
+from ..runtime.deps import RuntimeDeps
+from ..storage_events import StorageEvent, StorageEventBus
 
 
 FloatArray = npt.NDArray[np.float64]

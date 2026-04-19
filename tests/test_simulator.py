@@ -19,19 +19,19 @@ import pytest
 from _pytest.monkeypatch import MonkeyPatch
 from wsgidav.wsgidav_app import WsgiDAVApp
 
-from audio_engine import HDDAudioEngine, HDDAudioEvent
-from fs_simulator import FileSystemSimulator
+from fake_hdd_fuse.audio import HDDAudioEngine, HDDAudioEvent
+from fake_hdd_fuse.fs import FileSystemSimulator
+from fake_hdd_fuse.hdd import HDDLatencyModel, VirtualHDD
+from fake_hdd_fuse.hdd.core import CacheSpan
+from fake_hdd_fuse.profiles import resolve_acoustic_profile, resolve_drive_profile
+from fake_hdd_fuse.scheduler import OSScheduler
+from fake_hdd_fuse.storage_events import StorageEvent
+from fake_hdd_fuse.webdav import HDDProvider
 import generate_audio_samples
 from generate_audio_samples import render_scenario, update_random_flush, update_sequential_read, update_spinup_idle
-from hdd_core import CacheSpan
-from hdd_model import HDDLatencyModel, VirtualHDD
-from os_scheduler import OSScheduler
 import profile_core
 import profile_fragmentation
-from profiles import resolve_acoustic_profile, resolve_drive_profile
 import smoke
-from storage_events import StorageEvent
-from vfs_provider import HDDProvider
 
 
 class _NoAuthWsgiDAVApp(WsgiDAVApp):

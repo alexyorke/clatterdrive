@@ -9,7 +9,7 @@ import pytest
 from _pytest.fixtures import FixtureRequest
 
 
-_TMP_ROOT = Path(__file__).resolve().parent / ".tmp_tests"
+_TMP_ROOT = Path(__file__).resolve().parents[1] / ".tmp_tests"
 
 
 def _worker_id() -> str:

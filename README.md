@@ -84,23 +84,25 @@ Event timing contract:
 
 The major layers are intentionally split up:
 
-- `fs_simulator.py`: fake filesystem semantics, extents, directories, and metadata I/O planning
-- `os_scheduler.py`: merges and orders requests before they hit the device model
-- `hdd_model.py`: seek, rotation, caching, power-state, write-back, and physical-access timing
-- `storage_events.py`: generic storage-event types, queueing, and sink boundary
-- `audio_engine.py`: audio-side consumer of the storage event stream plus reduced-order mechanical synthesis
-- `vfs_provider.py`: WebDAV interception layer that routes file operations through the simulator
-- `profiles.py`: named drive presets plus named installation/acoustic presets
+- `fake_hdd_fuse/fs/`: fake filesystem semantics, extents, directories, and metadata I/O planning
+- `fake_hdd_fuse/scheduler.py`: merges and orders requests before they hit the device model
+- `fake_hdd_fuse/hdd/`: seek, rotation, caching, power-state, write-back, and physical-access timing
+- `fake_hdd_fuse/storage_events.py`: generic storage-event types, queueing, and sink boundary
+- `fake_hdd_fuse/audio/`: audio-side consumer of the storage event stream plus reduced-order mechanical synthesis
+- `fake_hdd_fuse/webdav/`: WebDAV interception layer that routes file operations through the simulator
+- `fake_hdd_fuse/profiles.py`: named drive presets plus named installation/acoustic presets
 
 Important files:
 
-- [main.py](main.py): starts the WebDAV server and audio engine
-- [vfs_provider.py](vfs_provider.py): intercepts file reads and writes
-- [fs_simulator.py](fs_simulator.py): fake filesystem allocation plus metadata I/O
-- [os_scheduler.py](os_scheduler.py): request merging and dispatch policy
+- [main.py](main.py): thin compatibility entrypoint that starts the packaged server
+- [fake_hdd_fuse/app.py](fake_hdd_fuse/app.py): starts the WebDAV server and audio engine
+- [fake_hdd_fuse/webdav/provider.py](fake_hdd_fuse/webdav/provider.py): intercepts file reads and writes
+- [fake_hdd_fuse/fs/simulator.py](fake_hdd_fuse/fs/simulator.py): fake filesystem state wrapper
+- [fake_hdd_fuse/fs/core.py](fake_hdd_fuse/fs/core.py): fake filesystem allocation plus metadata I/O
+- [fake_hdd_fuse/scheduler.py](fake_hdd_fuse/scheduler.py): request merging and dispatch policy
 - [hdd_model.py](hdd_model.py): geometry, caches, timing, power states, write-back flushing
-- [storage_events.py](storage_events.py): storage-event protocol and event bus
-- [audio_engine.py](audio_engine.py): procedural HDD sound synthesis driven by the event stream
+- [fake_hdd_fuse/storage_events.py](fake_hdd_fuse/storage_events.py): storage-event protocol and event bus
+- [fake_hdd_fuse/audio/engine.py](fake_hdd_fuse/audio/engine.py): procedural HDD sound synthesis driven by the event stream
 
 ## Running It
 
@@ -114,6 +116,12 @@ Then start the server:
 
 ```powershell
 python main.py
+```
+
+Or run the packaged entrypoint directly:
+
+```powershell
+python -m fake_hdd_fuse
 ```
 
 By default it serves `backing_storage/` over WebDAV on:
@@ -179,6 +187,8 @@ python smoke.py
 
 That boots [main.py](main.py) on a random port with live audio disabled, exercises WebDAV operations, and runs an additional `curl` probe when available.
 
+Tests run in parallel by default via `pytest-xdist`. If you need to disable that for debugging, use `python -m pytest -q -n 0`.
+
 Core profiling:
 
 ```powershell
@@ -202,13 +212,7 @@ Unit tests:
 python -m pytest -q
 ```
 
-CI also runs:
-
-```powershell
-ruff check .
-python -m vulture . --min-confidence 80
-python -m py_compile audio_engine.py conftest.py fs_simulator.py generate_audio_samples.py generate_readme_demo_samples.py hdd_model.py main.py os_scheduler.py profile_core.py profile_fragmentation.py profiles.py runtime_paths.py smoke.py storage_events.py test_simulator.py vfs_provider.py
-```
+CI also runs lint, dead-code, compile, type-check, test, and smoke passes against the packaged layout.
 
 Dead-code policy:
 
@@ -220,7 +224,7 @@ Runtime scratch space such as smoke/profiling temp trees now lives under `.runti
 
 ## Tuning Notes
 
-If you want to change the overall character, start with a profile in [profiles.py](profiles.py) before editing low-level constants.
+If you want to change the overall character, start with a profile in [fake_hdd_fuse/profiles.py](fake_hdd_fuse/profiles.py) before editing low-level constants.
 
 If you still want to tune the raw mechanics directly, the main knobs live in [hdd_model.py](hdd_model.py):
 
@@ -233,7 +237,7 @@ If you still want to tune the raw mechanics directly, the main knobs live in [hd
 - `standby_after_s`
 - `spinup_ms`
 
-The audio radiation and filtering path mostly lives in [audio_engine.py](audio_engine.py).
+The audio radiation and filtering path mostly lives in [fake_hdd_fuse/audio/engine.py](fake_hdd_fuse/audio/engine.py).
 
 ## Troubleshooting
 

@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
-from profiles import DriveProfile
+from ..profiles import DriveProfile
 
 
 @dataclass(frozen=True)
@@ -1139,4 +1139,3 @@ def background_decision(
     if idle_s >= standby_after_s and mechanical.power_state in {"low_rpm_idle", "unloaded_idle", "active"} and not transition_active:
         return BackgroundDecision(rpm=mechanical.current_rpm, should_spindown=True)
     return BackgroundDecision(rpm=mechanical.current_rpm)
-

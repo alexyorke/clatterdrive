@@ -8,9 +8,9 @@ from pathlib import Path
 import numpy as np
 import numpy.typing as npt
 
-from audio_engine import HDDAudioEngine
-from hdd_model import HDDLatencyModel, StartupTracePoint
-from profiles import AcousticProfile, DriveProfile
+from fake_hdd_fuse.audio import HDDAudioEngine
+from fake_hdd_fuse.hdd import HDDLatencyModel, StartupTracePoint
+from fake_hdd_fuse.profiles import AcousticProfile, DriveProfile
 
 
 ROOT = Path(__file__).resolve().parent

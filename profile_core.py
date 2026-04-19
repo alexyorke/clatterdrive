@@ -4,9 +4,9 @@ import random
 from pathlib import Path
 from typing import Final
 
-from hdd_model import VirtualHDD
-from os_scheduler import OSScheduler
-from runtime_paths import workspace_tempdir
+from fake_hdd_fuse.hdd import VirtualHDD
+from fake_hdd_fuse.runtime.paths import workspace_tempdir
+from fake_hdd_fuse.scheduler import OSScheduler
 
 
 SEQUENTIAL_OPS: Final[int] = 100

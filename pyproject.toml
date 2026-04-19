@@ -1,3 +1,23 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fake-hdd-fuse"
+version = "0.1.0"
+description = "Novelty HDD latency and audio simulator exposed over WebDAV."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "cheroot",
+    "numpy",
+    "sounddevice",
+    "WsgiDAV",
+]
+
+[tool.setuptools.packages.find]
+include = ["fake_hdd_fuse*"]
+
 [tool.ruff]
 target-version = "py312"
 exclude = [".git", ".pytest_cache", ".pytest_tmp", ".tmp_pip", ".tmp_tests", ".runtime", "samples"]

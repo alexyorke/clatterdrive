@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from runtime_deps import EnvReader, OSEnvReader
+from .runtime.deps import EnvReader, OSEnvReader
 
 
 @dataclass(frozen=True)

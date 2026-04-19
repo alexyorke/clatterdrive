@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from hdd_model import VirtualHDD
-from runtime_paths import workspace_tempdir
+from fake_hdd_fuse.hdd import VirtualHDD
+from fake_hdd_fuse.runtime.paths import workspace_tempdir
 
 
 def collect_fragmentation_metrics() -> dict[str, float]:

@@ -21,7 +21,7 @@ jobs:
           python -m pip install cheroot mypy numpy pytest pytest-xdist requests ruff sounddevice vulture WsgiDAV
 
       - name: Compile
-        run: python -m py_compile audio_core.py audio_engine.py conftest.py fs_simulator.py generate_audio_samples.py generate_readme_demo_samples.py hdd_core.py hdd_model.py main.py os_scheduler.py profile_core.py profile_fragmentation.py profiles.py runtime_deps.py runtime_paths.py smoke.py storage_events.py test_architecture.py test_simulator.py vfs_provider.py
+        run: python -m compileall -q fake_hdd_fuse tests main.py smoke.py profile_core.py profile_fragmentation.py generate_audio_samples.py generate_readme_demo_samples.py hdd_model.py
 
       - name: Lint
         run: ruff check .
@@ -33,7 +33,7 @@ jobs:
         run: python -m mypy .
 
       - name: Test
-        run: python -m pytest -q -n auto
+        run: python -m pytest -q
 
       - name: Smoke
         run: python smoke.py

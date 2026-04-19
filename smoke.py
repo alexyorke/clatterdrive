@@ -12,7 +12,7 @@ import urllib.parse
 import urllib.request
 from typing import Final
 
-from runtime_paths import ROOT, workspace_tempdir
+from fake_hdd_fuse.runtime.paths import ROOT, workspace_tempdir
 
 
 STARTUP_TIMEOUT_S: Final[float] = 20.0

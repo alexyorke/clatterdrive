@@ -4,7 +4,11 @@ import ast
 from pathlib import Path
 
 
-PURE_MODULES = ("audio_core.py", "hdd_core.py")
+PURE_MODULES = (
+    "fake_hdd_fuse/audio/core.py",
+    "fake_hdd_fuse/fs/core.py",
+    "fake_hdd_fuse/hdd/core.py",
+)
 FORBIDDEN_IMPORTS = {
     "os",
     "socket",
@@ -35,7 +39,7 @@ def _attribute_path(node: ast.AST) -> str | None:
 
 
 def _module_path(name: str) -> Path:
-    return Path(__file__).with_name(name)
+    return Path(__file__).resolve().parents[1] / name
 
 
 def test_pure_modules_do_not_import_forbidden_side_effect_modules() -> None:

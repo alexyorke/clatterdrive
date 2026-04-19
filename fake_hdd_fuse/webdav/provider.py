@@ -6,10 +6,10 @@ from typing import Any
 from wsgidav import util
 from wsgidav.fs_dav_provider import FileResource, FilesystemProvider, FolderResource
 
-from hdd_core import OperationStats
-from hdd_model import VirtualHDD
-from os_scheduler import OSScheduler
-from storage_events import StorageEventSink
+from ..hdd import VirtualHDD
+from ..hdd.core import OperationStats
+from ..scheduler import OSScheduler
+from ..storage_events import StorageEventSink
 
 
 def _stats_flags(stats: OperationStats, writeback: bool = False) -> str:

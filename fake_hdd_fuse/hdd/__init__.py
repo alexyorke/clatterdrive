@@ -1,20 +1,20 @@
 from __future__ import annotations
 
-from fake_hdd_fuse.hdd import (
+from .core import (
     BackgroundDecision,
     CacheSpan,
     CacheState,
     HDDCoreConfig,
-    HDDLatencyModel,
     MechanicalState,
     OperationStats,
     ReadyPollPlan,
     StartupStage,
     StartupTracePoint,
     TransitionState,
-    VirtualHDD,
     Zone,
 )
+from .latency import HDDLatencyModel
+from .virtual import VirtualHDD
 
 
 HDDLatenyModel = HDDLatencyModel

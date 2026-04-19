@@ -5,7 +5,7 @@ import threading
 from collections import deque
 from typing import Any
 
-from hdd_core import (
+from .core import (
     BackgroundDecision,
     CacheSpan,
     CacheState,
@@ -39,9 +39,9 @@ from hdd_core import (
     zone_for_cyl,
     zone_for_lba,
 )
-from profiles import DriveProfile, resolve_drive_profile_from_env
-from runtime_deps import RuntimeDeps
-from storage_events import NullStorageEventSink, StorageEvent, StorageEventSink
+from ..profiles import DriveProfile, resolve_drive_profile_from_env
+from ..runtime.deps import RuntimeDeps
+from ..storage_events import NullStorageEventSink, StorageEvent, StorageEventSink
 
 
 Stats = OperationStats
@@ -344,7 +344,7 @@ class HDDLatencyModel:
         return startup_trace_step_ms(total_ms)
 
     def _rotational_drag_terms(self) -> tuple[float, float]:
-        from hdd_core import rotational_drag_terms
+        from .core import rotational_drag_terms
 
         return rotational_drag_terms(self.core_config)
 
@@ -736,12 +736,12 @@ class HDDLatencyModel:
         return zone_for_cyl(self.core_config, cyl)
 
     def _lba_to_chs(self, lba: int) -> tuple[int, int, int, Zone]:
-        from hdd_core import lba_to_chs
+        from .core import lba_to_chs
 
         return lba_to_chs(self.core_config, lba)
 
     def _cache_overlap_blocks(self, lba: int, blocks: int, now: float) -> int:
-        from hdd_core import prune_cache
+        from .core import prune_cache
 
         pruned = prune_cache(self._core_cache_state(), now)
         self._apply_cache_state(pruned)
