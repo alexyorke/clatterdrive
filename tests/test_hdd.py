@@ -305,16 +305,10 @@ def test_background_scan_activity_can_delay_foreground_access() -> None:
         enable_background_scan=True,
     )
     try:
+        now = time.monotonic()
         with model.lock:
-            model.last_access_time = time.monotonic() - 7.0
-        deadline = time.monotonic() + 1.5
-        while True:
-            with model.lock:
-                if model.background_busy_until > time.monotonic():
-                    break
-            if time.monotonic() >= deadline:
-                pytest.fail("timed out waiting for background scan activity")
-            time.sleep(0.02)
+            model.last_access_time = now - 7.0
+        model._background_scan_step(now)
 
         result = model.submit_physical_access(0, model.block_bytes, False, op_kind="data")
 

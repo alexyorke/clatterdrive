@@ -9,7 +9,11 @@ from typing import Any
 
 import numpy as np
 import numpy.typing as npt
-import sounddevice as sd
+
+try:
+    import sounddevice as sd
+except (ImportError, OSError):
+    sd = None
 
 from .core import (
     AudioDiagnosticTrace,
@@ -453,6 +457,12 @@ class HDDAudioEngine:
         self.configure_tee(self.env.get("FAKE_HDD_AUDIO_TEE_PATH", self.tee_path))
         audio_setting = (self.env.get("FAKE_HDD_AUDIO", "live") or "live").strip().lower()
         if audio_setting in {"0", "off", "false", "disabled", "none"}:
+            self.output_enabled = False
+            self.last_render_at = None
+            self.time_origin = None
+            self.render_frame_cursor = 0
+            return
+        if sd is None:
             self.output_enabled = False
             self.last_render_at = None
             self.time_origin = None
