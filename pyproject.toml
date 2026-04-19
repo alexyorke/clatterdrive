@@ -1,9 +1,9 @@
 [tool.ruff]
 target-version = "py312"
-exclude = [".git", ".pytest_cache", ".pytest_tmp", ".tmp_pip", ".tmp_tests", "samples"]
+exclude = [".git", ".pytest_cache", ".pytest_tmp", ".tmp_pip", ".tmp_tests", ".runtime", "samples"]
 
 [tool.ruff.lint]
-select = ["ANN"]
+select = ["ANN", "B", "F", "PGH", "PLE", "RET", "RUF", "SIM", "UP"]
 ignore = ["ANN401"]
 
 [tool.mypy]
@@ -14,3 +14,8 @@ disallow_untyped_defs = true
 disallow_incomplete_defs = true
 check_untyped_defs = true
 warn_unused_ignores = true
+
+[tool.vulture]
+exclude = [".git", ".pytest_cache", ".pytest_tmp", ".tmp_pip", ".tmp_tests", ".runtime", "samples"]
+ignore_names = ["test_*", "_*callback"]
+min_confidence = 80

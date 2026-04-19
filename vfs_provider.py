@@ -1,36 +1,39 @@
 import os
 import sys
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 from wsgidav import util
 from wsgidav.fs_dav_provider import FileResource, FilesystemProvider, FolderResource
 
+from hdd_core import OperationStats
 from hdd_model import VirtualHDD
 from os_scheduler import OSScheduler
+from storage_events import StorageEventSink
 
 
-def _stats_flags(stats: dict[str, Any], writeback: bool = False) -> str:
+def _stats_flags(stats: OperationStats, writeback: bool = False) -> str:
     flags = []
-    if writeback and stats.get("cache_hit"):
+    if writeback and stats.cache_hit:
         flags.append("WRITE-BACK")
-    elif stats.get("cache_hit"):
+    elif stats.cache_hit:
         flags.append("CACHE HIT")
-    elif stats.get("partial_hit"):
+    elif stats.partial_hit:
         flags.append("PARTIAL CACHE")
-    if stats.get("ready_poll_count"):
-        flags.append(f"NOT READY x{stats['ready_poll_count']}")
+    if stats.ready_poll_count:
+        flags.append(f"NOT READY x{stats.ready_poll_count}")
     return "".join(f"[{flag}] " for flag in flags).strip()
 
 
-def _log_op(label: str, path: str, stats: dict[str, Any], writeback: bool = False) -> None:
+def _log_op(label: str, path: str, stats: OperationStats, writeback: bool = False) -> None:
     hit_str = _stats_flags(stats, writeback=writeback)
-    ext_str = f" | Extents: {stats['extents']}" if stats.get("extents", 0) > 1 else ""
+    ext_str = f" | Extents: {stats.extents}" if stats.extents > 1 else ""
     prefix = f"{label}: {path}"
     if hit_str:
         prefix = f"{prefix} {hit_str}"
     print(
-        f"{prefix} | Cyl: {stats.get('cyl', '-')} Head: {stats.get('head', '-')}{ext_str} | "
-        f"Total Latency: {stats['total_ms']:.2f}ms",
+        f"{prefix} | Cyl: {stats.cyl} Head: {stats.head}{ext_str} | "
+        f"Total Latency: {stats.total_ms:.2f}ms",
         file=sys.stderr,
     )
 
@@ -66,6 +69,7 @@ class LatencyFileResource(FileResource):
         self.vhdd.ensure_tree_known(self.path)
         super().copy_move_single(dest_path, is_move=is_move)
         _log_op("COPY", f"{self.path} -> {dest_path}", self.vhdd.copy_file(self.path, dest_path))
+        return True
 
 
 class LatencyFolderResource(FolderResource):
@@ -113,6 +117,7 @@ class LatencyFolderResource(FolderResource):
         else:
             stats = self.vhdd.create_directory(dest_path)
         _log_op("COPY", f"{self.path} -> {dest_path}", stats)
+        return True
 
 
 class LatencyReader:
@@ -219,9 +224,23 @@ class LatencyWriter:
 
 
 class HDDProvider(FilesystemProvider):
-    def __init__(self, root_folder_path: str) -> None:
+    def __init__(
+        self,
+        root_folder_path: str,
+        *,
+        event_sink: StorageEventSink | None = None,
+        drive_profile: str | None = None,
+        acoustic_profile: str | None = None,
+    ) -> None:
         super().__init__(root_folder_path)
-        self.vhdd = VirtualHDD(root_folder_path, cold_start=True, async_power_on=True)
+        self.vhdd = VirtualHDD(
+            root_folder_path,
+            cold_start=True,
+            async_power_on=True,
+            drive_profile=drive_profile,
+            acoustic_profile=acoustic_profile,
+            event_sink=event_sink,
+        )
         self.scheduler = OSScheduler(self.vhdd.model)
         self.vhdd.set_scheduler(self.scheduler)
 

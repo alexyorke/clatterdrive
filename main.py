@@ -20,8 +20,11 @@ def start_server() -> None:
     provider: HDDProvider | None = None
     server: wsgi.Server | None = None
     audio_started = False
+    drive_profile = os.environ.get("FAKE_HDD_DRIVE_PROFILE")
+    acoustic_profile = os.environ.get("FAKE_HDD_ACOUSTIC_PROFILE")
     try:
         try:
+            audio.configure_profiles(drive_profile=drive_profile, acoustic_profile=acoustic_profile)
             audio.start()
             if audio.output_enabled:
                 audio_started = True
@@ -35,7 +38,12 @@ def start_server() -> None:
         if not os.path.exists(root_path):
             os.makedirs(root_path)
 
-        provider = HDDProvider(root_path)
+        provider = HDDProvider(
+            root_path,
+            event_sink=audio,
+            drive_profile=drive_profile,
+            acoustic_profile=acoustic_profile,
+        )
         port = int(os.environ.get("FAKE_HDD_PORT", "8080"))
 
         config = {

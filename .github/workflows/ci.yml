@@ -18,16 +18,22 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install cheroot mypy numpy pytest requests ruff sounddevice WsgiDAV
+          python -m pip install cheroot mypy numpy pytest pytest-xdist requests ruff sounddevice vulture WsgiDAV
 
       - name: Compile
-        run: python -m py_compile audio_engine.py conftest.py fs_simulator.py generate_audio_samples.py hdd_model.py main.py os_scheduler.py profile_core.py profile_fragmentation.py stress_test.py test_fragmentation.py test_simulator.py vfs_provider.py
+        run: python -m py_compile audio_core.py audio_engine.py conftest.py fs_simulator.py generate_audio_samples.py generate_readme_demo_samples.py hdd_core.py hdd_model.py main.py os_scheduler.py profile_core.py profile_fragmentation.py profiles.py runtime_deps.py runtime_paths.py smoke.py storage_events.py test_architecture.py test_simulator.py vfs_provider.py
 
-      - name: Lint Annotations
+      - name: Lint
         run: ruff check .
+
+      - name: Dead Code
+        run: python -m vulture . --min-confidence 80
 
       - name: Type Check
         run: python -m mypy .
 
       - name: Test
-        run: python -m pytest -q
+        run: python -m pytest -q -n auto
+
+      - name: Smoke
+        run: python smoke.py

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
+
+from runtime_deps import EnvReader, OSEnvReader
 
 
 @dataclass(frozen=True)
@@ -48,6 +49,7 @@ class DriveProfile:
     windage_gain: float
     bearing_gain: float
     boundary_excitation_gain: float
+    helium: bool = False
 
 
 @dataclass(frozen=True)
@@ -219,6 +221,58 @@ DRIVE_PROFILES: dict[str, DriveProfile] = {
         bearing_gain=1.08,
         boundary_excitation_gain=1.28,
     ),
+    "wd_ultrastar_hc550": DriveProfile(
+        name="wd_ultrastar_hc550",
+        description="WD Ultrastar DC HC550-class 7200 RPM helium enterprise drive.",
+        default_acoustic_profile="bare_drive_lab",
+        rpm=7200,
+        platters=9,
+        avg_seek_ms=7.7,
+        track_to_track_ms=0.18,
+        settle_ms=0.28,
+        head_switch_ms=0.26,
+        transfer_rate_outer_mbps=255.0,
+        transfer_rate_inner_mbps=150.0,
+        ncq_depth=64,
+        read_ahead_kb=1024,
+        write_cache_mb=512,
+        dirty_expire_ms=220.0,
+        standby_after_s=180.0,
+        unload_after_s=22.0,
+        low_rpm_after_s=70.0,
+        spinup_ms=11800.0,
+        standby_to_ready_ms=15000.0,
+        power_on_to_ready_ms=20000.0,
+        unload_to_ready_ms=1000.0,
+        low_rpm_to_ready_ms=4000.0,
+        low_rpm_rpm=6300,
+        spin_down_ms=3200.0,
+        ready_poll_ms=24.0,
+        identify_poll_ms=0.30,
+        test_unit_ready_ms=0.15,
+        command_overhead_ms=0.07,
+        command_overheads_by_kind=(
+            ("metadata", 0.07),
+            ("journal", 0.12),
+            ("data", 0.07),
+            ("writeback", 0.09),
+            ("flush", 0.18),
+            ("background", 0.08),
+        ),
+        queue_depth_penalty_ms=0.075,
+        spindle_harmonics=(1, 2, 3, 4, 5),
+        spindle_harmonic_weights=(1.0, 0.50, 0.30, 0.18, 0.09),
+        platter_frequency_scale=1.06,
+        cover_frequency_scale=1.04,
+        actuator_frequency_scale=1.10,
+        platter_gain_scale=1.24,
+        cover_gain_scale=1.14,
+        actuator_gain_scale=1.18,
+        windage_gain=1.28,
+        bearing_gain=1.12,
+        boundary_excitation_gain=1.34,
+        helium=True,
+    ),
     "external_usb_enclosure": DriveProfile(
         name="external_usb_enclosure",
         description="Consumer external USB drive with bridge overhead and softer internal mechanics.",
@@ -337,7 +391,7 @@ def resolve_drive_profile(profile: str | DriveProfile | None) -> DriveProfile:
     if isinstance(profile, DriveProfile):
         return profile
 
-    profile_name = profile or os.environ.get("FAKE_HDD_DRIVE_PROFILE", "desktop_7200_internal")
+    profile_name = profile or "desktop_7200_internal"
     key = _profile_key(profile_name)
     if key not in DRIVE_PROFILES:
         available = ", ".join(sorted(DRIVE_PROFILES))
@@ -351,7 +405,7 @@ def resolve_acoustic_profile(profile: str | AcousticProfile | None, *, drive_pro
 
     resolved_drive = resolve_drive_profile(drive_profile) if not isinstance(drive_profile, DriveProfile) else drive_profile
     default_name = resolved_drive.default_acoustic_profile if resolved_drive is not None else "mounted_in_case"
-    profile_name = profile or os.environ.get("FAKE_HDD_ACOUSTIC_PROFILE", default_name)
+    profile_name = profile or default_name
     key = _profile_key(profile_name)
     if key not in ACOUSTIC_PROFILES:
         available = ", ".join(sorted(ACOUSTIC_PROFILES))
@@ -365,4 +419,51 @@ def resolve_selected_profiles(
 ) -> tuple[DriveProfile, AcousticProfile]:
     resolved_drive = resolve_drive_profile(drive_profile)
     resolved_acoustic = resolve_acoustic_profile(acoustic_profile, drive_profile=resolved_drive)
+    return resolved_drive, resolved_acoustic
+
+
+def resolve_drive_profile_from_env(
+    profile: str | DriveProfile | None,
+    *,
+    env: EnvReader | None = None,
+) -> DriveProfile:
+    env_reader = env or OSEnvReader()
+    profile_name = profile
+    if not isinstance(profile_name, DriveProfile):
+        profile_name = profile_name or env_reader.get("FAKE_HDD_DRIVE_PROFILE", "desktop_7200_internal")
+    return resolve_drive_profile(profile_name)
+
+
+def resolve_acoustic_profile_from_env(
+    profile: str | AcousticProfile | None,
+    *,
+    drive_profile: str | DriveProfile | None = None,
+    env: EnvReader | None = None,
+) -> AcousticProfile:
+    env_reader = env or OSEnvReader()
+    resolved_drive = (
+        drive_profile if isinstance(drive_profile, DriveProfile) else resolve_drive_profile_from_env(drive_profile, env=env_reader)
+    )
+    profile_name = profile
+    if not isinstance(profile_name, AcousticProfile):
+        profile_name = profile_name or env_reader.get(
+            "FAKE_HDD_ACOUSTIC_PROFILE",
+            resolved_drive.default_acoustic_profile,
+        )
+    return resolve_acoustic_profile(profile_name, drive_profile=resolved_drive)
+
+
+def resolve_selected_profiles_from_env(
+    drive_profile: str | DriveProfile | None,
+    acoustic_profile: str | AcousticProfile | None,
+    *,
+    env: EnvReader | None = None,
+) -> tuple[DriveProfile, AcousticProfile]:
+    env_reader = env or OSEnvReader()
+    resolved_drive = resolve_drive_profile_from_env(drive_profile, env=env_reader)
+    resolved_acoustic = resolve_acoustic_profile_from_env(
+        acoustic_profile,
+        drive_profile=resolved_drive,
+        env=env_reader,
+    )
     return resolved_drive, resolved_acoustic

@@ -79,6 +79,7 @@ def _profile_metadata_churn(vhdd: VirtualHDD) -> float:
         total_ms += vhdd.lookup_path(path)["total_ms"]
         total_ms += vhdd.list_directory("/meta")["total_ms"]
         total_ms += vhdd.delete_path(path)["total_ms"]
+    vhdd.fs.assert_consistent()
     return total_ms
 
 
@@ -91,6 +92,7 @@ def _profile_copy_heavy(vhdd: VirtualHDD) -> float:
         vhdd.access_file(source_path, 0, 256 * 1024, is_write=True)
         vhdd.sync_all()
         total_ms += vhdd.copy_file(source_path, dest_path)["total_ms"]
+    vhdd.fs.assert_consistent()
     return total_ms
 
 
@@ -109,6 +111,7 @@ def _profile_mixed_churn(vhdd: VirtualHDD) -> float:
         total_ms += vhdd.list_directory(dir_path)["total_ms"]
         total_ms += vhdd.delete_directory(dir_path)["total_ms"]
     vhdd.sync_all()
+    vhdd.fs.assert_consistent()
     return total_ms
 
 

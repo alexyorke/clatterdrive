@@ -9,8 +9,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import wave
+from collections.abc import Iterator, Sequence
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from cheroot import wsgi
 import numpy as np
@@ -22,12 +23,14 @@ from audio_engine import HDDAudioEngine, HDDAudioEvent
 from fs_simulator import FileSystemSimulator
 import generate_audio_samples
 from generate_audio_samples import render_scenario, update_random_flush, update_sequential_read, update_spinup_idle
+from hdd_core import CacheSpan
 from hdd_model import HDDLatencyModel, VirtualHDD
 from os_scheduler import OSScheduler
 import profile_core
 import profile_fragmentation
 from profiles import resolve_acoustic_profile, resolve_drive_profile
 import smoke
+from storage_events import StorageEvent
 from vfs_provider import HDDProvider
 
 
@@ -131,6 +134,10 @@ def _wav_metrics(path: Path) -> tuple[float, float]:
     rms = float(np.sqrt(np.mean(samples**2)))
     peak = float(np.max(np.abs(samples)))
     return rms, peak
+
+
+def _audio_event(**kwargs: Any) -> HDDAudioEvent:
+    return HDDAudioEvent(emitted_at=0.0, **kwargs)
 
 
 def test_filesystem_write_emits_metadata_and_data() -> None:
@@ -251,7 +258,7 @@ def test_filesystem_small_sizes_and_disk_full_are_handled() -> None:
 
 def test_partial_read_cache_is_not_reported_as_full_hit() -> None:
     model = HDDLatencyModel(addressable_blocks=4096, latency_scale=0.0)
-    model.read_cache.append((100, 101, time.monotonic() + 5.0))
+    model.read_cache.append(CacheSpan(start_lba=100, end_lba=101, expires_at=time.monotonic() + 5.0))
 
     result = model.submit_physical_access(100, 3 * model.block_bytes, False, op_kind="data")
 
@@ -262,7 +269,7 @@ def test_partial_read_cache_is_not_reported_as_full_hit() -> None:
 
 def test_non_prefix_cache_overlap_is_not_treated_as_partial_hit() -> None:
     model = HDDLatencyModel(addressable_blocks=4096, latency_scale=0.0)
-    model.read_cache.append((101, 102, time.monotonic() + 5.0))
+    model.read_cache.append(CacheSpan(start_lba=101, end_lba=102, expires_at=time.monotonic() + 5.0))
 
     result = model.submit_physical_access(100, 3 * model.block_bytes, False, op_kind="data")
 
@@ -354,6 +361,40 @@ def test_startup_stage_partitioning_respects_configured_budget() -> None:
         assert sum(stage.duration_ms for stage in model._build_startup_sequence("standby")) == pytest.approx(320.0)
         assert sum(stage.duration_ms for stage in model._build_startup_sequence("unloaded_idle")) == pytest.approx(150.0)
         assert sum(stage.duration_ms for stage in model._build_startup_sequence("low_rpm_idle")) == pytest.approx(260.0)
+    finally:
+        model.stop()
+
+
+def test_ultrastar_startup_trace_has_smooth_runup_and_late_activity_burst() -> None:
+    model = HDDLatencyModel(
+        addressable_blocks=4096,
+        latency_scale=0.0,
+        start_ready=False,
+        drive_profile="wd_ultrastar_hc550",
+    )
+    try:
+        stages = model._build_startup_sequence("power_on")
+        trace = model._build_startup_trace_from_stages("power_on", stages, step_ms=20.0)
+        spinup_points = [point for point in trace if point.is_spinup and point.rpm > 0.0]
+        rpm_values = np.array([point.rpm for point in spinup_points], dtype=np.float64)
+        rpm_deltas = np.diff(rpm_values)
+        self_test_index = next(index for index, point in enumerate(trace) if point.self_test_active)
+        head_load_index = next(index for index, point in enumerate(trace) if point.head_load_event)
+        servo_lock_index = next(index for index, point in enumerate(trace) if point.servo_locked)
+
+        assert len(spinup_points) > 300
+        assert np.all(rpm_deltas >= -1e-6)
+        assert float(np.max(rpm_deltas)) < model.target_rpm * 0.02
+        assert self_test_index < head_load_index < servo_lock_index
+        assert trace[self_test_index].rpm >= model.target_rpm * 0.88
+        assert trace[head_load_index].rpm >= model.target_rpm * 0.94
+        assert trace[head_load_index].rpm >= model.target_rpm * 0.972
+        assert trace[servo_lock_index].rpm >= model.target_rpm * 0.992
+        assert any(point.is_spinup for point in trace[self_test_index:servo_lock_index + 1])
+        assert any(
+            point.seek_distance > 0.0 or point.is_calibration
+            for point in trace[self_test_index: min(head_load_index + 120, len(trace))]
+        )
     finally:
         model.stop()
 
@@ -451,11 +492,11 @@ def test_staged_spindown_has_visible_intermediate_state_before_standby() -> None
     model = HDDLatencyModel(
         addressable_blocks=4096,
         latency_scale=1.0,
-        spin_down_ms=40.0,
+        spin_down_ms=120.0,
     )
     try:
         assert model.begin_async_spindown() is True
-        time.sleep(0.01)
+        time.sleep(0.03)
         with model.lock:
             assert model.power_state == "spinning_down"
             assert model.current_rpm < model.target_rpm
@@ -464,6 +505,74 @@ def test_staged_spindown_has_visible_intermediate_state_before_standby() -> None
             assert model.power_state == "standby"
             assert model.current_rpm == 0.0
             assert model.heads_loaded is False
+    finally:
+        model.stop()
+
+
+def test_spindown_trace_is_monotone_and_continuous() -> None:
+    model = HDDLatencyModel(addressable_blocks=4096, latency_scale=0.0, spin_down_ms=320.0)
+    try:
+        with model.lock:
+            stages = model._build_spindown_sequence_locked()
+        trace = model._build_spindown_trace_from_stages(stages, step_ms=10.0, initial_heads_loaded=True)
+        rpm_values = np.array([point.rpm for point in trace], dtype=np.float64)
+        rpm_deltas = np.diff(rpm_values)
+        park_index = next(index for index, point in enumerate(trace) if point.park_event)
+
+        assert len(trace) > 20
+        assert np.all(rpm_deltas <= 1e-6)
+        assert float(np.max(np.abs(rpm_deltas))) < model.target_rpm * 0.03
+        assert trace[park_index].heads_loaded is False
+        assert trace[-1].rpm == 0.0
+    finally:
+        model.stop()
+
+
+def test_low_rpm_entry_is_continuous_not_instant() -> None:
+    model = HDDLatencyModel(addressable_blocks=4096, latency_scale=1.0, spin_down_ms=120.0)
+    try:
+        with model.lock:
+            model.power_state = "unloaded_idle"
+            model.current_rpm = model.target_rpm
+            model.heads_loaded = False
+        assert model.begin_async_low_rpm() is True
+
+        time.sleep(0.02)
+        with model.lock:
+            assert model.power_state == "slowing_to_low_rpm"
+            assert model.low_rpm_rpm < model.current_rpm < model.target_rpm
+
+        time.sleep(0.35)
+        with model.lock:
+            assert model.power_state == "low_rpm_idle"
+            assert model.current_rpm == pytest.approx(model.low_rpm_rpm)
+    finally:
+        model.stop()
+
+
+def test_idle_calibration_is_not_spammed_every_background_tick() -> None:
+    class CapturingSink:
+        def __init__(self) -> None:
+            self.events: list[StorageEvent] = []
+
+        def publish_event(self, event: StorageEvent) -> None:
+            self.events.append(event)
+
+    sink = CapturingSink()
+    model = HDDLatencyModel(
+        addressable_blocks=4096,
+        latency_scale=0.0,
+        unload_after_s=100.0,
+        low_rpm_after_s=100.0,
+        standby_after_s=1000.0,
+        event_sink=sink,
+    )
+    try:
+        with model.lock:
+            model.last_access_time = time.monotonic() - 9.0
+        time.sleep(0.22)
+        calibration_events = [event for event in sink.events if event.impulse == "calibration"]
+        assert len(calibration_events) == 1
     finally:
         model.stop()
 
@@ -696,16 +805,58 @@ def test_audio_engine_can_disable_live_output_via_env(monkeypatch: MonkeyPatch) 
         engine.stop()
 
 
+def test_audio_engine_can_tee_rendered_output_to_wave_file(tmp_path: Path) -> None:
+    tee_path = tmp_path / "tee.wav"
+    engine = HDDAudioEngine(seed=0, tee_path=str(tee_path))
+    try:
+        engine.emit_telemetry(7200.0, seek_trigger=True, seek_dist=900, op_kind="data")
+        engine.render_chunk(4096)
+        engine.render_chunk(4096)
+    finally:
+        engine.stop()
+
+    assert tee_path.exists()
+    with wave.open(str(tee_path), "rb") as wav_file:
+        assert wav_file.getframerate() == engine.fs
+        assert wav_file.getnchannels() == 1
+        assert wav_file.getnframes() == 8192
+    rms, peak = _wav_metrics(tee_path)
+    assert rms > 0.001
+    assert peak > 0.005
+
+
+def test_audio_engine_can_tee_output_from_env_without_live_device(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    tee_path = tmp_path / "env-tee.wav"
+    monkeypatch.setenv("FAKE_HDD_AUDIO", "off")
+    monkeypatch.setenv("FAKE_HDD_AUDIO_TEE_PATH", str(tee_path))
+    engine = HDDAudioEngine(seed=0)
+    engine.start()
+    try:
+        engine.emit_telemetry(7200.0, seek_trigger=True, seek_dist=600, op_kind="flush", is_flush=True)
+        engine.render_chunk(4096)
+    finally:
+        engine.stop()
+
+    assert engine.output_enabled is False
+    assert tee_path.exists()
+    rms, peak = _wav_metrics(tee_path)
+    assert rms > 0.001
+    assert peak > 0.005
+
+
 def test_audio_engine_events_are_buffered_until_render() -> None:
     engine = HDDAudioEngine(seed=0)
     engine.emit_telemetry(7200.0, seek_trigger=True, seek_dist=700, op_kind="data")
 
-    assert engine.pending_event_count() == 1
+    assert engine.events.pending_count() == 1
     assert engine.synthesizer.rpm == 0.0
 
     chunk = engine.render_chunk(4096)
 
-    assert engine.pending_event_count() == 0
+    assert engine.events.pending_count() == 0
     assert engine.synthesizer.rpm == 7200.0
     assert float(np.max(np.abs(chunk))) > 0.005
 
@@ -718,14 +869,14 @@ def test_audio_engine_overlapping_events_can_render_in_one_chunk() -> None:
 
     chunk = engine.render_chunk(4096)
 
-    assert engine.pending_event_count() == 0
+    assert engine.events.pending_count() == 0
     assert len(engine.synthesizer.pending_impulses) == 0
     assert float(np.sqrt(np.mean(chunk**2))) > 0.003
 
 
 def test_audio_synth_can_schedule_future_impulse_across_chunks() -> None:
     engine = HDDAudioEngine(seed=0)
-    event = HDDAudioEvent(
+    event = _audio_event(
         rpm=7200.0,
         queue_depth=1,
         op_kind="data",
@@ -737,12 +888,12 @@ def test_audio_synth_can_schedule_future_impulse_across_chunks() -> None:
     second = engine.synthesizer.render_chunk(512)
 
     assert len(engine.synthesizer.pending_impulses) == 0
-    assert float(np.max(np.abs(first))) < 0.02
-    assert float(np.max(np.abs(second - first))) > 0.007
+    assert float(np.max(np.abs(first))) < 1e-9
+    assert float(np.max(np.abs(second))) > 0.006
 
 
 def test_audio_engine_chunk_edge_seek_carries_into_next_chunk() -> None:
-    edge_event = HDDAudioEvent(
+    edge_event = _audio_event(
         rpm=7200.0,
         queue_depth=1,
         op_kind="data",
@@ -753,14 +904,14 @@ def test_audio_engine_chunk_edge_seek_carries_into_next_chunk() -> None:
     idle_engine = HDDAudioEngine(seed=0)
     idle_chunk = idle_engine.synthesizer.render_chunk(
         1024,
-        scheduled_events=[(HDDAudioEvent(rpm=7200.0, queue_depth=1, op_kind="data"), 0)],
+        scheduled_events=[(_audio_event(rpm=7200.0, queue_depth=1, op_kind="data"), 0)],
     )
 
     engine = HDDAudioEngine(seed=0)
     first = engine.synthesizer.render_chunk(1024, scheduled_events=[(edge_event, 1022)])
-    first_delta = first - idle_chunk
     assert len(engine.synthesizer.pending_impulses) > 0
-    assert float(np.max(np.abs(first_delta))) < 1e-6
+    assert float(np.max(np.abs(first[:1000]))) < 1e-9
+    assert float(np.max(np.abs(first[1000:]))) > 0.001
 
     second = engine.synthesizer.render_chunk(1024)
     second_delta = second - idle_chunk
@@ -771,11 +922,11 @@ def test_audio_engine_chunk_edge_seek_carries_into_next_chunk() -> None:
 
 def test_audio_engine_event_bus_drains_fifo() -> None:
     engine = HDDAudioEngine(seed=0)
-    first = HDDAudioEvent(rpm=5400.0, queue_depth=1, op_kind="metadata", impulse="calibration")
-    second = HDDAudioEvent(rpm=7200.0, queue_depth=4, op_kind="data", impulse="seek", seek_distance=500)
+    first = _audio_event(rpm=5400.0, queue_depth=1, op_kind="metadata", impulse="calibration")
+    second = _audio_event(rpm=7200.0, queue_depth=4, op_kind="data", impulse="seek", seek_distance=500)
 
-    engine.emit_event(first)
-    engine.emit_event(second)
+    engine.events.publish(first)
+    engine.events.publish(second)
     drained = engine.events.drain()
 
     assert drained == [first, second]
@@ -784,12 +935,32 @@ def test_audio_engine_event_bus_drains_fifo() -> None:
 def test_audio_engine_event_bus_is_bounded_and_keeps_recent_events() -> None:
     engine = HDDAudioEngine(seed=0, max_pending_events=3)
     for idx in range(5):
-        engine.emit_event(HDDAudioEvent(rpm=5400.0 + idx, queue_depth=idx + 1, op_kind="metadata"))
+        engine.events.publish(_audio_event(rpm=5400.0 + idx, queue_depth=idx + 1, op_kind="metadata"))
 
     drained = engine.events.drain()
 
     assert [event.queue_depth for event in drained] == [3, 4, 5]
-    assert engine.dropped_event_count() == 2
+    assert engine.events.dropped_count() == 2
+
+
+def test_virtual_hdd_can_emit_to_injected_event_sink(isolated_backing_dir: Path) -> None:
+    class CapturingSink:
+        def __init__(self) -> None:
+            self.events: list[StorageEvent] = []
+
+        def publish_event(self, event: StorageEvent) -> None:
+            self.events.append(event)
+
+    sink = CapturingSink()
+    vhdd = VirtualHDD(str(isolated_backing_dir), latency_scale=0.0, event_sink=sink)
+    try:
+        vhdd.access_file("/captured.bin", 0, 4096, is_write=True)
+        vhdd.access_file("/captured.bin", 0, 4096, is_write=False)
+
+        assert sink.events
+        assert any(event.op_kind == "data" for event in sink.events)
+    finally:
+        vhdd.stop()
 
 
 def test_audio_engine_flush_journal_and_generic_seek_classes_have_distinct_pulse_shapes() -> None:
@@ -800,7 +971,7 @@ def test_audio_engine_flush_journal_and_generic_seek_classes_have_distinct_pulse
     data_pulses = synth._make_impulse_pulses("seek", 0, 220.0, "data", False)
     flush_pulses = synth._make_impulse_pulses("seek", 0, 260.0, "flush", True)
 
-    def pulse_energy(pulses: list[Any]) -> float:
+    def pulse_energy(pulses: Sequence[Any]) -> float:
         return float(sum(abs(pulse.amplitude) for pulse in pulses))
 
     assert len(metadata_pulses) == 3
@@ -879,13 +1050,13 @@ def test_audio_engine_multi_event_render_has_higher_delta_complexity_than_single
     idle_engine = HDDAudioEngine(seed=0)
     idle_chunk = idle_engine.synthesizer.render_chunk(
         1024,
-        scheduled_events=[(HDDAudioEvent(rpm=7200.0, queue_depth=1, op_kind="data"), 0)],
+        scheduled_events=[(_audio_event(rpm=7200.0, queue_depth=1, op_kind="data"), 0)],
     )
 
     single_engine = HDDAudioEngine(seed=0)
     single_chunk = single_engine.synthesizer.render_chunk(
         1024,
-        scheduled_events=[(HDDAudioEvent(rpm=7200.0, queue_depth=1, op_kind="data", impulse="seek", seek_distance=220), 0)],
+        scheduled_events=[(_audio_event(rpm=7200.0, queue_depth=1, op_kind="data", impulse="seek", seek_distance=220), 0)],
     )
     single_delta = single_chunk - idle_chunk
 
@@ -893,10 +1064,10 @@ def test_audio_engine_multi_event_render_has_higher_delta_complexity_than_single
     multi_chunk = multi_engine.synthesizer.render_chunk(
         1024,
         scheduled_events=[
-            (HDDAudioEvent(rpm=7200.0, queue_depth=1, op_kind="data", impulse="seek", seek_distance=220), 0),
-            (HDDAudioEvent(rpm=7200.0, queue_depth=1, op_kind="journal", impulse="seek", seek_distance=80), 50),
-            (HDDAudioEvent(rpm=7200.0, queue_depth=1, op_kind="metadata", impulse="calibration"), 90),
-            (HDDAudioEvent(rpm=7200.0, queue_depth=1, op_kind="metadata", impulse="park"), 140),
+            (_audio_event(rpm=7200.0, queue_depth=1, op_kind="data", impulse="seek", seek_distance=220), 0),
+            (_audio_event(rpm=7200.0, queue_depth=1, op_kind="journal", impulse="seek", seek_distance=80), 50),
+            (_audio_event(rpm=7200.0, queue_depth=1, op_kind="metadata", impulse="calibration"), 90),
+            (_audio_event(rpm=7200.0, queue_depth=1, op_kind="metadata", impulse="park"), 140),
         ],
     )
     multi_delta = multi_chunk - idle_chunk
@@ -911,23 +1082,23 @@ def test_audio_engine_render_regression_for_startup_idle_park_and_flush_envelope
     idle_engine = HDDAudioEngine(seed=0)
     idle_chunk = idle_engine.synthesizer.render_chunk(
         1024,
-        scheduled_events=[(HDDAudioEvent(rpm=7200.0, queue_depth=1, op_kind="data"), 0)],
+        scheduled_events=[(_audio_event(rpm=7200.0, queue_depth=1, op_kind="data"), 0)],
     )
 
     startup_engine = HDDAudioEngine(seed=0)
     startup_chunk = startup_engine.synthesizer.render_chunk(
         1024,
-        scheduled_events=[(HDDAudioEvent(rpm=1200.0, queue_depth=1, op_kind="metadata", is_spinup=True), 0)],
+        scheduled_events=[(_audio_event(rpm=1200.0, queue_depth=1, op_kind="metadata", is_spinup=True), 0)],
     )
     park_engine = HDDAudioEngine(seed=0)
     park_chunk = park_engine.synthesizer.render_chunk(
         1024,
-        scheduled_events=[(HDDAudioEvent(rpm=7200.0, queue_depth=1, op_kind="metadata", impulse="park"), 0)],
+        scheduled_events=[(_audio_event(rpm=7200.0, queue_depth=1, op_kind="metadata", impulse="park"), 0)],
     )
     flush_engine = HDDAudioEngine(seed=0)
     flush_chunk = flush_engine.synthesizer.render_chunk(
         1024,
-        scheduled_events=[(HDDAudioEvent(rpm=7200.0, queue_depth=3, op_kind="flush", impulse="seek", seek_distance=260, is_flush=True), 0)],
+        scheduled_events=[(_audio_event(rpm=7200.0, queue_depth=3, op_kind="flush", impulse="seek", seek_distance=260, is_flush=True), 0)],
     )
 
     park_delta = park_chunk - idle_chunk
@@ -974,9 +1145,26 @@ def test_audio_engine_overlapping_seek_flush_park_and_calibration_events_render_
 
     chunk = engine.render_chunk(4096)
 
-    assert engine.pending_event_count() == 0
+    assert engine.events.pending_count() == 0
     assert len(engine.synthesizer.pending_impulses) == 0
     assert float(np.sqrt(np.mean(chunk**2))) > 0.003
+
+
+def test_audio_engine_honors_control_event_offsets_within_a_chunk() -> None:
+    engine = HDDAudioEngine(seed=0)
+    chunk = engine.synthesizer.render_chunk(
+        4096,
+        scheduled_events=[
+            (_audio_event(rpm=0.0, queue_depth=1, op_kind="data"), 0),
+            (_audio_event(rpm=7200.0, queue_depth=1, op_kind="data"), 2048),
+        ],
+    )
+
+    first_half_rms = float(np.sqrt(np.mean(chunk[:2048] ** 2)))
+    second_half_rms = float(np.sqrt(np.mean(chunk[2048:] ** 2)))
+
+    assert first_half_rms < 0.0002
+    assert second_half_rms > first_half_rms * 20.0
 
 
 def test_scheduler_propagates_model_failures() -> None:

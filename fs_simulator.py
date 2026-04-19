@@ -67,10 +67,10 @@ class FileSystemSimulator:
         for block in range(self.data_start_block):
             self.bitmap[block] = 1
 
-        self.files = {}  # path -> FileInode
-        self.directories = {}  # path -> DirectoryInode
-        self.directory_blocks = {}
-        self.dir_children = {}  # path -> set(child names)
+        self.files: dict[str, FileInode] = {}  # path -> FileInode
+        self.directories: dict[str, DirectoryInode] = {}  # path -> DirectoryInode
+        self.directory_blocks: dict[str, int] = {}
+        self.dir_children: dict[str, set[str]] = {}  # path -> set(child names)
         self.next_inode_block = self.inode_table_start
         self.next_directory_block = self.directory_start + 1
         self.journal_cursor = 0
@@ -181,7 +181,7 @@ class FileSystemSimulator:
 
     def _coalesce_extents(self, inode: FileInode) -> None:
         inode.extents.sort(key=lambda item: item[0])
-        merged = []
+        merged: list[Extent] = []
         for logical_start, physical_start, length in inode.extents:
             if not merged:
                 merged.append((logical_start, physical_start, length))
@@ -538,7 +538,7 @@ class FileSystemSimulator:
                 )
                 operations.extend(self._bitmap_ops_for_extents(inode.extents))
 
-            for dir_path in child_dirs + [path]:
+            for dir_path in [*child_dirs, path]:
                 directory = self.directories[dir_path]
                 parent_dir = self.directories[directory.parent_dir]
                 operations.extend(
@@ -554,7 +554,7 @@ class FileSystemSimulator:
                 self._free_extents(inode.extents)
                 self.dir_children[inode.parent_dir].discard(self._basename(file_path))
 
-            for dir_path in child_dirs + [path]:
+            for dir_path in [*child_dirs, path]:
                 directory = self.directories.pop(dir_path)
                 self.directory_blocks.pop(dir_path, None)
                 self.dir_children.pop(dir_path, None)
@@ -715,7 +715,7 @@ class FileSystemSimulator:
             assert set(self.directory_blocks) == set(self.directories)
             assert set(self.dir_children) == set(self.directories)
 
-            expected_children = {path: set() for path in self.directories}
+            expected_children: dict[str, set[str]] = {path: set() for path in self.directories}
             seen_inode_blocks = set()
             seen_dir_blocks = set()
             seen_data_blocks = set()

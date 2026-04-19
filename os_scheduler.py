@@ -41,9 +41,9 @@ class OSScheduler:
         self.read_deadline_s = read_deadline_ms / 1000.0
         self.write_deadline_s = write_deadline_ms / 1000.0
 
-        self.staging_queue = []
-        self.results = {}
-        self.events = {}
+        self.staging_queue: list[IORequest] = []
+        self.results: dict[str, Any | BaseException] = {}
+        self.events: dict[str, threading.Event] = {}
         self.direction = 1
         self.sequence = 0
         self.lock = threading.Lock()
