@@ -23,13 +23,13 @@ jobs:
         run: uv sync --locked --group dev
 
       - name: Compile
-        run: uv run python -m compileall -q fake_hdd_fuse tests main.py smoke.py profile_core.py profile_fragmentation.py generate_audio_samples.py generate_readme_demo_samples.py hdd_model.py
+        run: uv run python -m compileall -q clatterdrive tests main.py smoke.py profile_core.py profile_fragmentation.py generate_audio_samples.py generate_readme_demo_samples.py hdd_model.py trace_audio_scenarios.py
 
       - name: Lint
         run: uv run ruff check .
 
       - name: Dead Code
-        run: uv run python -m vulture . --min-confidence 80
+        run: uv run python -m vulture clatterdrive tests main.py smoke.py profile_core.py profile_fragmentation.py generate_audio_samples.py generate_readme_demo_samples.py trace_audio_scenarios.py hdd_model.py --min-confidence 80
 
       - name: Type Check
         run: uv run python -m mypy .
