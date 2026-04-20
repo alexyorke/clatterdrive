@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ClatterDrive Audio Demo</title>
+    <meta
+      name="description"
+      content="Browser-playable sample renders from ClatterDrive, the mechanical HDD behavior and sound simulator."
+    >
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f4f0e7;
+        --panel: #fffaf3;
+        --ink: #1f1e1a;
+        --muted: #5d584d;
+        --line: #d8cfbf;
+        --accent: #8c4f2b;
+        --accent-soft: #f3dfca;
+        --shadow: rgba(65, 45, 24, 0.12);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: Georgia, "Times New Roman", serif;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at top left, #fff8eb 0, transparent 28rem),
+          linear-gradient(180deg, #efe6d7 0, var(--bg) 16rem, #f7f2e9 100%);
+      }
+
+      main {
+        width: min(72rem, calc(100vw - 2rem));
+        margin: 0 auto;
+        padding: 2.5rem 0 4rem;
+      }
+
+      .hero {
+        display: grid;
+        grid-template-columns: 1.1fr 0.9fr;
+        gap: 1.5rem;
+        align-items: stretch;
+        margin-bottom: 1.5rem;
+      }
+
+      .panel {
+        background: rgba(255, 250, 243, 0.9);
+        border: 1px solid var(--line);
+        border-radius: 1.25rem;
+        box-shadow: 0 0.9rem 2rem var(--shadow);
+      }
+
+      .hero-copy {
+        padding: 2rem 2rem 1.75rem;
+      }
+
+      .eyebrow {
+        margin: 0 0 0.5rem;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        font-size: 0.78rem;
+        color: var(--accent);
+        font-weight: 700;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(2.2rem, 4vw, 3.6rem);
+        line-height: 0.96;
+      }
+
+      .subtitle {
+        margin: 0.9rem 0 0;
+        max-width: 34rem;
+        color: var(--muted);
+        font-size: 1.04rem;
+        line-height: 1.55;
+      }
+
+      .hero-links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        margin-top: 1.3rem;
+      }
+
+      .hero-links a {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        padding: 0.75rem 1rem;
+        border-radius: 999px;
+        text-decoration: none;
+        color: var(--ink);
+        background: var(--accent-soft);
+        border: 1px solid #e4c7a8;
+        font-weight: 600;
+      }
+
+      .scene {
+        padding: 1.2rem;
+        display: grid;
+        place-items: center;
+        min-height: 18rem;
+        background:
+          linear-gradient(180deg, rgba(255, 247, 232, 0.95), rgba(245, 237, 224, 0.92)),
+          linear-gradient(135deg, rgba(140, 79, 43, 0.06), transparent 60%);
+      }
+
+      .scene svg {
+        width: 100%;
+        height: auto;
+        display: block;
+      }
+
+      .samples {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 1rem;
+      }
+
+      .sample-card {
+        padding: 1.25rem;
+      }
+
+      .sample-card h2 {
+        margin: 0 0 0.35rem;
+        font-size: 1.3rem;
+      }
+
+      .sample-card p {
+        margin: 0.45rem 0 0;
+        color: var(--muted);
+        line-height: 1.55;
+      }
+
+      .sample-card audio {
+        width: 100%;
+        margin-top: 1rem;
+      }
+
+      .meta {
+        margin-top: 0.8rem;
+        padding-top: 0.8rem;
+        border-top: 1px solid var(--line);
+        font-size: 0.96rem;
+      }
+
+      .meta strong {
+        color: var(--ink);
+      }
+
+      .downloads {
+        margin-top: 0.85rem;
+        display: flex;
+        gap: 0.8rem;
+        flex-wrap: wrap;
+      }
+
+      .downloads a {
+        color: var(--accent);
+        font-weight: 600;
+      }
+
+      .notes {
+        margin-top: 1rem;
+        padding: 1.25rem 1.35rem;
+      }
+
+      .notes h2 {
+        margin: 0 0 0.6rem;
+        font-size: 1.25rem;
+      }
+
+      .notes p {
+        margin: 0.35rem 0;
+        color: var(--muted);
+        line-height: 1.6;
+      }
+
+      code {
+        font-family: "Cascadia Code", Consolas, monospace;
+        font-size: 0.95em;
+        background: rgba(95, 78, 56, 0.08);
+        padding: 0.12rem 0.35rem;
+        border-radius: 0.35rem;
+      }
+
+      @media (max-width: 860px) {
+        .hero,
+        .samples {
+          grid-template-columns: 1fr;
+        }
+
+        main {
+          width: min(42rem, calc(100vw - 1rem));
+          padding-top: 1rem;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="hero">
+        <article class="panel hero-copy">
+          <p class="eyebrow">ClatterDrive Audio Demo</p>
+          <h1>Mechanical HDD behavior, rendered as sound.</h1>
+          <p class="subtitle">
+            These are browser-playable renders from the current ClatterDrive engine. They are not
+            recordings of a real disk and they are not bundled sound effects. Each clip comes from
+            a different simulated workload and mounting condition so the low end, tick texture, and
+            enclosure bloom actually change.
+          </p>
+          <div class="hero-links">
+            <a href="https://github.com/alexyorke/clatterdrive">View repo</a>
+            <a href="https://github.com/alexyorke/clatterdrive/blob/master/README.md">Read the README</a>
+          </div>
+        </article>
+        <aside class="panel scene" aria-label="Drive and desk illustration">
+          <svg viewBox="0 0 480 320" role="img">
+            <defs>
+              <linearGradient id="table-top" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="#7a5133"></stop>
+                <stop offset="100%" stop-color="#5b3924"></stop>
+              </linearGradient>
+              <linearGradient id="enclosure" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="#d0d5da"></stop>
+                <stop offset="100%" stop-color="#9ca3aa"></stop>
+              </linearGradient>
+              <linearGradient id="cover" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="#f3f4f5"></stop>
+                <stop offset="100%" stop-color="#d6dadd"></stop>
+              </linearGradient>
+            </defs>
+
+            <rect x="0" y="232" width="480" height="88" rx="18" fill="url(#table-top)"></rect>
+            <rect x="76" y="108" width="328" height="118" rx="18" fill="url(#enclosure)" stroke="#5c636b" stroke-width="3"></rect>
+            <rect x="96" y="82" width="288" height="118" rx="20" fill="url(#cover)" stroke="#7b8087" stroke-width="3"></rect>
+            <circle cx="220" cy="140" r="50" fill="#edf0f2" stroke="#828890" stroke-width="5"></circle>
+            <circle cx="220" cy="140" r="7" fill="#7e838b"></circle>
+            <path d="M220 140 L286 112" stroke="#a4abb3" stroke-width="7" stroke-linecap="round"></path>
+            <path d="M286 112 L324 138" stroke="#6b727a" stroke-width="12" stroke-linecap="round"></path>
+            <circle cx="287" cy="112" r="8" fill="#666d75"></circle>
+            <rect x="308" y="128" width="34" height="22" rx="6" fill="#535a61"></rect>
+            <circle cx="110" cy="96" r="6" fill="#7e838b"></circle>
+            <circle cx="370" cy="96" r="6" fill="#7e838b"></circle>
+            <circle cx="110" cy="186" r="6" fill="#7e838b"></circle>
+            <circle cx="370" cy="186" r="6" fill="#7e838b"></circle>
+
+            <path d="M78 224 C120 210, 164 206, 216 214" fill="none" stroke="#8c4f2b" stroke-width="4" stroke-dasharray="6 6"></path>
+            <path d="M404 224 C354 207, 310 205, 258 213" fill="none" stroke="#8c4f2b" stroke-width="4" stroke-dasharray="6 6"></path>
+            <text x="48" y="72" font-size="18" fill="#5d584d">cover</text>
+            <text x="146" y="146" font-size="18" fill="#5d584d">platter</text>
+            <text x="274" y="102" font-size="18" fill="#5d584d">actuator</text>
+            <text x="124" y="258" font-size="18" fill="#fff4e8">desk / table resonance</text>
+          </svg>
+        </aside>
+      </section>
+
+      <section class="samples" aria-label="Audio sample players">
+        <article class="panel sample-card">
+          <h2>Spin-up, idle, park</h2>
+          <p>
+            Cold power-on through spindle run-up, early servo activity, a short idle period, then
+            a final park. This one uses the desk-coupled mounting profile.
+          </p>
+          <audio controls preload="none">
+            <source src="https://raw.githubusercontent.com/alexyorke/clatterdrive/master/samples/spinup-idle-park.wav" type="audio/wav">
+          </audio>
+          <div class="meta">
+            <strong>Why it sounds this way:</strong> the desk/table structure path adds more low
+            body during run-up, while the late sharp transient is modeled park/contact behavior.
+          </div>
+          <div class="downloads">
+            <a href="https://raw.githubusercontent.com/alexyorke/clatterdrive/master/samples/spinup-idle-park.wav">Direct WAV</a>
+            <a href="https://github.com/alexyorke/clatterdrive/blob/master/samples/spinup-idle-park.wav">Repo file</a>
+          </div>
+        </article>
+
+        <article class="panel sample-card">
+          <h2>Idle to standby to wake</h2>
+          <p>
+            Active drive, park into a quieter standby-like state, then wake back into seek and
+            transfer activity. This is also rendered with the desk-coupled profile.
+          </p>
+          <audio controls preload="none">
+            <source src="https://raw.githubusercontent.com/alexyorke/clatterdrive/master/samples/idle-standby-wake.wav" type="audio/wav">
+          </audio>
+          <div class="meta">
+            <strong>Why it sounds this way:</strong> the low-frequency mounting path stays present
+            through the wake cycle, so the main contrast is the park/wake transition rather than a
+            simple change in seek rate.
+          </div>
+          <div class="downloads">
+            <a href="https://raw.githubusercontent.com/alexyorke/clatterdrive/master/samples/idle-standby-wake.wav">Direct WAV</a>
+            <a href="https://github.com/alexyorke/clatterdrive/blob/master/samples/idle-standby-wake.wav">Repo file</a>
+          </div>
+        </article>
+
+        <article class="panel sample-card">
+          <h2>Metadata storm</h2>
+          <p>
+            Dense bursts of metadata and journal-style seeks with occasional recalibration-like
+            interruptions, rendered with the bright bare-drive lab profile.
+          </p>
+          <audio controls preload="none">
+            <source src="https://raw.githubusercontent.com/alexyorke/clatterdrive/master/samples/metadata-storm.wav" type="audio/wav">
+          </audio>
+          <div class="meta">
+            <strong>Why it sounds this way:</strong> this one strips away most desk/enclosure bloom
+            so the servo-wedge tick texture and brighter exposed seek structure are easier to hear.
+          </div>
+          <div class="downloads">
+            <a href="https://raw.githubusercontent.com/alexyorke/clatterdrive/master/samples/metadata-storm.wav">Direct WAV</a>
+            <a href="https://github.com/alexyorke/clatterdrive/blob/master/samples/metadata-storm.wav">Repo file</a>
+          </div>
+        </article>
+      </section>
+
+      <section class="panel notes">
+        <h2>How these were made</h2>
+        <p>
+          The same repo that serves the fake drive also renders these clips. Regenerate them with
+          <code>uv run python generate_readme_demo_samples.py</code>.
+        </p>
+        <p>
+          The current README and this page intentionally use three different situations rather than
+          three almost-identical steady-state loops, so the differences in structure coupling,
+          power-state behavior, and seek texture are actually audible.
+        </p>
+      </section>
+    </main>
+  </body>
+</html>
