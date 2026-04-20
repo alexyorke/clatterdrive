@@ -61,6 +61,14 @@ def write_wav(path: Path, samples: FloatArray, sample_rate: int) -> None:
         wav_file.writeframes(pcm.tobytes())
 
 
+def normalize_demo_audio(samples: FloatArray, *, target_peak: float = 0.92) -> FloatArray:
+    peak = float(np.max(np.abs(samples))) if samples.size else 0.0
+    if peak <= 1e-9:
+        return samples
+    scale = target_peak / peak
+    return np.clip(samples * scale, -0.995, 0.995)
+
+
 def mirror_demo_sample_to_docs(path: Path) -> None:
     DOCS_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
     shutil.copy2(path, DOCS_AUDIO_DIR / path.name)
@@ -73,6 +81,7 @@ def render_scenario(
     seed: int = 7,
     drive_profile: str | DriveProfile | None = None,
     acoustic_profile: str | AcousticProfile | None = None,
+    normalize_peak: float | None = None,
 ) -> Path:
     engine = HDDAudioEngine(
         sample_rate=44100,
@@ -94,6 +103,8 @@ def render_scenario(
 
     output_path = SAMPLES_DIR / f"{name}.wav"
     samples = np.concatenate(rendered) if rendered else np.zeros(0, dtype=np.float64)
+    if normalize_peak is not None:
+        samples = normalize_demo_audio(samples, target_peak=normalize_peak)
     write_wav(output_path, samples, engine.fs)
     return output_path
 
@@ -248,18 +259,40 @@ def update_idle_to_standby_wake(engine: HDDAudioEngine, t: float, emitted_flags:
 
 def update_metadata_storm(engine: HDDAudioEngine, t: float, emitted_flags: set[str]) -> None:
     target_rpm = float(engine.synthesizer.drive_profile.rpm)
-    step = int(t * 18)
+    step = int(t * 22)
     event_key = f"meta-{step}"
     if event_key in emitted_flags:
         return
     emitted_flags.add(event_key)
-    if step % 5 == 0:
+    if step % 11 == 0:
         engine.emit_telemetry(target_rpm, is_cal=True, queue_depth=1, op_kind="metadata")
         return
-    if step % 3 == 0:
-        engine.emit_telemetry(target_rpm, seek_trigger=True, seek_dist=48, queue_depth=2, op_kind="journal")
+    if step % 7 == 0:
+        engine.emit_telemetry(
+            target_rpm,
+            seek_trigger=True,
+            seek_dist=220 + ((step * 19) % 120),
+            queue_depth=3,
+            op_kind="flush",
+            is_flush=True,
+        )
         return
-    engine.emit_telemetry(target_rpm, seek_trigger=True, seek_dist=22, queue_depth=2 + (step % 3), op_kind="metadata")
+    if step % 3 == 0:
+        engine.emit_telemetry(
+            target_rpm,
+            seek_trigger=True,
+            seek_dist=80 + ((step * 17) % 120),
+            queue_depth=2,
+            op_kind="journal",
+        )
+        return
+    engine.emit_telemetry(
+        target_rpm,
+        seek_trigger=True,
+        seek_dist=28 + ((step * 41) % 220),
+        queue_depth=2 + (step % 3),
+        op_kind="metadata",
+    )
 
 
 EXTRA_SCENARIOS: tuple[tuple[str, float, ScenarioUpdater, int], ...] = (
@@ -281,6 +314,7 @@ def generate_readme_demo_samples() -> list[Path]:
             update_spinup_idle,
             seed=7,
             acoustic_profile="drive_on_desk",
+            normalize_peak=0.92,
         ),
         render_scenario(
             "idle-standby-wake",
@@ -288,6 +322,7 @@ def generate_readme_demo_samples() -> list[Path]:
             update_idle_to_standby_wake,
             seed=19,
             acoustic_profile="drive_on_desk",
+            normalize_peak=0.92,
         ),
         render_scenario(
             "metadata-storm",
@@ -295,6 +330,7 @@ def generate_readme_demo_samples() -> list[Path]:
             update_metadata_storm,
             seed=23,
             acoustic_profile="bare_drive_lab",
+            normalize_peak=0.92,
         ),
     ]
     for output in outputs:

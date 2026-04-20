@@ -7,6 +7,8 @@ from typing import Literal
 import numpy as np
 import numpy.typing as npt
 
+from ..profiles import AcousticProfile
+
 
 FloatArray = npt.NDArray[np.float64]
 VoicePath = Literal["airborne", "structure"]
@@ -27,12 +29,13 @@ def build_voices(
     actuator: FloatArray,
     structure_modes: FloatArray,
     coupled_structure: FloatArray,
+    acoustic_profile: AcousticProfile,
 ) -> tuple[AudioVoice, ...]:
     return (
-        AudioVoice("direct", "airborne", direct_force),
-        AudioVoice("platter", "airborne", platter),
-        AudioVoice("cover", "airborne", cover),
-        AudioVoice("actuator", "airborne", actuator),
+        AudioVoice("direct", "airborne", direct_force * acoustic_profile.direct_gain),
+        AudioVoice("platter", "airborne", platter * acoustic_profile.platter_gain),
+        AudioVoice("cover", "airborne", cover * acoustic_profile.cover_gain),
+        AudioVoice("actuator", "airborne", actuator * acoustic_profile.actuator_gain),
         AudioVoice("structure_modes", "structure", structure_modes),
         AudioVoice("structure_coupled", "structure", coupled_structure),
     )

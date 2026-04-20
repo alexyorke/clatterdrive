@@ -113,6 +113,8 @@ class AudioRenderState:
     actuator_damping_ratio: float = 0.86
     actuator_direction: float = 1.0
     pending_contact_impulse: float = 0.0
+    servo_tick_energy: float = 0.0
+    servo_tick_cooldown_s: float = 0.0
     seek_plan: SeekPlan | None = None
     seek_plan_elapsed_s: float = 0.0
     settle_time_remaining: float = 0.0
@@ -568,6 +570,13 @@ def _apply_motion_command(
     seek_hz = _command_frequency(seek_plan.duration_s, 0.82)
     track_hz = _clamp(_command_frequency(settle_s * 1.2, 0.95), 28.0, seek_hz)
     damping = 0.92 if command_mode == "park" else 0.86 if command_mode == "calibration" else 0.82
+    command_energy = 0.18
+    if command_mode == "seek":
+        command_energy += 0.36 + 1.10 * normalized_delta
+    elif command_mode == "calibration":
+        command_energy += 0.42
+    else:
+        command_energy += 0.60
 
     return replace(
         state,
@@ -582,6 +591,8 @@ def _apply_motion_command(
         seek_plan_elapsed_s=0.0,
         seek_time_remaining=seek_plan.duration_s,
         settle_time_remaining=settle_s,
+        servo_tick_energy=max(state.servo_tick_energy * 0.5, command_energy),
+        servo_tick_cooldown_s=0.0,
     )
 
 
@@ -737,6 +748,8 @@ def _render_segment_internal(
     actuator_torque_cmd = state.actuator_torque_cmd
     actuator_integrator = state.actuator_integrator
     pending_contact_impulse = state.pending_contact_impulse
+    servo_tick_energy = state.servo_tick_energy
+    servo_tick_cooldown_s = state.servo_tick_cooldown_s
     seek_plan = state.seek_plan
     seek_plan_elapsed_s = state.seek_plan_elapsed_s
     seek_time_remaining = state.seek_time_remaining
@@ -761,9 +774,11 @@ def _render_segment_internal(
     nominal_omega = drive_profile.rpm * 2.0 * math.pi / 60.0
     target_omega = max(state.target_rpm, 0.0) * 2.0 * math.pi / 60.0
     if pending_contact_impulse > 0.0 and frames > 0:
-        contact_trace[0] += pending_contact_impulse
+        contact_trace[0] += pending_contact_impulse * acoustic_profile.impulse_gain
         pending_contact_impulse = 0.0
     for index in range(frames):
+        if servo_tick_cooldown_s > 0.0:
+            servo_tick_cooldown_s = max(0.0, servo_tick_cooldown_s - dt)
         target_omega = max(state.target_rpm, 0.0) * 2.0 * math.pi / 60.0
         omega_error = target_omega - omega
         spindle_integrator = _clamp(spindle_integrator + omega_error * dt, -target_omega, target_omega)
@@ -794,8 +809,8 @@ def _render_segment_internal(
             disturbance = (
                 config.rro_1x * math.sin(theta + 0.3)
                 + config.rro_2x * math.sin(2.0 * theta + 1.1)
-                + 0.00045 * state.transfer_activity * math.sin(12.0 * theta)
-                + 0.00022 * state.transfer_activity * math.sin(23.0 * theta + 0.6)
+                + 0.00012 * state.transfer_activity * math.sin(12.0 * theta)
+                + 0.00006 * state.transfer_activity * math.sin(23.0 * theta + 0.6)
             )
             measurement = actuator_pos + disturbance
             reference_pos = state.actuator_target_pos
@@ -837,11 +852,44 @@ def _render_segment_internal(
                 mode_scale = 1.25
             else:
                 mode_scale = 1.55
-            wedge_mag = mode_scale * (0.010 + 0.060 * wedge_scale + 0.035 * error_scale + transfer_scale)
-            wedge_sign_source = command_step if abs(command_step) > 1e-9 else error
-            wedge_sign = math.copysign(1.0, wedge_sign_source if abs(wedge_sign_source) > 1e-9 else 1.0)
-            servo_wedge_trace[index] += wedge_sign * wedge_mag
-            servo_wedge_structure_trace[index] += wedge_sign * wedge_mag * (1.8 if servo_mode == "park" else 1.25)
+            # Servo wedges arrive far above the audible "tick" rate. A physically
+            # plausible drive radiates the accumulated correction effort through the
+            # actuator/pivot/base path, not one discrete click per wedge.
+            command_reversal = 1.0 if actuator_torque_cmd * prev_torque_cmd < 0.0 else 0.0
+            correction_drive = max(0.0, wedge_scale - 0.012) * 3.8
+            correction_drive += max(0.0, error_scale - 0.08) * 0.30
+            correction_drive += transfer_scale * (
+                acoustic_profile.sequential_boundary_gain if servo_mode == "track" else 0.55
+            )
+            correction_drive += command_reversal * (0.34 if servo_mode == "seek" else 0.18)
+            if servo_mode == "track":
+                correction_drive *= 0.08 * acoustic_profile.sequential_boundary_gain
+                tick_threshold = 0.62
+                min_interval_s = 0.0030
+            elif servo_mode == "seek":
+                correction_drive *= 1.22
+                tick_threshold = 0.20
+                min_interval_s = 0.00085
+            elif servo_mode == "calibration":
+                correction_drive *= 1.30
+                tick_threshold = 0.18
+                min_interval_s = 0.00065
+            else:
+                correction_drive *= 1.55
+                tick_threshold = 0.15
+                min_interval_s = 0.00045
+
+            servo_tick_energy = min(2.8, servo_tick_energy + correction_drive)
+            if servo_tick_cooldown_s <= 0.0 and servo_tick_energy >= tick_threshold:
+                wedge_mag = acoustic_profile.impulse_gain * mode_scale * (
+                    0.045 + 0.160 * min(servo_tick_energy, 2.1)
+                )
+                wedge_sign_source = command_step if abs(command_step) > 1e-9 else error
+                wedge_sign = math.copysign(1.0, wedge_sign_source if abs(wedge_sign_source) > 1e-9 else 1.0)
+                servo_wedge_trace[index] += wedge_sign * wedge_mag
+                servo_wedge_structure_trace[index] += wedge_sign * wedge_mag * (2.00 if servo_mode == "park" else 1.42)
+                servo_tick_energy *= 0.16 if servo_mode == "track" else 0.22
+                servo_tick_cooldown_s = min_interval_s
 
         actuator_torque += (actuator_torque_cmd - actuator_torque) * min(
             dt / config.actuator_torque_time_constant_s,
@@ -859,7 +907,10 @@ def _render_segment_internal(
             and settle_time_remaining <= 0.0
         ):
             if servo_mode == "park":
-                contact_trace[index] += math.copysign(1.45, actuator_vel if abs(actuator_vel) > 1e-9 else -state.actuator_direction)
+                contact_trace[index] += acoustic_profile.impulse_gain * math.copysign(
+                    1.45,
+                    actuator_vel if abs(actuator_vel) > 1e-9 else -state.actuator_direction,
+                )
             servo_mode = "idle" if state.target_rpm <= 0.0 or servo_mode == "park" else "track"
             if servo_mode == "idle":
                 heads_loaded = False
@@ -914,19 +965,19 @@ def _render_segment_internal(
         0.18 * actuator_reaction
         + 0.00008 * actuator_jerk
         + 0.075 * track_error_trace
-        + 0.42 * servo_wedge_trace
+        + 1.05 * servo_wedge_trace
         + 0.62 * contact_trace
     )
     structure_force = drive_profile.boundary_excitation_gain * (
         0.18 * imbalance
         + 0.85 * spindle_reaction
-        + 0.55 * servo_wedge_structure_trace
+        + 1.45 * servo_wedge_structure_trace
         + 1.65 * contact_trace
     )
     structure_actuator_force = drive_profile.boundary_excitation_gain * (
         1.12 * actuator_reaction
         + 0.00022 * actuator_jerk
-        + 0.70 * servo_wedge_structure_trace
+        + 1.85 * servo_wedge_structure_trace
         + 2.40 * contact_trace
     )
     enclosure_internal_force = drive_profile.boundary_excitation_gain * (
@@ -975,10 +1026,11 @@ def _render_segment_internal(
         actuator=actuator_modes,
         structure_modes=structure_modes,
         coupled_structure=coupled_structure,
+        acoustic_profile=acoustic_profile,
     )
     airborne = mix_voice_path(voices, "airborne")
     structure = mix_voice_path(voices, "structure")
-    radiated = airborne * acoustic_profile.direct_gain + structure * acoustic_profile.structure_gain
+    radiated = airborne + structure * acoustic_profile.structure_gain
     highpassed, final_highpass_zi = _sosfilt(
         mode_bank.final_highpass_sos,
         radiated,
@@ -1010,6 +1062,8 @@ def _render_segment_internal(
         servo_mode=servo_mode,
         heads_loaded=heads_loaded,
         pending_contact_impulse=pending_contact_impulse,
+        servo_tick_energy=servo_tick_energy,
+        servo_tick_cooldown_s=servo_tick_cooldown_s,
         platter_disp=platter_disp,
         platter_vel=platter_vel,
         cover_disp=cover_disp,
