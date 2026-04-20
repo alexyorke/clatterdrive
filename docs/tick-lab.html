@@ -437,6 +437,8 @@
     let motorTorque = 0;
     let actuatorTorque = 0;
     let structureLevel = 0;
+    let actuatorPosition = state.readRadius;
+    let actuatorTargetView = state.readRadius;
     let spinupStartTime = null;
     let spinup90Time = null;
     let platterAngle = 0;
@@ -573,12 +575,13 @@
           sim.consumedReadNonce = pendingReadNonce;
           sim.readTargetRadius = readTargetRadius;
           const radiusDelta = sim.readTargetRadius - sim.actuatorPos;
-          const snapTorque = clamp(5.4 * radiusDelta - 0.60 * sim.actuatorVel, -1.3, 1.3);
+          const snapTorque = clamp(11.5 * radiusDelta - 0.85 * sim.actuatorVel, -2.4, 2.4);
           sim.actuatorTorque += snapTorque;
-          actuatorImpulse += snapTorque * 0.72;
+          sim.actuatorModeV += radiusDelta * 12.0;
+          actuatorImpulse += snapTorque * (0.9 + 10.0 * Math.abs(radiusDelta));
         }
         if (motorOn && state.readEnabled && rpmNorm > 0.78) {
-          const wedgeRate = Math.max((sim.omega / TAU) * 96, 0);
+          const wedgeRate = Math.max((sim.omega / TAU) * 120, 0);
           sim.servoPhase += wedgeRate * dt;
           while (sim.servoPhase >= 1) {
             sim.servoPhase -= 1;
@@ -589,13 +592,13 @@
             );
             const holdError = sim.readTargetRadius + runout - sim.actuatorPos;
             const servoCommand = clamp(
-              state.servoGain * (12.0 * holdError - 0.28 * sim.actuatorVel),
-              -1.5,
-              1.5
+              state.servoGain * (13.5 * holdError - 0.34 * sim.actuatorVel),
+              -1.8,
+              1.8
             );
             const torqueStep = servoCommand - sim.actuatorTorque;
             sim.actuatorTorque += 0.86 * torqueStep;
-            actuatorImpulse += torqueStep * 1.10;
+            actuatorImpulse += torqueStep * 1.55;
           }
         } else {
           sim.servoPhase = 0;
@@ -633,12 +636,14 @@
         const structure = 0.52 * sim.v + 0.14 * accel / Math.max(wn, 1);
         const actuatorSignal =
           state.actuatorCoupling *
-          (0.72 * sim.actuatorModeV + 0.020 * actuatorModeAccel / Math.max(actuatorWn, 1));
+          (1.05 * sim.actuatorModeV + 0.045 * actuatorModeAccel / Math.max(actuatorWn, 1));
         const sample = Math.tanh(0.84 * structure + 0.14 * direct + actuatorSignal);
 
         actualRpm = sim.omega * 60 / TAU;
         motorTorque = torque;
         actuatorTorque = sim.actuatorTorque;
+        actuatorPosition = sim.actuatorPos;
+        actuatorTargetView = sim.readTargetRadius;
         structureLevel = Math.abs(structure) * 10;
         if (motorOn && spinupStartTime !== null && spinup90Time === null && actualRpm >= state.targetRpm * 0.9) {
           spinup90Time = ctx.currentTime - spinupStartTime;
@@ -674,6 +679,8 @@
         actualRpm = 0;
         motorTorque = 0;
         actuatorTorque = 0;
+        actuatorPosition = state.readRadius;
+        actuatorTargetView = state.readRadius;
         structureLevel = 0;
         spinupStartTime = null;
         spinup90Time = null;
@@ -789,11 +796,11 @@
       document.getElementById("desk").style.transform = `translateY(${Math.sin(now * 0.018) * deskShake}px)`;
       document.getElementById("coil").style.opacity = String(0.38 + Math.min(Math.abs(motorTorque) * 0.4, 0.4));
       const readZone = document.getElementById("readZone");
-      const readZoneSize = 34 + state.readRadius * 128;
+      const readZoneSize = 34 + actuatorTargetView * 128;
       readZone.style.width = `${readZoneSize}px`;
       readZone.style.height = `${readZoneSize}px`;
       readZone.classList.toggle("active", state.readEnabled);
-      const armAngle = 222 - state.readRadius * 92 - actuatorTorque * 5.5;
+      const armAngle = 222 - actuatorPosition * 92 - actuatorTorque * 5.5;
       document.getElementById("arm").style.transform = `rotate(${armAngle}deg)`;
       if (now - lastUiUpdate > 120) {
         updateMeters();
