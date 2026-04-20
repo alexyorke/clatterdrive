@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import numpy.typing as npt
 
-from clatterdrive.audio import HDDAudioEngine
+from clatterdrive.audio import HDDAudioEngine, HDDAudioEvent
 from clatterdrive.hdd import HDDLatencyModel, StartupTracePoint
 from clatterdrive.profiles import AcousticProfile, DriveProfile
 
@@ -111,6 +111,45 @@ def render_scenario(
         samples[:silence_frames] = 0.0
     write_wav(output_path, samples, engine.fs)
     return output_path
+
+
+def startup_only_duration(
+    drive_profile: str | DriveProfile | None = None,
+    *,
+    silence_lead_s: float = 0.85,
+    steady_hold_s: float = 1.75,
+) -> float:
+    return silence_lead_s + _load_power_on_trace(drive_profile)[1] + steady_hold_s
+
+
+def update_startup_only(engine: HDDAudioEngine, t: float, emitted_flags: set[str]) -> None:
+    startup_delay_s = 0.85
+    if t < startup_delay_s:
+        return
+    if "startup-command" in emitted_flags:
+        return
+
+    emitted_flags.add("startup-command")
+    target_rpm = float(engine.synthesizer.drive_profile.rpm)
+    engine.publish_event(
+        HDDAudioEvent(
+            rpm=0.0,
+            emitted_at=engine.clock.now(),
+            target_rpm=target_rpm,
+            queue_depth=1,
+            op_kind="background",
+            is_sequential=False,
+            is_flush=False,
+            is_spinup=True,
+            power_state="starting",
+            heads_loaded=False,
+            servo_mode="idle",
+            track_delta=0.0,
+            transfer_activity=0.0,
+            motion_duration_ms=0.0,
+            settle_duration_ms=0.0,
+        )
+    )
 
 
 def update_spinup_idle(engine: HDDAudioEngine, t: float, emitted_flags: set[str]) -> None:

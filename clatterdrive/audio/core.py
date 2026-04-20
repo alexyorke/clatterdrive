@@ -81,6 +81,7 @@ class PlantState:
 class SupervisorState:
     target_rpm: float = 0.0
     power_state: str = "standby"
+    startup_elapsed_s: float = 0.0
     servo_mode: str = "idle"
     load_state: str = "parked"
     heads_loaded: bool = False
@@ -355,6 +356,22 @@ def _command_frequency(drive_profile: DriveProfile, supervisor: SupervisorState)
     return 44.0
 
 
+def _startup_active(
+    plant: PlantState,
+    supervisor: SupervisorState,
+    target_omega: float,
+) -> bool:
+    if target_omega <= EPS:
+        return False
+    if supervisor.power_state == "starting":
+        return True
+    return (
+        not supervisor.heads_loaded
+        and supervisor.servo_mode == "idle"
+        and plant.spindle_omega < target_omega * 0.992
+    )
+
+
 def _apply_command(
     state: AudioRenderState,
     command: AudioCommand,
@@ -380,6 +397,9 @@ def _apply_command(
         supervisor.load_state = "loading"
     if command.is_spinup:
         supervisor.power_state = "starting"
+        supervisor.startup_elapsed_s = 0.0
+        supervisor.heads_loaded = False
+        supervisor.load_state = "parked"
     elif supervisor.power_state == "active" and supervisor.target_rpm > 0.0:
         target_omega = supervisor.target_rpm * TAU / 60.0
         plant.spindle_omega = max(plant.spindle_omega, target_omega)
@@ -514,95 +534,123 @@ def _render_segment_internal(
     for index in range(frames):
         omega_before = plant.spindle_omega
         target_omega = supervisor.target_rpm * TAU / 60.0
+        drive_target = 0.0
+        if target_omega > EPS:
+            drive_target = _clamp((target_omega - omega_before) / target_omega, 0.0, 1.0)
+        drive_tau = 0.22 if supervisor.power_state == "starting" else 0.08
+        drive_alpha = 1.0 - math.exp(-dt / drive_tau)
+        plant.motor_drive += (drive_target - plant.motor_drive) * drive_alpha
         if target_omega >= omega_before:
             tau_s = max(drive_profile.spinup_ms / 1000.0, 0.35)
         else:
             tau_s = max(drive_profile.spin_down_ms / 1000.0, 0.28)
         alpha = 1.0 - math.exp(-dt / tau_s)
         plant.spindle_omega = omega_before + (target_omega - omega_before) * alpha
-        plant.motor_drive = alpha if target_omega >= omega_before else -alpha * 0.6
         phase_increment = 0.5 * (omega_before + plant.spindle_omega) * dt
         plant.spindle_phase = (plant.spindle_phase + phase_increment) % TAU
         rpm_norm = _clamp(plant.spindle_omega / max(drive_profile.rpm * TAU / 60.0, EPS), 0.0, 1.35)
         motor_reaction = (plant.spindle_omega - omega_before) / max(dt, EPS)
-
-        if supervisor.seek_duration_s > 0.0 and supervisor.seek_elapsed_s < supervisor.seek_duration_s:
-            desired_pos, desired_vel = _sample_seek_reference(supervisor)
-            supervisor.seek_elapsed_s += dt
+        startup_active = _startup_active(plant, supervisor, target_omega)
+        if startup_active and target_omega > 0.0 and plant.spindle_omega >= target_omega * 0.992:
+            supervisor.power_state = "active"
+            startup_active = False
+        if startup_active:
+            supervisor.startup_elapsed_s += dt
         else:
-            desired_pos = supervisor.target_track
+            supervisor.startup_elapsed_s = 0.0
+
+        if startup_active:
+            desired_pos = plant.actuator_pos
             desired_vel = 0.0
-            if supervisor.servo_mode == "seek":
-                supervisor.servo_mode = "settle"
-
-        if supervisor.servo_mode == "settle":
-            supervisor.settle_remaining_s = max(0.0, supervisor.settle_remaining_s - dt)
-            if supervisor.settle_remaining_s <= 0.0:
-                if supervisor.load_state == "parking":
-                    supervisor.servo_mode = "idle"
-                    supervisor.load_state = "parked"
-                    supervisor.contact_impulse += 0.40
-                elif supervisor.is_sequential and supervisor.transfer_activity > 0.2:
-                    supervisor.servo_mode = "track"
-                else:
-                    supervisor.servo_mode = "idle"
-
-        sectors_per_rev = _command_frequency(drive_profile, supervisor)
-        servo_interval = 1.0 / max((plant.spindle_omega / TAU) * sectors_per_rev, 35.0)
-        plant.servo_wedge_timer_s -= dt
-        if plant.servo_wedge_timer_s <= 0.0:
-            plant.servo_wedge_timer_s += servo_interval
-            error = desired_pos - plant.actuator_pos
-            velocity_error = desired_vel - plant.actuator_vel
-            mode_gain = 1.35 if supervisor.servo_mode == "seek" else 0.84 if supervisor.servo_mode == "track" else 1.08
-            kp = 18.0 * mode_gain
-            kd = 2.8 * mode_gain
-            ki = 7.5 if supervisor.servo_mode in {"seek", "settle"} else 2.6
-            plant.servo_integrator = _clamp(
-                plant.servo_integrator + error * servo_interval,
-                -0.08,
-                0.08,
-            )
-            torque_command = (
-                kp * error
-                + kd * velocity_error
-                + ki * plant.servo_integrator
-            )
-            torque_command *= 1.0 + 0.03 * max(supervisor.queue_depth - 1, 0)
-            torque_command += 0.18 * supervisor.retry_activity
-            torque_command = _clamp(torque_command, -8.0, 8.0)
-            torque_delta = torque_command - plant.actuator_torque
-            plant.actuator_torque += 0.62 * torque_delta
-            impulse_scale = 0.14 if supervisor.servo_mode == "track" else 0.42 if supervisor.servo_mode == "seek" else 0.24
-            supervisor.wedge_impulse += abs(torque_delta) * impulse_scale
+            supervisor.seek_duration_s = 0.0
+            supervisor.seek_elapsed_s = 0.0
+            supervisor.settle_remaining_s = 0.0
+            supervisor.servo_mode = "idle"
+            plant.servo_wedge_timer_s = 0.0
+            plant.boundary_timer_s = 0.0
+            plant.servo_integrator *= 0.992
+            plant.actuator_torque *= 0.990
         else:
-            plant.actuator_torque *= 0.9992
+            if supervisor.seek_duration_s > 0.0 and supervisor.seek_elapsed_s < supervisor.seek_duration_s:
+                desired_pos, desired_vel = _sample_seek_reference(supervisor)
+                supervisor.seek_elapsed_s += dt
+            else:
+                desired_pos = supervisor.target_track
+                desired_vel = 0.0
+                if supervisor.servo_mode == "seek":
+                    supervisor.servo_mode = "settle"
+
+            if supervisor.servo_mode == "settle":
+                supervisor.settle_remaining_s = max(0.0, supervisor.settle_remaining_s - dt)
+                if supervisor.settle_remaining_s <= 0.0:
+                    if supervisor.load_state == "parking":
+                        supervisor.servo_mode = "idle"
+                        supervisor.load_state = "parked"
+                        supervisor.contact_impulse += 0.40
+                    elif supervisor.is_sequential and supervisor.transfer_activity > 0.2:
+                        supervisor.servo_mode = "track"
+                    else:
+                        supervisor.servo_mode = "idle"
+
+            sectors_per_rev = _command_frequency(drive_profile, supervisor)
+            servo_interval = 1.0 / max((plant.spindle_omega / TAU) * sectors_per_rev, 35.0)
+            plant.servo_wedge_timer_s -= dt
+            if plant.servo_wedge_timer_s <= 0.0:
+                plant.servo_wedge_timer_s += servo_interval
+                error = desired_pos - plant.actuator_pos
+                velocity_error = desired_vel - plant.actuator_vel
+                mode_gain = 1.35 if supervisor.servo_mode == "seek" else 0.84 if supervisor.servo_mode == "track" else 1.08
+                kp = 18.0 * mode_gain
+                kd = 2.8 * mode_gain
+                ki = 7.5 if supervisor.servo_mode in {"seek", "settle"} else 2.6
+                plant.servo_integrator = _clamp(
+                    plant.servo_integrator + error * servo_interval,
+                    -0.08,
+                    0.08,
+                )
+                torque_command = (
+                    kp * error
+                    + kd * velocity_error
+                    + ki * plant.servo_integrator
+                )
+                torque_command *= 1.0 + 0.03 * max(supervisor.queue_depth - 1, 0)
+                torque_command += 0.18 * supervisor.retry_activity
+                torque_command = _clamp(torque_command, -8.0, 8.0)
+                torque_delta = torque_command - plant.actuator_torque
+                plant.actuator_torque += 0.62 * torque_delta
+                impulse_scale = 0.14 if supervisor.servo_mode == "track" else 0.42 if supervisor.servo_mode == "seek" else 0.24
+                supervisor.wedge_impulse += abs(torque_delta) * impulse_scale
+            else:
+                plant.actuator_torque *= 0.9992
+
+            if supervisor.is_sequential and supervisor.transfer_activity > 0.2 and supervisor.heads_loaded:
+                plant.boundary_timer_s -= dt
+                if plant.boundary_timer_s <= 0.0:
+                    interval = max(0.004, 0.010 / max(supervisor.transfer_activity, 0.25))
+                    plant.boundary_timer_s += interval
+                    supervisor.wedge_impulse += (
+                        0.065 * acoustic_profile.sequential_boundary_gain * (0.8 + 0.2 * rpm_norm)
+                    )
+            else:
+                plant.boundary_timer_s = 0.0
 
         actuator_accel = 190.0 * plant.actuator_torque - 90.0 * plant.actuator_vel
         plant.actuator_vel += actuator_accel * dt
         plant.actuator_pos = _clamp(plant.actuator_pos + plant.actuator_vel * dt, 0.0, 1.0)
 
-        if supervisor.is_sequential and supervisor.transfer_activity > 0.2 and supervisor.heads_loaded:
-            plant.boundary_timer_s -= dt
-            if plant.boundary_timer_s <= 0.0:
-                interval = max(0.004, 0.010 / max(supervisor.transfer_activity, 0.25))
-                plant.boundary_timer_s += interval
-                supervisor.wedge_impulse += (
-                    0.065 * acoustic_profile.sequential_boundary_gain * (0.8 + 0.2 * rpm_norm)
-                )
-        else:
-            plant.boundary_timer_s = 0.0
-
-        plant.windage_low_state += 0.020 * (float(windage_noise_raw[index]) - plant.windage_low_state)
-        plant.windage_high_state += 0.130 * (plant.windage_low_state - plant.windage_high_state)
+        windage_low_alpha = 0.005 if startup_active else 0.020
+        windage_high_alpha = 0.024 if startup_active else 0.130
+        plant.windage_low_state += windage_low_alpha * (float(windage_noise_raw[index]) - plant.windage_low_state)
+        plant.windage_high_state += windage_high_alpha * (plant.windage_low_state - plant.windage_high_state)
         windage = (
             (plant.windage_low_state - plant.windage_high_state)
-            * (0.020 + 0.18 * rpm_norm * rpm_norm)
+            * ((0.002 + 0.050 * rpm_norm**3.8) if startup_active else (0.020 + 0.18 * rpm_norm * rpm_norm))
             * drive_profile.windage_gain
         )
 
-        plant.bearing_state += 0.060 * (float(bearing_noise_raw[index]) - plant.bearing_state)
-        bearing = plant.bearing_state * (0.010 + 0.040 * rpm_norm) * drive_profile.bearing_gain
+        bearing_alpha = 0.010 if startup_active else 0.060
+        plant.bearing_state += bearing_alpha * (float(bearing_noise_raw[index]) - plant.bearing_state)
+        bearing = plant.bearing_state * ((0.002 + 0.012 * rpm_norm**2.0) if startup_active else (0.010 + 0.040 * rpm_norm)) * drive_profile.bearing_gain
 
         harmonic = 0.0
         for harmonic_index, harmonic_weight, phase_offset in zip(
@@ -611,38 +659,64 @@ def _render_segment_internal(
             harmonic_phases,
             strict=True,
         ):
-            harmonic += harmonic_weight * math.sin(plant.spindle_phase * harmonic_index + float(phase_offset))
-        spindle_tone = harmonic * (0.012 + 0.040 * rpm_norm * rpm_norm) * mode_bank.platter_gain
+            startup_weight = rpm_norm ** (0.55 * max(harmonic_index - 1, 0)) if startup_active else 1.0
+            harmonic += harmonic_weight * startup_weight * math.sin(plant.spindle_phase * harmonic_index + float(phase_offset))
+        spindle_tone = harmonic * ((0.005 + 0.018 * rpm_norm * rpm_norm) if startup_active else (0.012 + 0.040 * rpm_norm * rpm_norm)) * mode_bank.platter_gain
 
-        torque_structure = 0.0008 * motor_reaction
-        wedge_force = supervisor.wedge_impulse
-        contact_force = supervisor.contact_impulse
+        startup_ramp = 1.0 - math.exp(-supervisor.startup_elapsed_s / 0.38) if startup_active else 1.0
+        startup_drive_force = plant.motor_drive * (0.18 + 0.82 * rpm_norm) * startup_ramp
+        if startup_active:
+            torque_structure = startup_ramp * 0.00012 * motor_reaction + 0.085 * startup_drive_force
+        else:
+            torque_structure = 0.0008 * motor_reaction
+        wedge_force = 0.0 if startup_active else supervisor.wedge_impulse
+        contact_force = 0.0 if startup_active else supervisor.contact_impulse
         supervisor.wedge_impulse = 0.0
         supervisor.contact_impulse = 0.0
 
-        base_force = (
-            0.58 * torque_structure
-            + 0.38 * wedge_force
-            + 0.30 * contact_force
-            + 0.16 * bearing
-        )
-        cover_force = (
-            0.24 * torque_structure
-            + 0.26 * wedge_force
-            + 0.14 * contact_force
-            + 0.14 * windage
-        )
-        actuator_force = (
-            0.54 * wedge_force
-            + 0.14 * abs(plant.actuator_vel)
-            + 0.22 * contact_force
-            + 0.06 * supervisor.transfer_activity
-        )
-        enclosure_force = (
-            acoustic_profile.enclosure_coupling * (0.24 * base_force + 0.12 * cover_force)
-            + acoustic_profile.internal_air_coupling * (0.14 * windage + 0.08 * spindle_tone)
-        )
-        desk_force = acoustic_profile.desk_coupling * (0.32 * base_force + 0.48 * wedge_force + 0.18 * contact_force)
+        if startup_active:
+            base_force = (
+                1.55 * torque_structure
+                + 0.14 * spindle_tone * startup_ramp
+                + 0.06 * bearing
+                + 0.03 * windage
+            )
+            cover_force = (
+                0.44 * torque_structure
+                + 0.08 * spindle_tone * startup_ramp
+                + 0.03 * windage
+                + 0.02 * bearing
+            )
+            actuator_force = 0.0
+            enclosure_force = (
+                acoustic_profile.enclosure_coupling * (0.52 * base_force + 0.22 * cover_force)
+                + acoustic_profile.internal_air_coupling * (0.04 * windage + 0.04 * spindle_tone)
+            )
+            desk_force = acoustic_profile.desk_coupling * (0.94 * base_force + 0.20 * cover_force)
+        else:
+            base_force = (
+                0.58 * torque_structure
+                + 0.38 * wedge_force
+                + 0.30 * contact_force
+                + 0.16 * bearing
+            )
+            cover_force = (
+                0.24 * torque_structure
+                + 0.26 * wedge_force
+                + 0.14 * contact_force
+                + 0.14 * windage
+            )
+            actuator_force = (
+                0.54 * wedge_force
+                + 0.14 * abs(plant.actuator_vel)
+                + 0.22 * contact_force
+                + 0.06 * supervisor.transfer_activity
+            )
+            enclosure_force = (
+                acoustic_profile.enclosure_coupling * (0.24 * base_force + 0.12 * cover_force)
+                + acoustic_profile.internal_air_coupling * (0.14 * windage + 0.08 * spindle_tone)
+            )
+            desk_force = acoustic_profile.desk_coupling * (0.32 * base_force + 0.48 * wedge_force + 0.18 * contact_force)
 
         plant.base_disp, plant.base_vel, base_signal = _step_modal_bank(
             mode_bank.base,
@@ -675,15 +749,26 @@ def _render_segment_internal(
             desk_force,
         )
 
-        structure = (
-            mode_bank.structure_gain
-            * (base_signal + cover_signal + enclosure_signal + desk_signal)
-        )
-        airborne = (
-            mode_bank.direct_gain * (0.18 * spindle_tone + 0.22 * windage + 0.12 * bearing)
-            + 0.12 * mode_bank.cover_gain * cover_signal
-            + 0.22 * mode_bank.actuator_gain * actuator_signal
-        )
+        if startup_active:
+            startup_airborne_gate = rpm_norm**2.6
+            structure = (
+                mode_bank.structure_gain
+                * (1.95 * base_signal + 0.72 * cover_signal + 1.10 * enclosure_signal + 1.60 * desk_signal)
+            )
+            airborne = (
+                mode_bank.direct_gain * startup_airborne_gate * (0.08 * spindle_tone + 0.03 * windage + 0.02 * bearing)
+                + 0.04 * mode_bank.cover_gain * cover_signal
+            )
+        else:
+            structure = (
+                mode_bank.structure_gain
+                * (base_signal + cover_signal + enclosure_signal + desk_signal)
+            )
+            airborne = (
+                mode_bank.direct_gain * (0.18 * spindle_tone + 0.22 * windage + 0.12 * bearing)
+                + 0.12 * mode_bank.cover_gain * cover_signal
+                + 0.22 * mode_bank.actuator_gain * actuator_signal
+            )
         mixed = airborne + structure
         hp_output = mixed - state.output_highpass_prev_input + (1.0 - mode_bank.final_highpass_alpha) * state.output_highpass_state
         state.output_highpass_prev_input = mixed

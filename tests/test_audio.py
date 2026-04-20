@@ -9,7 +9,9 @@ import numpy as np
 from _pytest.monkeypatch import MonkeyPatch
 
 from clatterdrive.audio import HDDAudioEngine, HDDAudioEvent
-from clatterdrive.audio.core import render_chunk as render_audio_chunk
+from clatterdrive.audio.core import AudioDiagnosticTrace, render_chunk as render_audio_chunk
+from tools.generate_audio_samples import startup_only_duration
+from tools.reference_audio import compute_audio_features
 from tests.helpers import _audio_event, _wav_metrics
 
 
@@ -77,6 +79,57 @@ def _metadata_storm_chunk() -> np.ndarray:
             (_audio_event(rpm=7200.0, target_rpm=7200.0, queue_depth=1, op_kind="metadata", servo_mode="calibration", motion_duration_ms=2.0, settle_duration_ms=1.2), 1900),
         ],
     )
+
+
+def _render_startup_only(
+    *,
+    sample_rate: int = 22050,
+    chunked: bool = False,
+) -> tuple[np.ndarray, AudioDiagnosticTrace | None]:
+    engine = HDDAudioEngine(
+        seed=0,
+        sample_rate=sample_rate,
+        drive_profile="desktop_7200_internal",
+        acoustic_profile="drive_on_desk",
+    )
+    total_frames = int(startup_only_duration("desktop_7200_internal") * sample_rate)
+    startup_event = _audio_event(
+        rpm=0.0,
+        target_rpm=7200.0,
+        queue_depth=1,
+        op_kind="background",
+        power_state="starting",
+        heads_loaded=False,
+        servo_mode="idle",
+        transfer_activity=0.0,
+        is_spinup=True,
+    )
+    if not chunked:
+        diagnostics = engine.synthesizer.render_diagnostic_chunk(
+            total_frames,
+            scheduled_events=[(startup_event, int(0.85 * sample_rate))],
+        )
+        return diagnostics.output, diagnostics
+
+    rebuilt: list[np.ndarray] = []
+    remaining = total_frames
+    first = True
+    while remaining > 0:
+        frames = min(1024, remaining)
+        scheduled_events = [(startup_event, int(0.85 * sample_rate))] if first else []
+        rebuilt.append(engine.synthesizer.render_chunk(frames, scheduled_events=scheduled_events))
+        remaining -= frames
+        first = False
+    return np.concatenate(rebuilt), None
+
+
+def _startup_time_to_fraction(diagnostics: AudioDiagnosticTrace, target_rpm: float, fraction: float) -> float:
+    actual_rpm = np.asarray(diagnostics.actual_rpm, dtype=np.float64)
+    time_s = np.asarray(diagnostics.time_s, dtype=np.float64)
+    indices = np.flatnonzero(actual_rpm >= target_rpm * fraction)
+    if len(indices) == 0:
+        return float(time_s[-1]) if len(time_s) else 0.0
+    return float(time_s[int(indices[0])])
 
 
 def test_audio_engine_stop_is_safe_before_start() -> None:
@@ -231,7 +284,8 @@ def test_audio_engine_active_commands_assume_a_running_drive_while_spinup_ramps(
     assert active_engine.synthesizer.actual_rpm > 7000.0
     assert 0.0 < spinup_initial_rpm < 1000.0
     assert spinup_engine.synthesizer.actual_rpm > spinup_initial_rpm * 4.0
-    assert _rms(active_chunk) > _rms(spinup_chunk) * 1.4
+    assert _transient_density(active_chunk) > _transient_density(spinup_chunk) * 2.0
+    assert _band_energy(active_chunk, active_engine.fs, 120.0, 500.0) > _band_energy(spinup_chunk, spinup_engine.fs, 120.0, 500.0) * 4.0
 
 
 def test_audio_engine_sequential_profiles_follow_the_drive_rpm() -> None:
@@ -392,3 +446,69 @@ def test_audio_modal_decay_stays_stable_without_numeric_energy_growth() -> None:
     assert first_quarter > last_quarter * 1e6
     assert float(np.max(np.abs(chunk[-1024:]))) < float(np.max(np.abs(chunk[:1024])))
     assert float(np.max(np.abs(next_state.plant.cover_disp))) < 1e-12
+
+
+def test_audio_engine_startup_only_has_real_delay_and_no_immediate_output() -> None:
+    startup_chunk, diagnostics = _render_startup_only()
+    assert diagnostics is not None
+    features = compute_audio_features(startup_chunk, 22050, "desktop_7200_internal")
+    time_to_90 = _startup_time_to_fraction(diagnostics, 7200.0, 0.90)
+
+    assert _rms(startup_chunk[: int(0.5 * 22050)]) < 0.0002
+    assert 0.75 <= float(features["first_audible_s"]) <= 1.55
+    assert time_to_90 > 5.0
+    assert time_to_90 < 10.5
+    assert float(np.max(np.abs(diagnostics.actuator_torque))) < 0.03
+
+
+def test_audio_engine_startup_only_is_less_transient_than_metadata_storm() -> None:
+    startup_chunk, _diagnostics = _render_startup_only()
+    metadata_chunk = _metadata_storm_chunk()
+    startup_features = compute_audio_features(startup_chunk, 22050, "desktop_7200_internal")
+    metadata_features = compute_audio_features(metadata_chunk, 44100, "desktop_7200_internal")
+
+    assert _transient_density(startup_chunk) < _transient_density(metadata_chunk) * 0.80
+    assert float(startup_features["spectral_centroid_hz"]) < float(metadata_features["spectral_centroid_hz"]) * 0.5
+
+
+def test_audio_engine_startup_low_band_grows_during_runup() -> None:
+    startup_chunk, _diagnostics = _render_startup_only()
+    sample_rate = 22050
+    early = _band_energy(startup_chunk[int(0.85 * sample_rate) : int(1.25 * sample_rate)], sample_rate, 20.0, 120.0)
+    late = _band_energy(startup_chunk[int(8.0 * sample_rate) : int(12.0 * sample_rate)], sample_rate, 20.0, 120.0)
+    assert late > early * 3.0
+
+
+def test_audio_engine_startup_centroid_trajectory_is_smooth() -> None:
+    startup_chunk, _diagnostics = _render_startup_only()
+    features = compute_audio_features(startup_chunk, 22050, "desktop_7200_internal")
+    centroid = np.asarray(features["centroid_curve"], dtype=np.float64)
+    centroid_diff = np.abs(np.diff(centroid))
+
+    assert float(np.quantile(centroid_diff, 0.95)) < 95.0
+
+
+def test_audio_engine_startup_render_is_chunk_invariant() -> None:
+    full_chunk, _diagnostics = _render_startup_only()
+    split_chunk, _none = _render_startup_only(chunked=True)
+
+    delta = split_chunk - full_chunk
+    assert _rms(delta) < 1e-9
+    assert float(np.max(np.abs(delta))) < 1e-8
+
+
+def test_audio_engine_startup_only_matches_reference_summary_band() -> None:
+    summary_path = Path("docs/reference-calibration/startup_reference_summary.json")
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+
+    startup_chunk, diagnostics = _render_startup_only()
+    assert diagnostics is not None
+    features = compute_audio_features(startup_chunk, 22050, "desktop_7200_internal")
+    ref_band = summary["reference_band"]
+    time_to_90 = _startup_time_to_fraction(diagnostics, 7200.0, 0.90)
+
+    assert ref_band["first_audible_s_min"] <= float(features["first_audible_s"]) <= ref_band["first_audible_s_max"]
+    assert ref_band["time_to_90_s_min"] <= time_to_90 <= ref_band["time_to_90_s_max"]
+    assert ref_band["spectral_centroid_hz_min"] * 0.6 <= float(features["spectral_centroid_hz"]) <= ref_band["spectral_centroid_hz_max"]
+    assert float(features["low_band_ratio"]) >= ref_band["low_band_ratio_min"]
+    assert float(features["bubbly_modulation_ratio"]) <= ref_band["bubbly_modulation_ratio_max"]

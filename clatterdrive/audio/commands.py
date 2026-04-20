@@ -33,12 +33,14 @@ ScheduledCommand = tuple[AudioCommand, int]
 
 
 def _derive_power_state(event: StorageEvent) -> str:
+    if event.is_spinup:
+        return "starting"
     if event.power_state:
         return event.power_state
     target_rpm = event.target_rpm if event.target_rpm is not None else event.rpm
     if target_rpm <= 1.0 and event.rpm <= 1.0:
         return "standby"
-    if event.is_spinup or event.rpm < target_rpm * 0.5:
+    if event.rpm < target_rpm * 0.5:
         return "starting"
     return "active"
 

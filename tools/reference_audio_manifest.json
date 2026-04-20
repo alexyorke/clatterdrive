@@ -1,0 +1,90 @@
+[
+  {
+    "id": "hc520-helium-startup",
+    "title": "How does a Helium Drive sound? (HC520 )",
+    "url": "https://www.youtube.com/watch?v=yUHHatMy_zM",
+    "drive_bucket": "enterprise_ultrastar",
+    "segment_type": "startup_plus_post_ready",
+    "segment_start_s": 0.0,
+    "segment_end_s": 18.0,
+    "confidence": 0.85,
+    "notes": "Single helium enterprise drive. Good startup envelope and post-ready behavior. Minor room coloration."
+  },
+  {
+    "id": "dual-hdd-spinup-short",
+    "title": "HDD Noise, Dual HDD Spin Up and Down Sound",
+    "url": "https://www.youtube.com/watch?v=PtbT4SJUuHo",
+    "drive_bucket": "enterprise_ultrastar",
+    "segment_type": "startup_plus_post_ready",
+    "segment_start_s": 0.0,
+    "segment_end_s": 12.0,
+    "confidence": 0.35,
+    "notes": "User-provided clip, but dual-drive and enclosure interaction are mixed. Use only as a low-confidence envelope reference."
+  },
+  {
+    "id": "hc550-spinup-down",
+    "title": "Western Digital Ultrastar DC HC550 18TB #1 (good) and #2 (bad) - Spin up/down",
+    "url": "https://www.youtube.com/watch?v=VEOi6GTjk6o",
+    "drive_bucket": "enterprise_ultrastar",
+    "segment_type": "startup_only",
+    "segment_start_s": 0.0,
+    "segment_end_s": 14.0,
+    "confidence": 0.82,
+    "notes": "Single-drive startup/spindown capture. Good for startup timing and low-band growth; ignore the later bad-drive portion."
+  },
+  {
+    "id": "hc530-spinup",
+    "title": "Western Digital Ultrastar DC HC530 WUH721414ALE600 - Hard Drive Spin Up",
+    "url": "https://www.youtube.com/watch?v=Q18Op2dhcWU",
+    "drive_bucket": "enterprise_ultrastar",
+    "segment_type": "startup_only",
+    "segment_start_s": 0.0,
+    "segment_end_s": 12.0,
+    "confidence": 0.8,
+    "notes": "Close-mic spin-up clip with little non-drive content. Strong startup-only reference."
+  },
+  {
+    "id": "hc530-helium-vs-normal",
+    "title": "Helium  Ultrastar DC HC530 & Nomal HDD SOUND TEST",
+    "url": "https://www.youtube.com/watch?v=fesd2WD6Sxs",
+    "drive_bucket": "enterprise_ultrastar",
+    "segment_type": "startup_plus_post_ready",
+    "segment_start_s": 0.0,
+    "segment_end_s": 20.0,
+    "confidence": 0.62,
+    "notes": "Comparison clip. Use the first startup segment only; later commentary/comparison sections are less reliable."
+  },
+  {
+    "id": "open-cover-7200rpm",
+    "title": "7200rpm Hard Drive running without the cover",
+    "url": "https://www.youtube.com/watch?v=ojGvHDjHPb4",
+    "drive_bucket": "desktop_7200_internal",
+    "segment_type": "seek_burst",
+    "segment_start_s": 0.0,
+    "segment_end_s": 12.0,
+    "confidence": 0.68,
+    "notes": "Open-cover desktop drive. Keep only for later seek/steady-state calibration, not startup acceptance."
+  },
+  {
+    "id": "wd-pwl-thump",
+    "title": "Western Digital (WD) Hard Drive Preemptive Wear Leveling (PWL) Noise / Thump",
+    "url": "https://www.youtube.com/watch?v=ksgOgrbRPOo",
+    "drive_bucket": "enterprise_ultrastar",
+    "segment_type": "seek_burst",
+    "segment_start_s": 0.0,
+    "segment_end_s": 10.0,
+    "confidence": 0.77,
+    "notes": "Short periodic maintenance thump. Useful for later background-maintenance calibration, not startup."
+  },
+  {
+    "id": "awesome-seeking-sound",
+    "title": "Awesome Seeking Sound",
+    "url": "https://www.youtube.com/watch?v=vtjQSjOPsNY",
+    "drive_bucket": "desktop_7200_internal",
+    "segment_type": "seek_burst",
+    "segment_start_s": 0.0,
+    "segment_end_s": 15.0,
+    "confidence": 0.58,
+    "notes": "Aggressive seek-heavy clip. Useful as a later-phase tick/settle reference if the drive remains isolated enough."
+  }
+]

@@ -6,16 +6,27 @@ from pathlib import Path
 
 import numpy as np
 
-from clatterdrive.audio import HDDAudioEngine
+from clatterdrive.audio import HDDAudioEngine, HDDAudioEvent
 from tools.generate_audio_samples import (
     ROOT,
     ScenarioUpdater,
     _load_power_on_trace,
+    startup_only_duration,
+    update_startup_only,
     update_idle_to_standby_wake,
     update_metadata_storm,
     update_random_flush,
     update_sequential_read,
     update_spinup_idle,
+    write_wav,
+)
+from tools.reference_audio import (
+    COMMITTED_REPORT_DIR,
+    analyze_reference_bundle,
+    compare_startup_features,
+    compute_audio_features,
+    save_reference_analysis,
+    write_startup_summary_svg,
 )
 
 
@@ -78,8 +89,51 @@ def _render_scenario(duration_s: float, update_func: ScenarioUpdater, seed: int)
     return np.concatenate(rendered) if rendered else np.zeros(0, dtype=np.float64), engine.fs
 
 
+def _rpm_time_to_fraction(times: np.ndarray, actual_rpm: np.ndarray, target_rpm: float, fraction: float) -> float:
+    threshold = target_rpm * fraction
+    indices = np.flatnonzero(actual_rpm >= threshold)
+    if len(indices) == 0:
+        return float(times[-1]) if len(times) else 0.0
+    return float(times[int(indices[0])])
+
+
+def _render_startup_only_diagnostics() -> tuple[FloatArray, dict[str, float]]:
+    sample_rate = 22050
+    engine = HDDAudioEngine(
+        seed=0,
+        sample_rate=sample_rate,
+        drive_profile="desktop_7200_internal",
+        acoustic_profile="drive_on_desk",
+    )
+    total_frames = int(startup_only_duration("desktop_7200_internal") * sample_rate)
+    startup_event = HDDAudioEvent(
+        rpm=0.0,
+        emitted_at=0.0,
+        target_rpm=7200.0,
+        queue_depth=1,
+        op_kind="background",
+        power_state="starting",
+        heads_loaded=False,
+        servo_mode="idle",
+        transfer_activity=0.0,
+        is_spinup=True,
+    )
+    diagnostics = engine.synthesizer.render_diagnostic_chunk(
+        total_frames,
+        scheduled_events=[(startup_event, int(0.85 * sample_rate))],
+    )
+    startup_metrics = {
+        "rpm_time_to_50_s": _rpm_time_to_fraction(diagnostics.time_s, diagnostics.actual_rpm, 7200.0, 0.50),
+        "rpm_time_to_90_s": _rpm_time_to_fraction(diagnostics.time_s, diagnostics.actual_rpm, 7200.0, 0.90),
+        "rpm_time_to_99_s": _rpm_time_to_fraction(diagnostics.time_s, diagnostics.actual_rpm, 7200.0, 0.99),
+        "steady_fundamental_hz": float(np.median(diagnostics.actual_rpm[-2048:])) / 60.0,
+    }
+    return diagnostics.output, startup_metrics
+
+
 def _scenario_specs() -> tuple[ScenarioSpec, ...]:
     return (
+        ("startup-only-desktop", startup_only_duration("desktop_7200_internal"), update_startup_only, 31),
         ("spinup-idle-park", _load_power_on_trace()[1] + 5.25, update_spinup_idle, 7),
         ("idle-standby-wake", 7.0, update_idle_to_standby_wake, 19),
         ("metadata-storm", 6.0, update_metadata_storm, 23),
@@ -89,18 +143,18 @@ def _scenario_specs() -> tuple[ScenarioSpec, ...]:
 
 
 def _scenario_metrics(samples: FloatArray, sample_rate: int) -> dict[str, float]:
-    spectrum = np.abs(np.fft.rfft(samples * np.hanning(len(samples))))
-    freqs = np.fft.rfftfreq(len(samples), 1.0 / sample_rate)
-    centroid = float(np.sum(freqs * spectrum) / max(np.sum(spectrum), 1e-12))
-    low_band = float(np.sum(spectrum[(freqs >= 20.0) & (freqs < 120.0)]))
-    low_mid = float(np.sum(spectrum[(freqs >= 120.0) & (freqs < 500.0)]))
+    features = compute_audio_features(samples, sample_rate, "desktop_7200_internal")
     return {
-        "duration_s": len(samples) / sample_rate,
+        "duration_s": float(features["duration_s"]),
         "rms": float(np.sqrt(np.mean(samples**2))) if samples.size else 0.0,
         "peak": float(np.max(np.abs(samples))) if samples.size else 0.0,
-        "spectral_centroid_hz": centroid,
-        "low_band_ratio": low_band / max(low_mid, 1e-12),
-        "transient_density": float(np.mean(np.abs(np.diff(samples)))) if len(samples) > 1 else 0.0,
+        "first_audible_s": float(features["first_audible_s"]),
+        "time_to_90_s": float(features["time_to_90_s"]),
+        "spectral_centroid_hz": float(features["spectral_centroid_hz"]),
+        "low_band_ratio": float(features["low_band_ratio"]),
+        "transient_density": float(features["transient_density"]),
+        "spectral_flux": float(features["spectral_flux"]),
+        "bubbly_modulation_ratio": float(features["bubbly_modulation_ratio"]),
     }
 
 
@@ -127,6 +181,9 @@ def main() -> None:
     AUDIO_BASELINE_DIR.mkdir(parents=True, exist_ok=True)
     call_graph_path = AUDIO_BASELINE_DIR / "callgraph.json"
     metrics_path = AUDIO_BASELINE_DIR / "metrics.json"
+    startup_summary_path = AUDIO_BASELINE_DIR / "startup_reference_summary.json"
+    startup_wav_path = AUDIO_BASELINE_DIR / "startup-only-desktop.wav"
+    startup_diag_path = AUDIO_BASELINE_DIR / "startup-only-desktop.diagnostics.json"
 
     rendered: dict[str, FloatArray] = {}
     metrics: dict[str, dict[str, float]] = {}
@@ -146,8 +203,34 @@ def main() -> None:
         ),
         encoding="utf-8",
     )
+    analyzed_references, reference_metadata = analyze_reference_bundle()
+    reference_report_path = save_reference_analysis(reference_metadata)
+    startup_samples, startup_metrics = _render_startup_only_diagnostics()
+    write_wav(startup_wav_path, startup_samples, 22050)
+    startup_diag_path.write_text(json.dumps(startup_metrics, indent=2), encoding="utf-8")
+    startup_features = compute_audio_features(startup_samples, 22050, "desktop_7200_internal")
+    startup_features["time_to_50_s"] = startup_metrics["rpm_time_to_50_s"]
+    startup_features["time_to_90_s"] = startup_metrics["rpm_time_to_90_s"]
+    startup_features["time_to_99_s"] = startup_metrics["rpm_time_to_99_s"]
+    startup_features["steady_fundamental_hz"] = startup_metrics["steady_fundamental_hz"]
+    startup_summary = compare_startup_features(
+        startup_features,
+        [(entry, features) for entry, features, _path in analyzed_references],
+    )
+    startup_summary_path.write_text(json.dumps(startup_summary, indent=2), encoding="utf-8")
+    COMMITTED_REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    committed_json = COMMITTED_REPORT_DIR / "startup_reference_summary.json"
+    committed_svg = COMMITTED_REPORT_DIR / "startup_reference_summary.svg"
+    committed_json.write_text(json.dumps(startup_summary, indent=2), encoding="utf-8")
+    write_startup_summary_svg(committed_svg, startup_summary)
     print(f"wrote {call_graph_path.relative_to(ROOT)}")
     print(f"wrote {metrics_path.relative_to(ROOT)}")
+    print(f"wrote {reference_report_path.relative_to(ROOT)}")
+    print(f"wrote {startup_wav_path.relative_to(ROOT)}")
+    print(f"wrote {startup_diag_path.relative_to(ROOT)}")
+    print(f"wrote {startup_summary_path.relative_to(ROOT)}")
+    print(f"wrote {committed_json.relative_to(ROOT)}")
+    print(f"wrote {committed_svg.relative_to(ROOT)}")
 
 
 if __name__ == "__main__":
