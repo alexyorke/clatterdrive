@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+import shutil
 import wave
 from collections.abc import Callable
 from pathlib import Path
@@ -15,6 +16,7 @@ from clatterdrive.profiles import AcousticProfile, DriveProfile
 
 ROOT = Path(__file__).resolve().parent
 SAMPLES_DIR = ROOT / "samples"
+DOCS_AUDIO_DIR = ROOT / "docs" / "audio"
 FloatArray = npt.NDArray[np.float64]
 ScenarioUpdater = Callable[[HDDAudioEngine, float, set[str]], None]
 PowerOnTrace = tuple[tuple[StartupTracePoint, ...], float]
@@ -57,6 +59,11 @@ def write_wav(path: Path, samples: FloatArray, sample_rate: int) -> None:
         wav_file.setsampwidth(2)
         wav_file.setframerate(sample_rate)
         wav_file.writeframes(pcm.tobytes())
+
+
+def mirror_demo_sample_to_docs(path: Path) -> None:
+    DOCS_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(path, DOCS_AUDIO_DIR / path.name)
 
 
 def render_scenario(
@@ -267,7 +274,7 @@ def generate_readme_demo_samples() -> list[Path]:
     np.random.seed(7)
     SAMPLES_DIR.mkdir(parents=True, exist_ok=True)
 
-    return [
+    outputs = [
         render_scenario(
             "spinup-idle-park",
             _load_power_on_trace()[1] + 3.0,
@@ -290,6 +297,9 @@ def generate_readme_demo_samples() -> list[Path]:
             acoustic_profile="bare_drive_lab",
         ),
     ]
+    for output in outputs:
+        mirror_demo_sample_to_docs(output)
+    return outputs
 
 
 def generate_extended_scenario_samples() -> list[Path]:
