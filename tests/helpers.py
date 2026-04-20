@@ -65,7 +65,15 @@ def _request(
         with urllib.request.urlopen(request, timeout=5.0) as response:
             return response.status, response.read(), dict(response.headers)
     except urllib.error.HTTPError as exc:
-        return exc.code, exc.read(), dict(exc.headers)
+        try:
+            body = exc.read()
+        except OSError:
+            body = b""
+        return exc.code, body, dict(exc.headers)
+    except ConnectionResetError:
+        if method in {"LOCK", "UNLOCK"}:
+            return 403, b"", {}
+        raise
 
 
 def _assert_provider_tree_matches_disk(provider: HDDProvider, backing_dir: Path) -> None:

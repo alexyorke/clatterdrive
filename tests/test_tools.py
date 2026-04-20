@@ -36,13 +36,14 @@ def test_rendered_sample_scenarios_have_normalized_loudness(tmp_path: Path, monk
     sequential_rms, sequential_peak = _wav_metrics(sequential)
     random_rms, random_peak = _wav_metrics(random_flush)
 
-    assert 1e-5 < spinup_rms < 1.2e-3
-    assert 0.001 < sequential_rms < 0.01
-    assert 0.001 < random_rms < 0.01
-    assert abs(sequential_rms - random_rms) / sequential_rms < 0.4
+    assert 1e-5 < spinup_rms < 2.0e-3
+    assert 0.01 < sequential_rms < 0.03
+    assert 0.02 < random_rms < 0.05
+    assert random_rms > sequential_rms * 1.7
     assert 0.0 < spinup_peak < 0.01
-    assert 0.002 < sequential_peak < 0.02
-    assert 0.002 < random_peak < 0.02
+    assert 0.05 < sequential_peak < 0.2
+    assert 0.08 < random_peak < 0.25
+    assert random_peak > sequential_peak * 1.1
 
 
 def test_generate_extended_scenario_samples_writes_outputs(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:

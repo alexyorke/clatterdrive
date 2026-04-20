@@ -65,6 +65,10 @@ class PlantState:
     windage_low_state: float = 0.0
     windage_high_state: float = 0.0
     bearing_state: float = 0.0
+    wedge_fast_state: float = 0.0
+    wedge_slow_state: float = 0.0
+    contact_fast_state: float = 0.0
+    contact_slow_state: float = 0.0
     base_disp: FloatArray = field(default_factory=lambda: np.zeros(0, dtype=np.float64))
     base_vel: FloatArray = field(default_factory=lambda: np.zeros(0, dtype=np.float64))
     cover_disp: FloatArray = field(default_factory=lambda: np.zeros(0, dtype=np.float64))
@@ -326,6 +330,10 @@ def reinitialize_mode_state(
     fresh.plant.windage_low_state = state.plant.windage_low_state
     fresh.plant.windage_high_state = state.plant.windage_high_state
     fresh.plant.bearing_state = state.plant.bearing_state
+    fresh.plant.wedge_fast_state = state.plant.wedge_fast_state
+    fresh.plant.wedge_slow_state = state.plant.wedge_slow_state
+    fresh.plant.contact_fast_state = state.plant.contact_fast_state
+    fresh.plant.contact_slow_state = state.plant.contact_slow_state
     fresh.supervisor = replace(state.supervisor)
     return fresh
 
@@ -393,7 +401,7 @@ def _apply_command(
     supervisor.heads_loaded = bool(command.heads_loaded)
     supervisor.load_state = "loaded" if supervisor.heads_loaded else "parked"
     if not previous_heads_loaded and supervisor.heads_loaded:
-        supervisor.contact_impulse += 0.55
+        supervisor.contact_impulse += 0.26
         supervisor.load_state = "loading"
     if command.is_spinup:
         supervisor.power_state = "starting"
@@ -417,7 +425,7 @@ def _apply_command(
         supervisor.seek_duration_s = max(command.motion_duration_s, 0.024)
         supervisor.seek_elapsed_s = 0.0
         supervisor.settle_remaining_s = max(command.settle_duration_s, 0.010)
-        supervisor.contact_impulse += 0.85
+        supervisor.wedge_impulse += 0.22
         supervisor.load_state = "parking"
         supervisor.heads_loaded = False
     elif servo_mode == "calibration":
@@ -427,7 +435,7 @@ def _apply_command(
         supervisor.seek_duration_s = max(command.motion_duration_s, 0.014)
         supervisor.seek_elapsed_s = 0.0
         supervisor.settle_remaining_s = max(command.settle_duration_s, 0.006)
-        supervisor.contact_impulse += 0.22
+        supervisor.wedge_impulse += 0.18
     elif servo_mode in {"seek", "track"}:
         delta = command.track_delta
         if abs(delta) < 0.015 and servo_mode == "seek":
@@ -493,6 +501,21 @@ def _step_modal_bank(
     new_velocity = bank.coeff_vx * displacement + bank.coeff_vv * kicked_velocity
     signal = float(np.dot(new_velocity, bank.output_gain))
     return new_displacement, new_velocity, signal
+
+
+def _step_reaction_mode(
+    fast_state: float,
+    slow_state: float,
+    *,
+    excitation: float,
+    dt: float,
+    fast_tau_s: float,
+    slow_tau_s: float,
+    slow_input_scale: float,
+) -> tuple[float, float, float]:
+    fast_state = (fast_state + excitation) * math.exp(-dt / max(fast_tau_s, 1e-5))
+    slow_state = (slow_state + excitation * slow_input_scale) * math.exp(-dt / max(slow_tau_s, 1e-5))
+    return fast_state, slow_state, fast_state - slow_state
 
 
 def _render_segment_internal(
@@ -618,7 +641,7 @@ def _render_segment_internal(
                 torque_command = _clamp(torque_command, -8.0, 8.0)
                 torque_delta = torque_command - plant.actuator_torque
                 plant.actuator_torque += 0.62 * torque_delta
-                impulse_scale = 0.14 if supervisor.servo_mode == "track" else 0.42 if supervisor.servo_mode == "seek" else 0.24
+                impulse_scale = 0.10 if supervisor.servo_mode == "track" else 0.56 if supervisor.servo_mode == "seek" else 0.30
                 supervisor.wedge_impulse += abs(torque_delta) * impulse_scale
             else:
                 plant.actuator_torque *= 0.9992
@@ -629,7 +652,7 @@ def _render_segment_internal(
                     interval = max(0.004, 0.010 / max(supervisor.transfer_activity, 0.25))
                     plant.boundary_timer_s += interval
                     supervisor.wedge_impulse += (
-                        0.065 * acoustic_profile.sequential_boundary_gain * (0.8 + 0.2 * rpm_norm)
+                        0.045 * acoustic_profile.sequential_boundary_gain * (0.8 + 0.2 * rpm_norm)
                     )
             else:
                 plant.boundary_timer_s = 0.0
@@ -642,15 +665,25 @@ def _render_segment_internal(
         windage_high_alpha = 0.024 if startup_active else 0.130
         plant.windage_low_state += windage_low_alpha * (float(windage_noise_raw[index]) - plant.windage_low_state)
         plant.windage_high_state += windage_high_alpha * (plant.windage_low_state - plant.windage_high_state)
+        windage_scale = (
+            rpm_norm * (0.002 + 0.050 * rpm_norm**3.8)
+            if startup_active
+            else (0.010 * rpm_norm + 0.18 * rpm_norm * rpm_norm)
+        )
         windage = (
             (plant.windage_low_state - plant.windage_high_state)
-            * ((0.002 + 0.050 * rpm_norm**3.8) if startup_active else (0.020 + 0.18 * rpm_norm * rpm_norm))
+            * windage_scale
             * drive_profile.windage_gain
         )
 
         bearing_alpha = 0.010 if startup_active else 0.060
         plant.bearing_state += bearing_alpha * (float(bearing_noise_raw[index]) - plant.bearing_state)
-        bearing = plant.bearing_state * ((0.002 + 0.012 * rpm_norm**2.0) if startup_active else (0.010 + 0.040 * rpm_norm)) * drive_profile.bearing_gain
+        bearing_scale = (
+            rpm_norm * (0.002 + 0.012 * rpm_norm**2.0)
+            if startup_active
+            else (0.006 * rpm_norm + 0.034 * rpm_norm**1.25)
+        )
+        bearing = plant.bearing_state * bearing_scale * drive_profile.bearing_gain
 
         harmonic = 0.0
         for harmonic_index, harmonic_weight, phase_offset in zip(
@@ -669,10 +702,37 @@ def _render_segment_internal(
             torque_structure = startup_ramp * 0.00012 * motor_reaction + 0.085 * startup_drive_force
         else:
             torque_structure = 0.0008 * motor_reaction
-        wedge_force = 0.0 if startup_active else supervisor.wedge_impulse
-        contact_force = 0.0 if startup_active else supervisor.contact_impulse
+        mount_damping = max(acoustic_profile.mount_damping_scale, 0.35)
+        wedge_excitation = 0.0 if startup_active else supervisor.wedge_impulse
+        contact_excitation = 0.0 if startup_active else supervisor.contact_impulse
         supervisor.wedge_impulse = 0.0
         supervisor.contact_impulse = 0.0
+        if startup_active:
+            plant.wedge_fast_state *= 0.96
+            plant.wedge_slow_state *= 0.96
+            plant.contact_fast_state *= 0.95
+            plant.contact_slow_state *= 0.95
+            wedge_force = 0.0
+            contact_force = 0.0
+        else:
+            plant.wedge_fast_state, plant.wedge_slow_state, wedge_force = _step_reaction_mode(
+                plant.wedge_fast_state,
+                plant.wedge_slow_state,
+                excitation=wedge_excitation,
+                dt=dt,
+                fast_tau_s=0.00022 / mount_damping,
+                slow_tau_s=0.00135 / mount_damping,
+                slow_input_scale=0.58,
+            )
+            plant.contact_fast_state, plant.contact_slow_state, contact_force = _step_reaction_mode(
+                plant.contact_fast_state,
+                plant.contact_slow_state,
+                excitation=contact_excitation,
+                dt=dt,
+                fast_tau_s=0.00034 / mount_damping,
+                slow_tau_s=0.00260 / mount_damping,
+                slow_input_scale=0.72,
+            )
 
         if startup_active:
             base_force = (
@@ -696,27 +756,32 @@ def _render_segment_internal(
         else:
             base_force = (
                 0.58 * torque_structure
-                + 0.38 * wedge_force
-                + 0.30 * contact_force
+                + 0.56 * wedge_force
+                + 0.42 * contact_force
                 + 0.16 * bearing
             )
             cover_force = (
                 0.24 * torque_structure
-                + 0.26 * wedge_force
-                + 0.14 * contact_force
+                + 0.34 * wedge_force
+                + 0.20 * contact_force
                 + 0.14 * windage
             )
             actuator_force = (
-                0.54 * wedge_force
-                + 0.14 * abs(plant.actuator_vel)
-                + 0.22 * contact_force
+                0.24 * wedge_force
+                + 0.18 * abs(plant.actuator_vel)
+                + 0.10 * contact_force
                 + 0.06 * supervisor.transfer_activity
             )
             enclosure_force = (
-                acoustic_profile.enclosure_coupling * (0.24 * base_force + 0.12 * cover_force)
+                acoustic_profile.enclosure_coupling * (0.30 * base_force + 0.20 * cover_force)
                 + acoustic_profile.internal_air_coupling * (0.14 * windage + 0.08 * spindle_tone)
             )
-            desk_force = acoustic_profile.desk_coupling * (0.32 * base_force + 0.48 * wedge_force + 0.18 * contact_force)
+            desk_force = acoustic_profile.desk_coupling * (
+                0.44 * base_force
+                + 0.18 * cover_force
+                + 0.58 * wedge_force
+                + 0.26 * contact_force
+            )
 
         plant.base_disp, plant.base_vel, base_signal = _step_modal_bank(
             mode_bank.base,
@@ -750,14 +815,14 @@ def _render_segment_internal(
         )
 
         if startup_active:
-            startup_airborne_gate = rpm_norm**2.6
+            startup_airborne_gate = rpm_norm**2.0
             structure = (
                 mode_bank.structure_gain
-                * (1.95 * base_signal + 0.72 * cover_signal + 1.10 * enclosure_signal + 1.60 * desk_signal)
+                * (1.72 * base_signal + 0.78 * cover_signal + 1.02 * enclosure_signal + 1.42 * desk_signal)
             )
             airborne = (
-                mode_bank.direct_gain * startup_airborne_gate * (0.08 * spindle_tone + 0.03 * windage + 0.02 * bearing)
-                + 0.04 * mode_bank.cover_gain * cover_signal
+                mode_bank.direct_gain * startup_airborne_gate * (0.16 * spindle_tone + 0.05 * windage + 0.03 * bearing)
+                + 0.07 * mode_bank.cover_gain * cover_signal
             )
         else:
             structure = (

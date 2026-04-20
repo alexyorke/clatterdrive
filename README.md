@@ -1,173 +1,77 @@
 # ClatterDrive
 
 > [!WARNING]
-> `ClatterDrive` is a novelty project for entertainment purposes. Pull requests / merge requests are welcome, but this is not a serious or trustworthy HDD simulator, and it should not be treated as accurate for real storage, acoustics, or performance work.
+> `ClatterDrive` is a novelty project for entertainment purposes. Contributions are welcome, but this is not a serious or trustworthy HDD simulator, and it should not be treated as accurate for storage, acoustics, or performance work.
 
-`ClatterDrive` is a bit of a novelty project with a fairly serious simulation core: it makes a normal directory feel and sound more like a mechanical hard drive.
+`ClatterDrive` makes a normal directory feel and sound more like a mechanical hard drive.
 
-The premise is intentionally playful. The implementation is still trying to be surprisingly plausible.
-
-This was also very much a vibe-coded project. I do not come from a serious HDD firmware, acoustics, or audio-synthesis background, so the repo should be read as a fun experimental build by someone figuring a lot of that out as they went.
-
-- It exposes a directory over WebDAV and injects HDD-like latency into file operations.
-- It models seek, rotational delay, transfer rate, write-back behavior, metadata traffic, and fragmentation effects.
-- It synthesizes the drive noise procedurally from runtime telemetry.
+- It exposes a directory over WebDAV.
+- It injects HDD-like latency into reads, writes, metadata churn, standby/wake, and write-back behavior.
+- It synthesizes drive noise procedurally from the same runtime events.
 - It does **not** use prerecorded HDD sound effects.
 
-## What This Is
+## Audio Demo
 
-This project is meant to be fun first:
+- [Listen in the browser](https://alexyorke.github.io/clatterdrive/)
 
-- If the idea of turning a fast machine into a pretend hard drive makes you laugh, that is the correct reaction.
-- If you want a toy project that still tries to behave plausibly under sequential reads, random reads, write-back flushes, and fragmented files, that is also the correct reaction.
+Checked-in sample renders:
 
-So the right framing is:
+| Scenario | Why it sounds different | File |
+| --- | --- | --- |
+| Spin-up, idle, park | Desk-coupled startup/body with a final park transient | [spinup-idle-park.wav](samples/spinup-idle-park.wav) |
+| Idle, standby, wake | Quieter state change, then wake-up and renewed activity | [idle-standby-wake.wav](samples/idle-standby-wake.wav) |
+| Metadata storm | Brighter, busier short/medium seeks on a barer mounting profile | [metadata-storm.wav](samples/metadata-storm.wav) |
 
-- **Yes, it is a bit of a novelty project.**
-- **Yes, it is also trying to be surprisingly realistic within that joke.**
-- **Yes, it was heavily vibe-coded.**
-- **No, it was not written by someone with deep prior audio/acoustics expertise.**
+## Quick Start
 
-## What Makes It Fairly Realistic
-
-The simulator currently includes:
-
-- A virtual filesystem allocator that emits both file-data and metadata I/O.
-- A zoned HDD latency model with seek, rotation, transfer time, cache state, and idle power-state behavior.
-- A scheduler that does request merging and LOOK/deadline-like dispatch instead of naive FIFO.
-- Delayed write-back flushing rather than instant fake completion.
-- Explicit drive presets and installation/acoustic presets instead of one anonymous default machine.
-- A procedural audio engine driven by the same simulated events.
-
-The sound path is fully synthetic:
-
-- spindle hum is generated from harmonics and noise
-- actuator noise is modal/resonant synthesis driven by seek and flush events
-- calibration and park events are synthesized from telemetry
-
-There are no bundled recorded drive noises hiding underneath.
-
-## Sample Audio
-
-GitHub strips inline audio players from normal repository READMEs, so the sample players live on the public GitHub Pages demo instead:
-
-- [Listen in the browser: ClatterDrive audio demo](https://alexyorke.github.io/clatterdrive/)
-
-The direct WAV links below are still kept in the repo as checked-in renders from the current engine, regenerated from the latest code rather than copied from an older revision. They are intentionally chosen to sound different from each other instead of being three variations of the same steady-state thrum.
-
-| Scenario | What Activity Is Happening | Why It Sounds Like That | File |
-| --- | --- | --- | --- |
-| Desk-mounted spin-up, idle, park | A cold power-on sequence runs all the way through spindle run-up, early self-test / servo activity, a short idle period, then a final park. This sample is rendered with the `drive_on_desk` acoustic profile. | The desk-coupled profile pushes more low-frequency structure motion into the output, so the run-up has more body and bass than the bare-drive profile. The sharper late transient is the modeled park/contact behavior, not a normal read seek. | [spinup-idle-park.wav](samples/spinup-idle-park.wav) |
-| Desk-mounted idle -> standby -> wake | The drive starts active, parks and drops into a quieter standby-like state, then wakes back up into active seeks and streaming again. This sample is also rendered with the `drive_on_desk` acoustic profile. | This one should have more obvious low-frequency body than the old README clips because the desk/mount coupling stays present through the wake cycle. The distinct change in texture comes from the park + wake transition, not just a different seek rate. | [idle-standby-wake.wav](samples/idle-standby-wake.wav) |
-| Bare-drive metadata storm | A dense burst of short-to-medium metadata and journal-style seeks, with occasional flush-weighted jumps and recalibration-like interruptions, rendered with the `bare_drive_lab` acoustic profile. | This is intentionally the bright, exposed contrast sample. You should hear more of the seek / servo tick texture and less desk/enclosure bloom, because it is using the bare-drive mounting profile instead of the desk-coupled one. | [metadata-storm.wav](samples/metadata-storm.wav) |
-
-These files are generated by the repo itself via [tools/generate_readme_demo_samples.py](tools/generate_readme_demo_samples.py), which exists specifically to rebuild the exact WAVs linked from this README. The lower-level rendering helpers live in [tools/generate_audio_samples.py](tools/generate_audio_samples.py).
-
-Sample file policy:
-
-- the WAV samples are committed in the repo on purpose so the README always has something concrete to audition
-- the GitHub Pages demo at `https://alexyorke.github.io/clatterdrive/` is the browser-playable version of those same scenarios
-- if the synth, servo model, or mounting/enclosure model changes materially, regenerate the README demo clips locally with `uv run python -m tools.generate_readme_demo_samples`
-- that script regenerates the exact `samples/*.wav` files linked above, so the README demo stays in sync with the current synth
-- the checked-in demo clips are peak-normalized for playback so the public browser demo is listenable without manual gain staging; that normalization is for the demo artifacts, not a change to the live engine path
-- they are treated as checked-in reference artifacts, not CI-generated throwaways
-
-## How It Works
-
-The data path is:
-
-`WebDAV -> virtual FS -> metadata/data extent planning -> scheduler -> HDD latency model -> procedural audio telemetry`
-
-The audio path is separate from the storage path:
-
-`simulated storage events -> event bus -> realtime synth -> optional output stream`
-
-Event timing contract:
-
-- the HDD model emits events with a wall-clock `emitted_at` timestamp
-- the audio engine maps those timestamps into the current render chunk
-- if live output is disabled, the same synth still renders offline for tests and sample generation
-- the event stream is modular: the storage model only knows about an injected event sink, not about the audio engine implementation
-
-## Architecture
-
-The major layers are intentionally split up:
-
-- `clatterdrive/fs/`: fake filesystem semantics, extents, directories, and metadata I/O planning
-- `clatterdrive/scheduler.py`: merges and orders requests before they hit the device model
-- `clatterdrive/hdd/`: seek, rotation, caching, power-state, write-back, and physical-access timing
-- `clatterdrive/storage_events.py`: generic storage-event types, queueing, and sink boundary
-- `clatterdrive/audio/`: audio-side consumer of the storage event stream plus reduced-order mechanical synthesis
-- `clatterdrive/webdav/`: WebDAV interception layer that routes file operations through the simulator
-- `clatterdrive/profiles.py`: named drive presets plus named installation/acoustic presets
-- `tools/`: repo-local generators, profilers, trace exporters, and audio analysis scripts
-
-Important files:
-
-- [main.py](main.py): thin compatibility entrypoint that starts the packaged server
-- [clatterdrive/app.py](clatterdrive/app.py): starts the WebDAV server and audio engine
-- [clatterdrive/webdav/provider.py](clatterdrive/webdav/provider.py): intercepts file reads and writes
-- [clatterdrive/fs/simulator.py](clatterdrive/fs/simulator.py): fake filesystem state wrapper
-- [clatterdrive/fs/core.py](clatterdrive/fs/core.py): fake filesystem allocation plus metadata I/O
-- [clatterdrive/scheduler.py](clatterdrive/scheduler.py): request merging and dispatch policy
-- [clatterdrive/hdd/latency.py](clatterdrive/hdd/latency.py): geometry, caches, timing, power states, and write-back flushing
-- [clatterdrive/storage_events.py](clatterdrive/storage_events.py): storage-event protocol and event bus
-- [clatterdrive/audio/commands.py](clatterdrive/audio/commands.py): event-to-command adapter for the audio runtime
-- [clatterdrive/audio/core.py](clatterdrive/audio/core.py): sampled-servo plant, enclosure/table coupling, and render chunk coordination
-- [clatterdrive/audio/engine.py](clatterdrive/audio/engine.py): live engine shell, event scheduling, tee output, and diagnostics export
-
-## Running It
-
-This repo now uses `uv` for all Python dependency management. The committed [uv.lock](uv.lock) is the source of truth for exact runtime and dev dependency versions.
-
-Install `uv`, then sync the repo-local environment:
+This repo uses `uv` and the committed [uv.lock](uv.lock).
 
 ```powershell
 uv sync --group dev
-```
-
-Then start the server:
-
-```powershell
 uv run python main.py
 ```
 
-Or run the packaged entrypoint directly:
+Or:
 
 ```powershell
 uv run python -m clatterdrive
-```
-
-There is also a console entrypoint if you prefer:
-
-```powershell
 uv run clatterdrive
 ```
 
-By default it serves `backing_storage/` over WebDAV on:
+Default URL:
 
 - `http://127.0.0.1:8080`
 
-If you already have something bound to port `8080`, set `FAKE_HDD_PORT` instead of editing code:
+## Using It
+
+The simulator serves `backing_storage/` by default. Use the WebDAV URL, not the backing directory directly, or you will bypass the latency/audio path.
+
+Windows options:
+
+- open `http://127.0.0.1:8080/` in Explorer as a network location
+- upload/download with `curl.exe`
+
+Example:
 
 ```powershell
-$env:FAKE_HDD_PORT = "8090"
-uv run python main.py
+curl.exe -X MKCOL http://127.0.0.1:8080/demo/
+curl.exe -T "C:\path\to\file.bin" http://127.0.0.1:8080/demo/file.bin
+curl.exe http://127.0.0.1:8080/demo/file.bin --output "C:\path\to\copy.bin"
 ```
 
-Useful environment variables:
+If live audio is enabled, browsing directories, listing files, uploads, downloads, overwrites, and wake-from-standby activity all feed the audio model.
 
-- `FAKE_HDD_HOST`: bind the WebDAV server to a different host interface
-- `FAKE_HDD_PORT`: bind the WebDAV server to a different port
-- `FAKE_HDD_BACKING_DIR`: choose a different backing directory instead of `backing_storage`
-- `FAKE_HDD_COLD_START=off`: start already ready instead of simulating an initial cold power-on
-- `FAKE_HDD_ASYNC_POWER_ON=off`: disable background startup sequencing at boot
-- `FAKE_HDD_AUDIO=off`: disable live audio output while keeping offline rendering/tests working
-- `FAKE_HDD_AUDIO_TEE_PATH`: also record the rendered live output stream to a WAV file
-- `FAKE_HDD_TRACE_EVENTS=on`: print emitted storage/audio events separately from the filesystem and latency logs
-- `FAKE_HDD_EVENT_TRACE_PATH`: write the emitted storage event stream to JSON when the server shuts down
-- `FAKE_HDD_DRIVE_PROFILE`: select a modeled drive preset such as `desktop_7200_internal` or `archive_5900_internal`
-- `FAKE_HDD_ACOUSTIC_PROFILE`: select an installation/acoustic preset such as `mounted_in_case` or `bare_drive_lab`
+## Useful Environment Variables
+
+- `FAKE_HDD_HOST`: bind to a different interface
+- `FAKE_HDD_PORT`: use a different port
+- `FAKE_HDD_BACKING_DIR`: use a different backing directory
+- `FAKE_HDD_AUDIO=off`: disable live audio
+- `FAKE_HDD_AUDIO_TEE_PATH`: also record live output to a WAV
+- `FAKE_HDD_COLD_START=off`: start already ready
+- `FAKE_HDD_ASYNC_POWER_ON=off`: disable background startup sequencing
+- `FAKE_HDD_DRIVE_PROFILE`: choose a drive preset
+- `FAKE_HDD_ACOUSTIC_PROFILE`: choose an installation/acoustic preset
 
 Current drive presets:
 
@@ -188,166 +92,72 @@ Example:
 
 ```powershell
 $env:FAKE_HDD_DRIVE_PROFILE = "archive_5900_internal"
-$env:FAKE_HDD_ACOUSTIC_PROFILE = "mounted_in_case"
+$env:FAKE_HDD_ACOUSTIC_PROFILE = "drive_on_desk"
 uv run python main.py
 ```
 
 ## Docker
 
-There is now a repo-local Docker setup for the headless WebDAV/server side of the project.
+Docker is mainly for the headless WebDAV/latency path. Native host execution is better for live audio.
 
-The container build also uses `uv.lock`, not ad hoc `pip install` steps.
+```powershell
+docker compose up --build
+```
 
-Build and run it directly:
+Or:
 
 ```powershell
 docker build -t clatterdrive .
 docker run --rm -p 8080:8080 -e FAKE_HDD_AUDIO=off -v "${PWD}/backing_storage:/data" clatterdrive
 ```
 
-Or use Compose:
+## Repo Layout
 
-```powershell
-docker compose up --build
-```
+- [clatterdrive](clatterdrive): packaged application code
+- [tools](tools): repo-local generators, profilers, trace exporters, and audits
+- [samples](samples): checked-in demo WAVs
+- [docs](docs): GitHub Pages demo assets
+- [tests](tests): test suite
 
-Container defaults:
+Key files:
 
-- it listens on `0.0.0.0:8080` inside the container
-- it mounts the backing directory at `/data`
-- live audio is disabled by default with `FAKE_HDD_AUDIO=off`
+- [main.py](main.py): thin startup entrypoint
+- [clatterdrive/app.py](clatterdrive/app.py): server startup and wiring
+- [clatterdrive/webdav/provider.py](clatterdrive/webdav/provider.py): WebDAV interception layer
+- [clatterdrive/hdd/latency.py](clatterdrive/hdd/latency.py): HDD timing and power-state model
+- [clatterdrive/audio/core.py](clatterdrive/audio/core.py): audio plant and render logic
+- [clatterdrive/audio/engine.py](clatterdrive/audio/engine.py): runtime audio shell
 
-Then access it from the host at:
+## Development
 
-- `http://127.0.0.1:8080`
-
-Container note:
-
-- the Docker setup is mainly for the WebDAV/latency simulation path
-- the live audio path is better run natively on the host, because container audio-device passthrough is much more environment-specific than the WebDAV server itself
-
-## Regenerating The Sample Audio
-
-To rebuild the sample WAV files:
-
-```powershell
-uv run python -m tools.generate_readme_demo_samples
-```
-
-That writes deterministic README demo outputs into `samples/`. The current README set deliberately spans three different situations: desk-coupled power-on / park, desk-coupled standby wake behavior, and a brighter bare-drive metadata storm. The spin-up sample is generated from the same startup model the runtime uses, rather than a separate hand-authored timeline. If you want the lower-level sample-rendering helpers directly, use `tools/generate_audio_samples.py`.
-
-## Profiling And Tests
-
-Quick local smoke validation:
+Smoke test:
 
 ```powershell
 uv run python smoke.py
 ```
 
-That boots [main.py](main.py) on a random port with live audio disabled, exercises WebDAV operations, and runs an additional `curl` probe when available.
-
-Tests run in parallel by default via `pytest-xdist`. If you need to disable that for debugging, use `uv run python -m pytest -q -n 0`.
-
-Core profiling:
-
-```powershell
-uv run python -m tools.profile_core
-uv run python -m tools.profile_fragmentation
-```
-
-Those scripts now include built-in expectation checks instead of only printing timings. They cover:
-
-- sequential write/read behavior
-- random and contended random reads
-- metadata-heavy churn
-- copy-heavy workloads
-- mixed read/write plus directory churn
-- cold-start versus ready comparisons
-- contiguous versus fragmented large-file behavior
-
-Unit tests:
+Tests:
 
 ```powershell
 uv run python -m pytest -q
 ```
 
-CI also uses `uv sync --locked --group dev` and then runs lint, dead-code, compile, type-check, test, and smoke passes from the locked environment.
+Regenerate the public sample clips:
 
-Trace and visualization tooling:
+```powershell
+uv run python -m tools.generate_readme_demo_samples
+```
+
+Audio traces and audits:
 
 ```powershell
 uv run python -m tools.trace_audio_scenarios
 uv run python -m tools.audit_audio_stack
 ```
 
-That runs silent offline renders and stack analysis, then writes:
+## Limits
 
-- `.runtime/traces/*.trace.json`: emitted event stream plus diagnostic arrays
-- `.runtime/traces/*.trace.svg`: a simple visualization of RPM, queue depth, head position, output, and power-state spans
-- `.runtime/audio-baseline/callgraph.json`: a focused call graph for the audio stack
-- `.runtime/audio-baseline/metrics.json`: per-scenario loudness/spectral/transient metrics plus pairwise correlations
-
-The current built-in extra scenarios include:
-
-- `copy-heavy-writeback`
-- `idle-standby-wake`
-- `metadata-storm`
-
-Dead-code policy:
-
-- `ruff` enforces annotations plus bug-finding rule families from `flake8-bugbear` (`B`), `pyupgrade` (`UP`), `flake8-return` (`RET`), `flake8-simplify` (`SIM`), `pygrep-hooks` (`PGH`), `Pylint` errors (`PLE`), Ruff's own suppression/config checks (`RUF`), and ordinary unused-code/unused-import issues (`F`)
-- `vulture` is part of CI and is intended to fail the build on dead code or stale code islands
-- old ad hoc network scripts were removed once `smoke.py`, `tools/profile_core.py`, and `tools/profile_fragmentation.py` replaced them
-
-Runtime scratch space such as smoke/profiling temp trees now lives under `.runtime/` in the repo root instead of leaking into OS temp directories.
-
-## Tuning Notes
-
-If you want to change the overall character, start with a profile in [clatterdrive/profiles.py](clatterdrive/profiles.py) before editing low-level constants.
-
-If you still want to tune the raw mechanics directly, the main drive-behavior knobs live in [clatterdrive/hdd/latency.py](clatterdrive/hdd/latency.py) and [clatterdrive/profiles.py](clatterdrive/profiles.py):
-
-- `avg_seek_ms`
-- `track_to_track_ms`
-- `head_switch_ms`
-- `read_ahead_kb`
-- `write_cache_mb`
-- `dirty_expire_ms`
-- `standby_after_s`
-- `spinup_ms`
-
-The audio radiation and filtering path mostly lives in [clatterdrive/audio/engine.py](clatterdrive/audio/engine.py).
-
-## Troubleshooting
-
-`Audio keeps playing`
-
-- stop the `main.py` process; the live sound is owned by the running server process
-- use `FAKE_HDD_AUDIO=off` if you want server behavior without sound output
-
-`No audio device`
-
-- the server will warn and continue
-- tests and sample rendering do not require a live output device
-
-`Server port already in use`
-
-- set `FAKE_HDD_PORT` to another port
-
-`Backing tree changed behind the simulator`
-
-- the simulator lazily materializes existing files and directories
-- for paths it has actually observed on disk, it now reconciles out-of-band file size changes and file deletion on later access
-- virtual-only paths created through the simulator without a backing file are intentionally kept as simulator-owned state until they are explicitly removed through the simulator path
-- it still does not attempt full real-time reconciliation of arbitrary external directory-tree churn, renames, or concurrent edits
-
-## Limitations
-
-This is still a simulation, not a real block device:
-
-- it is not implementing a full kernel page cache or full filesystem semantics
-- DAV dead-property churn is modeled, but locking is intentionally rejected instead of being simulated as media traffic
-- out-of-band backing-store mutations are only partially reconciled: file size changes and deletion are handled lazily for disk-observed paths, but broader external tree churn is still intentionally loose
-- it is intentionally compact and hackable, not a complete storage emulator
-
-That said, it is much closer to "modeled fake HDD" than "sleep calls plus MP3s".
+- This is not a real block device or kernel filesystem.
+- Out-of-band edits to the backing tree are only partially reconciled.
+- WebDAV locking is intentionally rejected instead of being simulated as media traffic.
+- The project is trying to sound cool and feel plausible, not to be a reference-grade HDD/acoustics model.

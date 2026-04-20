@@ -88,6 +88,8 @@ def _derive_transfer_activity(event: StorageEvent) -> float:
 
 def command_from_event(event: StorageEvent) -> AudioCommand:
     target_rpm = float(event.target_rpm if event.target_rpm is not None else event.rpm)
+    power_state = _derive_power_state(event)
+    servo_mode = _derive_servo_mode(event)
     motion_duration_s = max(
         float(event.motion_duration_ms if event.motion_duration_ms > 0.0 else event.actuator_duration_ms) / 1000.0,
         0.0,
@@ -96,13 +98,17 @@ def command_from_event(event: StorageEvent) -> AudioCommand:
         float(event.settle_duration_ms if event.settle_duration_ms > 0.0 else event.actuator_settle_ms) / 1000.0,
         0.0,
     )
-    heads_loaded = event.heads_loaded if event.heads_loaded is not None else _derive_servo_mode(event) != "park"
+    heads_loaded = (
+        event.heads_loaded
+        if event.heads_loaded is not None
+        else power_state == "active" and servo_mode != "park"
+    )
     op_kind = event.op_kind or "data"
     return AudioCommand(
         emitted_at=float(event.emitted_at),
         target_rpm=target_rpm,
-        power_state=_derive_power_state(event),
-        servo_mode=_derive_servo_mode(event),
+        power_state=power_state,
+        servo_mode=servo_mode,
         track_delta=_derive_track_delta(event),
         transfer_activity=_derive_transfer_activity(event),
         motion_duration_s=motion_duration_s,

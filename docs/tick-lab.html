@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ClatterDrive Square-One Lab</title>
+  <style>
+    :root {
+      --bg: #091018;
+      --panel: #101925;
+      --panel-2: #142131;
+      --ink: #eaf2f8;
+      --muted: #8ea3b7;
+      --line: #233343;
+      --accent: #7dd5ff;
+      --accent-2: #ffb46e;
+      --good: #92e4ba;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif;
+      background:
+        radial-gradient(circle at 12% 0%, rgba(125, 213, 255, 0.12), transparent 25%),
+        radial-gradient(circle at 100% 0%, rgba(255, 180, 110, 0.10), transparent 20%),
+        linear-gradient(180deg, #091018, #0b121a 72%);
+    }
+    .shell {
+      max-width: 1320px;
+      margin: 0 auto;
+      padding: 24px;
+      display: grid;
+      grid-template-columns: 1.04fr 0.96fr;
+      gap: 20px;
+    }
+    .panel {
+      background: linear-gradient(180deg, rgba(20, 33, 49, 0.94), rgba(12, 20, 30, 0.98));
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      overflow: hidden;
+      box-shadow: 0 18px 50px rgba(0,0,0,0.34);
+    }
+    .head {
+      padding: 18px 20px 14px;
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+    }
+    h1, h2, p { margin: 0; }
+    h1 { font-size: 28px; }
+    h2 { font-size: 16px; }
+    .lede {
+      margin-top: 8px;
+      max-width: 64ch;
+      color: var(--muted);
+    }
+    .viz-wrap { padding: 18px; display: grid; gap: 16px; }
+    .scene {
+      position: relative;
+      min-height: 470px;
+      border-radius: 18px;
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,0.05);
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01)),
+        radial-gradient(circle at 50% 18%, rgba(125, 213, 255, 0.07), transparent 34%),
+        linear-gradient(180deg, #111a25, #0a1118 70%);
+    }
+    .drive {
+      position: absolute;
+      inset: 48px 50px 122px 50px;
+      border-radius: 24px;
+      background:
+        linear-gradient(145deg, rgba(40, 54, 70, 0.96), rgba(18, 25, 35, 0.98)),
+        linear-gradient(180deg, rgba(255,255,255,0.03), transparent);
+      border: 1px solid rgba(180, 210, 255, 0.08);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), inset 0 -18px 30px rgba(0,0,0,0.25);
+    }
+    .platter {
+      position: absolute;
+      top: 72px;
+      left: 82px;
+      width: 250px;
+      height: 250px;
+      border-radius: 50%;
+      background:
+        radial-gradient(circle at 50% 50%, rgba(242, 247, 252, 0.95) 0 8%, rgba(120, 136, 151, 0.88) 8% 10%, transparent 10%),
+        radial-gradient(circle at 46% 34%, rgba(255,255,255,0.58), transparent 26%),
+        repeating-conic-gradient(from 0deg, rgba(255,255,255,0.07) 0deg 10deg, rgba(125,145,168,0.02) 10deg 20deg),
+        radial-gradient(circle at 50% 50%, #b9c6d2 0, #83919f 44%, #555f6c 72%, #2f3742 100%);
+      box-shadow: 0 22px 44px rgba(0,0,0,0.26), inset 0 3px 10px rgba(255,255,255,0.16), inset 0 -12px 30px rgba(0,0,0,0.24);
+      transform: rotate(0deg);
+    }
+    .platter::after {
+      content: "";
+      position: absolute;
+      inset: 24px;
+      border-radius: 50%;
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+    .spindle {
+      position: absolute;
+      top: 166px;
+      left: 175px;
+      width: 62px;
+      height: 62px;
+      border-radius: 50%;
+      background:
+        radial-gradient(circle at 40% 35%, rgba(255,255,255,0.82), transparent 22%),
+        radial-gradient(circle at 50% 50%, #dce5ee 0 24%, #7d8b98 24% 42%, #36404b 42% 100%);
+      box-shadow: 0 0 0 6px rgba(13,18,25,0.8), 0 8px 22px rgba(0,0,0,0.35);
+    }
+    .motor {
+      position: absolute;
+      right: 92px;
+      top: 96px;
+      width: 112px;
+      height: 112px;
+      border-radius: 50%;
+      background:
+        radial-gradient(circle at 42% 34%, rgba(255,255,255,0.20), transparent 24%),
+        radial-gradient(circle at 50% 50%, #2d3947 0 36%, #17212d 36% 60%, #0e141b 60% 100%);
+      box-shadow: inset 0 2px 8px rgba(255,255,255,0.05), 0 18px 26px rgba(0,0,0,0.28);
+    }
+    .coil {
+      position: absolute;
+      right: 84px;
+      top: 88px;
+      width: 128px;
+      height: 128px;
+      border-radius: 50%;
+      border: 10px solid rgba(255, 180, 110, 0.78);
+      opacity: 0.72;
+      filter: drop-shadow(0 10px 12px rgba(255, 168, 96, 0.10));
+    }
+    .desk {
+      position: absolute;
+      inset: auto 18px 18px 18px;
+      height: 84px;
+      border-radius: 14px;
+      background:
+        linear-gradient(180deg, rgba(184, 128, 80, 0.28), rgba(72, 44, 24, 0.88)),
+        repeating-linear-gradient(90deg, rgba(255,255,255,0.04) 0 18px, rgba(0,0,0,0.03) 18px 36px);
+      border: 1px solid rgba(255,255,255,0.05);
+      transform: translateY(0);
+    }
+    .meter-row {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+    .meter {
+      padding: 14px;
+      border-radius: 14px;
+      background: rgba(8, 13, 20, 0.54);
+      border: 1px solid rgba(255,255,255,0.05);
+    }
+    .meter .label {
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-size: 12px;
+      margin-bottom: 8px;
+    }
+    .meter .value {
+      font-size: 24px;
+      font-weight: 700;
+    }
+    .controls { padding: 18px; display: grid; gap: 16px; }
+    .button-row { display: flex; flex-wrap: wrap; gap: 10px; }
+    button {
+      appearance: none;
+      border: 0;
+      border-radius: 999px;
+      padding: 12px 16px;
+      background: linear-gradient(180deg, #8fdcff, #5bc6fb);
+      color: #04131d;
+      font-weight: 700;
+      cursor: pointer;
+      box-shadow: 0 10px 22px rgba(91, 198, 251, 0.16);
+    }
+    button.secondary {
+      background: linear-gradient(180deg, #2a3849, #1a2734);
+      color: var(--ink);
+      border: 1px solid rgba(255,255,255,0.08);
+      box-shadow: none;
+    }
+    .status {
+      min-height: 1.4em;
+      color: var(--good);
+      font-weight: 600;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px 16px;
+    }
+    .control {
+      padding: 12px;
+      border-radius: 14px;
+      background: rgba(8, 13, 20, 0.54);
+      border: 1px solid rgba(255,255,255,0.05);
+    }
+    .control label {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+    .control .hint {
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 7px;
+    }
+    input[type="range"] {
+      width: 100%;
+      accent-color: var(--accent);
+    }
+    .readout {
+      padding: 16px;
+      border-top: 1px solid rgba(255,255,255,0.05);
+      background: rgba(5, 10, 16, 0.45);
+    }
+    .readout pre {
+      margin: 0;
+      padding: 14px;
+      border-radius: 14px;
+      overflow: auto;
+      background: #09111a;
+      border: 1px solid rgba(255,255,255,0.06);
+      color: #d8e4ef;
+      font: 12px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
+    }
+    .small {
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 8px;
+    }
+    @media (max-width: 980px) {
+      .shell { grid-template-columns: 1fr; }
+      .grid { grid-template-columns: 1fr; }
+      .scene { min-height: 390px; }
+      .drive { inset: 30px 20px 116px 20px; }
+      .platter { left: 26px; top: 56px; width: 220px; height: 220px; }
+      .spindle { left: 105px; top: 135px; }
+      .motor { right: 42px; top: 82px; width: 98px; height: 98px; }
+      .coil { right: 34px; top: 74px; width: 114px; height: 114px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <section class="panel">
+      <div class="head">
+        <h1>ClatterDrive Square-One Lab</h1>
+        <p class="lede">This is intentionally tiny: just a spindle motor, a platter, and one low-frequency structure/desk resonator. No seek model, no backend, no EQ, no output-shaping controls.</p>
+      </div>
+      <div class="viz-wrap">
+        <div class="scene">
+          <div class="drive"></div>
+          <div class="platter" id="platter"></div>
+          <div class="spindle"></div>
+          <div class="motor"></div>
+          <div class="coil" id="coil"></div>
+          <div class="desk" id="desk"></div>
+        </div>
+        <div class="meter-row">
+          <div class="meter">
+            <div class="label">Actual RPM</div>
+            <div class="value" id="rpmValue">0</div>
+          </div>
+          <div class="meter">
+            <div class="label">Motor Torque</div>
+            <div class="value" id="torqueValue">0.00</div>
+          </div>
+          <div class="meter">
+            <div class="label">0→90% Time</div>
+            <div class="value" id="spinupValue">-</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="head">
+        <h2>Physical Controls</h2>
+        <p class="lede">Hit <strong>Start Audio</strong>, then <strong>Motor On</strong>. These sliders only change plant parameters.</p>
+      </div>
+      <div class="controls">
+        <div class="button-row">
+          <button id="startBtn">Start Audio</button>
+          <button class="secondary" id="motorBtn">Motor On</button>
+          <button class="secondary" id="resetBtn">Reset State</button>
+          <button class="secondary" id="copyBtn">Copy Values</button>
+        </div>
+        <div class="status" id="status">Audio not started.</div>
+        <div class="grid" id="controlsGrid"></div>
+      </div>
+      <div class="readout">
+        <pre id="jsonOut"></pre>
+        <div class="small">Use this page to dial in just the motor/platter/body sound first. If it feels closer, send me the copied JSON and a short note.</div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const TAU = Math.PI * 2;
+    const defaults = {
+      targetRpm: 7200,
+      inertia: 1.05,
+      motorTorqueMax: 1.05,
+      dragLinear: 0.00034,
+      dragQuadratic: 0.0000028,
+      bearingFriction: 0.018,
+      bearingLinear: 0.00018,
+      imbalance: 0.00020,
+      torqueRipple: 0.040,
+      structureResonanceHz: 96,
+      structureDamping: 0.095,
+      structureCoupling: 0.26,
+      directRadiation: 0.07
+    };
+
+    const sliderSpec = [
+      ["targetRpm", "Target RPM", 4800, 10000, 50, "Spindle target speed."],
+      ["inertia", "Platter Inertia", 0.4, 2.4, 0.01, "Higher values spin up slower and smooth the torque response."],
+      ["motorTorqueMax", "Motor Torque Limit", 0.2, 2.0, 0.01, "Maximum torque the spindle motor can apply."],
+      ["dragLinear", "Linear Drag", 0.00005, 0.0010, 0.00001, "Low-speed drag/friction term."],
+      ["dragQuadratic", "Quadratic Drag", 0.0000005, 0.0000080, 0.0000001, "High-speed aerodynamic drag term."],
+      ["bearingFriction", "Bearing Friction", 0.001, 0.08, 0.001, "Coulomb-like spindle bearing friction."],
+      ["bearingLinear", "Bearing Viscous Loss", 0.00001, 0.0010, 0.00001, "Speed-proportional bearing damping."],
+      ["imbalance", "Mass Imbalance", 0.00001, 0.00120, 0.00001, "Unbalance exciting 1x and 2x spindle orders."],
+      ["torqueRipple", "Torque Ripple", 0.0, 0.18, 0.001, "Motor commutation ripple / reaction torque roughness."],
+      ["structureResonanceHz", "Structure Resonance", 40, 220, 1, "One simplified base/desk resonance."],
+      ["structureDamping", "Structure Damping", 0.02, 0.40, 0.005, "Higher values make the structure ring less."],
+      ["structureCoupling", "Structure Coupling", 0.02, 1.20, 0.01, "How hard spindle forces drive the structure."],
+      ["directRadiation", "Direct Airborne Radiation", 0.0, 0.25, 0.005, "A small direct airborne spindle path."],
+    ];
+
+    const state = { ...defaults };
+    const SPINDLE_ACCEL_SCALE = 85;
+    const ui = {};
+    let ctx = null;
+    let processor = null;
+    let audioStarted = false;
+    let motorOn = false;
+    let actualRpm = 0;
+    let motorTorque = 0;
+    let structureLevel = 0;
+    let spinupStartTime = null;
+    let spinup90Time = null;
+    let platterAngle = 0;
+    let deskShake = 0;
+    let lastFrame = performance.now();
+    let lastUiUpdate = 0;
+
+    function formatValue(key, value) {
+      if (key === "targetRpm" || key === "structureResonanceHz") return String(Math.round(value));
+      if (value < 0.001) return Number(value).toExponential(2);
+      return Number(value).toFixed(3);
+    }
+
+    function updateMeters() {
+      document.getElementById("rpmValue").textContent = Math.round(actualRpm).toString();
+      document.getElementById("torqueValue").textContent = motorTorque.toFixed(2);
+      document.getElementById("spinupValue").textContent =
+        spinup90Time === null ? "-" : `${spinup90Time.toFixed(1)}s`;
+      document.getElementById("motorBtn").textContent = motorOn ? "Motor Off" : "Motor On";
+    }
+
+    function updateJsonReadout() {
+      document.getElementById("jsonOut").textContent = JSON.stringify(state, null, 2);
+    }
+
+    function buildControls() {
+      const grid = document.getElementById("controlsGrid");
+      for (const [key, label, min, max, step, hint] of sliderSpec) {
+        const wrap = document.createElement("div");
+        wrap.className = "control";
+        const value = document.createElement("span");
+        value.id = `${key}Value`;
+        value.textContent = formatValue(key, state[key]);
+        const title = document.createElement("label");
+        title.innerHTML = `<span>${label}</span>`;
+        title.appendChild(value);
+        const input = document.createElement("input");
+        input.type = "range";
+        input.min = String(min);
+        input.max = String(max);
+        input.step = String(step);
+        input.value = String(state[key]);
+        input.addEventListener("input", () => {
+          state[key] = Number(input.value);
+          value.textContent = formatValue(key, state[key]);
+          syncParams();
+          updateJsonReadout();
+          updateMeters();
+        });
+        const desc = document.createElement("div");
+        desc.className = "hint";
+        desc.textContent = hint;
+        wrap.appendChild(title);
+        wrap.appendChild(input);
+        wrap.appendChild(desc);
+        grid.appendChild(wrap);
+        ui[key] = input;
+      }
+      updateJsonReadout();
+      updateMeters();
+    }
+
+    function clamp(value, lo, hi) {
+      return Math.min(Math.max(value, lo), hi);
+    }
+
+    function createProcessor(context) {
+      const node = context.createScriptProcessor(4096, 0, 1);
+      const sim = {
+        theta: 0,
+        omega: 0,
+        integral: 0,
+        motorTorqueState: 0,
+        x: 0,
+        v: 0,
+        noise: 0,
+        lastTorque: 0,
+      };
+
+      function stepSample(dt) {
+        const targetOmega = motorOn ? state.targetRpm * TAU / 60 : 0;
+        const error = targetOmega - sim.omega;
+        const kp = 0.12;
+        const ki = 0.65;
+        sim.integral = clamp(sim.integral + error * dt, -8, 8);
+
+        const torqueCmd = clamp(
+          kp * error + ki * sim.integral,
+          -state.motorTorqueMax,
+          state.motorTorqueMax
+        );
+        const motorTau = 0.075;
+        sim.motorTorqueState += (torqueCmd - sim.motorTorqueState) * (1 - Math.exp(-dt / motorTau));
+        let torque = sim.motorTorqueState + state.torqueRipple * Math.sin(6 * sim.theta);
+
+        const omegaNorm = sim.omega / Math.max(targetOmega, 1e-6);
+        const drag =
+          state.dragLinear * omegaNorm +
+          state.dragQuadratic * omegaNorm * Math.abs(omegaNorm);
+        const bearing =
+          state.bearingFriction * Math.tanh(sim.omega / 6) +
+          state.bearingLinear * omegaNorm;
+
+        const domega = SPINDLE_ACCEL_SCALE * (torque - drag - bearing) / Math.max(state.inertia, 1e-6);
+        sim.omega = Math.max(sim.omega + domega * dt, 0);
+        sim.theta = (sim.theta + sim.omega * dt) % TAU;
+        sim.lastTorque = torque;
+
+        const wn = TAU * state.structureResonanceHz;
+        const imbalanceForce =
+          state.imbalance * sim.omega * sim.omega *
+          (0.75 * Math.sin(sim.theta) + 0.25 * Math.sin(2 * sim.theta));
+        const reactionForce =
+          state.structureCoupling * (imbalanceForce + 0.28 * torque);
+        const accel = reactionForce - 2 * state.structureDamping * wn * sim.v - wn * wn * sim.x;
+        sim.v += accel * dt;
+        sim.x += sim.v * dt;
+
+        const direct =
+          state.directRadiation *
+          ((0.65 * Math.sin(sim.theta)) + (0.18 * Math.sin(2 * sim.theta)) + (0.09 * Math.sin(6 * sim.theta)));
+        const structure = 0.52 * sim.v + 0.14 * accel / Math.max(wn, 1);
+        const sample = Math.tanh(0.85 * structure + 0.18 * direct);
+
+        actualRpm = sim.omega * 60 / TAU;
+        motorTorque = torque;
+        structureLevel = Math.abs(structure) * 10;
+        if (motorOn && spinupStartTime !== null && spinup90Time === null && actualRpm >= state.targetRpm * 0.9) {
+          spinup90Time = ctx.currentTime - spinupStartTime;
+        }
+        return sample;
+      }
+
+      node.onaudioprocess = (event) => {
+        const out = event.outputBuffer.getChannelData(0);
+        const dt = 1 / context.sampleRate;
+        for (let i = 0; i < out.length; i += 1) {
+          out[i] = stepSample(dt);
+        }
+      };
+
+      node.connect(context.destination);
+      node.resetState = () => {
+        sim.theta = 0;
+        sim.omega = 0;
+        sim.integral = 0;
+        sim.motorTorqueState = 0;
+        sim.x = 0;
+        sim.v = 0;
+        sim.lastTorque = 0;
+        actualRpm = 0;
+        motorTorque = 0;
+        structureLevel = 0;
+        spinupStartTime = null;
+        spinup90Time = null;
+        updateMeters();
+      };
+      return node;
+    }
+
+    async function startAudio() {
+      if (audioStarted) return;
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      if (ctx.state === "suspended") {
+        await ctx.resume();
+      }
+      processor = createProcessor(ctx);
+      audioStarted = true;
+      document.getElementById("status").textContent = "Audio running. Toggle Motor On to spin up.";
+    }
+
+    function syncParams() {
+      return null;
+    }
+
+    function resetState() {
+      motorOn = false;
+      if (processor && processor.resetState) {
+        processor.resetState();
+      }
+      updateMeters();
+      document.getElementById("status").textContent = "State reset.";
+    }
+
+    function toggleMotor() {
+      if (!audioStarted) {
+        startAudio().then(() => {
+          motorOn = !motorOn;
+          updateMeters();
+          document.getElementById("status").textContent = motorOn ? "Motor engaged." : "Motor disengaged.";
+        });
+        return;
+      }
+      motorOn = !motorOn;
+      if (motorOn && ctx) {
+        spinupStartTime = ctx.currentTime;
+        spinup90Time = null;
+      }
+      updateMeters();
+      document.getElementById("status").textContent = motorOn ? "Motor engaged." : "Motor disengaged.";
+    }
+
+    function copyValues() {
+      const text = JSON.stringify(state, null, 2);
+      navigator.clipboard.writeText(text).then(() => {
+        document.getElementById("status").textContent = "Values copied.";
+      }).catch(() => {
+        document.getElementById("status").textContent = "Copy failed; copy from the JSON block.";
+      });
+    }
+
+    function animate(now) {
+      const dt = Math.min((now - lastFrame) / 1000, 0.05);
+      lastFrame = now;
+      platterAngle += (actualRpm / 60) * 360 * dt * 0.16;
+      deskShake += (structureLevel * 0.02 - deskShake) * 0.12;
+      document.getElementById("platter").style.transform = `rotate(${platterAngle}deg)`;
+      document.getElementById("desk").style.transform = `translateY(${Math.sin(now * 0.018) * deskShake}px)`;
+      document.getElementById("coil").style.opacity = String(0.38 + Math.min(Math.abs(motorTorque) * 0.4, 0.4));
+      if (now - lastUiUpdate > 120) {
+        updateMeters();
+        lastUiUpdate = now;
+      }
+      requestAnimationFrame(animate);
+    }
+
+    document.getElementById("startBtn").addEventListener("click", () => {
+      startAudio().catch((error) => {
+        document.getElementById("status").textContent = `Audio failed: ${error.message}`;
+      });
+    });
+    document.getElementById("motorBtn").addEventListener("click", toggleMotor);
+    document.getElementById("resetBtn").addEventListener("click", resetState);
+    document.getElementById("copyBtn").addEventListener("click", copyValues);
+
+    buildControls();
+    requestAnimationFrame(animate);
+  </script>
+</body>
+</html>

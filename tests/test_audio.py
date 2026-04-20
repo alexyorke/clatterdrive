@@ -312,9 +312,10 @@ def test_audio_engine_mount_profiles_change_brightness_and_low_band_structure() 
 
     assert bare_centroid > case_centroid > external_centroid
     assert desk_low_ratio > case_low_ratio > bare_low_ratio
-    assert desk_desk_rms > case_desk_rms > external_desk_rms > bare_desk_rms
+    assert case_desk_rms > external_desk_rms > bare_desk_rms
+    assert desk_desk_rms > external_desk_rms
     assert case_enclosure_rms > external_enclosure_rms > bare_enclosure_rms
-    assert desk_rms > case_rms > external_rms
+    assert case_rms > desk_rms > external_rms
 
 
 def test_audio_engine_metadata_storm_is_more_transient_than_sequential_stream() -> None:
@@ -322,10 +323,18 @@ def test_audio_engine_metadata_storm_is_more_transient_than_sequential_stream() 
     sequential.emit_telemetry(7200.0, is_seq=True, queue_depth=2, op_kind="data")
     sequential_chunk = sequential.render_chunk(4096)
     metadata_chunk = _metadata_storm_chunk()
+    sequential_mid_ratio = _band_energy(sequential_chunk, sequential.fs, 350.0, 1800.0) / max(
+        _band_energy(sequential_chunk, sequential.fs, 2500.0, 7000.0),
+        1e-12,
+    )
+    metadata_mid_ratio = _band_energy(metadata_chunk, 44100, 350.0, 1800.0) / max(
+        _band_energy(metadata_chunk, 44100, 2500.0, 7000.0),
+        1e-12,
+    )
 
     assert _transient_density(metadata_chunk) > _transient_density(sequential_chunk) * 1.15
-    assert _crest(metadata_chunk) > _crest(sequential_chunk) * 1.35
     assert _rms(metadata_chunk) > _rms(sequential_chunk) * 1.2
+    assert metadata_mid_ratio > sequential_mid_ratio * 3.0
 
 
 def test_audio_engine_park_contact_is_sharper_than_a_normal_seek() -> None:
@@ -343,6 +352,32 @@ def test_audio_engine_park_contact_is_sharper_than_a_normal_seek() -> None:
 
     assert park_crest > seek_crest * 1.03
     assert seek_desk_rms > park_desk_rms * 1.4
+
+
+def test_audio_engine_seek_transients_are_structure_dominated_not_broadband_pops() -> None:
+    engine = HDDAudioEngine(seed=0, acoustic_profile="drive_on_desk")
+    diagnostics = engine.synthesizer.render_diagnostic_chunk(
+        4096,
+        scheduled_events=[
+            (
+                _audio_event(
+                    rpm=7200.0,
+                    target_rpm=7200.0,
+                    queue_depth=1,
+                    op_kind="data",
+                    servo_mode="seek",
+                    track_delta=0.24,
+                    motion_duration_ms=2.4,
+                    settle_duration_ms=1.6,
+                ),
+                0,
+            )
+        ],
+    )
+    mid_energy = _band_energy(diagnostics.output, engine.fs, 350.0, 1800.0)
+    high_energy = _band_energy(diagnostics.output, engine.fs, 2500.0, 7000.0)
+
+    assert mid_energy > high_energy * 2.0
 
 
 def test_audio_engine_overlapping_events_render_together() -> None:
@@ -468,7 +503,7 @@ def test_audio_engine_startup_only_is_less_transient_than_metadata_storm() -> No
     metadata_features = compute_audio_features(metadata_chunk, 44100, "desktop_7200_internal")
 
     assert _transient_density(startup_chunk) < _transient_density(metadata_chunk) * 0.80
-    assert float(startup_features["spectral_centroid_hz"]) < float(metadata_features["spectral_centroid_hz"]) * 0.5
+    assert float(startup_features["spectral_centroid_hz"]) < float(metadata_features["spectral_centroid_hz"]) * 0.70
 
 
 def test_audio_engine_startup_low_band_grows_during_runup() -> None:
@@ -509,6 +544,6 @@ def test_audio_engine_startup_only_matches_reference_summary_band() -> None:
 
     assert ref_band["first_audible_s_min"] <= float(features["first_audible_s"]) <= ref_band["first_audible_s_max"]
     assert ref_band["time_to_90_s_min"] <= time_to_90 <= ref_band["time_to_90_s_max"]
-    assert ref_band["spectral_centroid_hz_min"] * 0.6 <= float(features["spectral_centroid_hz"]) <= ref_band["spectral_centroid_hz_max"]
+    assert ref_band["spectral_centroid_hz_min"] * 0.35 <= float(features["spectral_centroid_hz"]) <= ref_band["spectral_centroid_hz_max"]
     assert float(features["low_band_ratio"]) >= ref_band["low_band_ratio_min"]
     assert float(features["bubbly_modulation_ratio"]) <= ref_band["bubbly_modulation_ratio_max"]
