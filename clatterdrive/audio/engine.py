@@ -81,7 +81,7 @@ class HDDAudioSynthesizer:
     ) -> None:
         self.deps = deps or RuntimeDeps()
         self.fs = sample_rate
-        self.rng = self.deps.rng_factory.create(seed)
+        self.seed = 0 if seed is None else int(seed) & 0xFFFFFFFFFFFFFFFF
         self.drive_profile: DriveProfile
         self.acoustic_profile: AcousticProfile
         self.mode_bank: AudioModeBank
@@ -127,6 +127,24 @@ class HDDAudioSynthesizer:
             start_frame=start_frame,
         )
 
+    def _noise_block(self, start_frame: int, frames: int, *, salt: int) -> FloatArray:
+        if frames <= 0:
+            return np.zeros(0, dtype=np.float64)
+        mask = (1 << 64) - 1
+        positions = np.arange(start_frame, start_frame + frames, dtype=np.uint64)
+        seed_offset = (0x9E3779B97F4A7C15 * max(1, salt)) & mask
+        state = positions + np.uint64(self.seed) + np.uint64(seed_offset)
+        values = np.zeros(frames, dtype=np.float64)
+        for factor in (0xBF58476D1CE4E5B9, 0x94D049BB133111EB, 0xD6E8FEB86659FD93):
+            mixed = state + np.uint64(factor)
+            mixed ^= mixed >> np.uint64(30)
+            mixed *= np.uint64(0xBF58476D1CE4E5B9)
+            mixed ^= mixed >> np.uint64(27)
+            mixed *= np.uint64(0x94D049BB133111EB)
+            mixed ^= mixed >> np.uint64(31)
+            values += ((mixed >> np.uint64(11)).astype(np.float64) * (1.0 / (1 << 53))) * 2.0 - 1.0
+        return values / 3.0
+
     def _prepare_scheduled_events(
         self,
         frames: int,
@@ -153,8 +171,9 @@ class HDDAudioSynthesizer:
         if frames <= 0:
             return np.zeros(0, dtype=np.float64)
 
-        bearing_noise = self.rng.normal(0.0, 1.0, frames).astype(np.float64, copy=False)
-        windage_noise = self.rng.normal(0.0, 1.0, frames).astype(np.float64, copy=False)
+        frame_origin = self.state.sample_clock
+        bearing_noise = self._noise_block(frame_origin, frames, salt=17)
+        windage_noise = self._noise_block(frame_origin, frames, salt=29)
         scheduled_now = self._prepare_scheduled_events(frames, scheduled_events)
         self.state, chunk = render_audio_chunk(
             self.state,
@@ -188,8 +207,9 @@ class HDDAudioSynthesizer:
                 output=empty,
             )
 
-        bearing_noise = self.rng.normal(0.0, 1.0, frames).astype(np.float64, copy=False)
-        windage_noise = self.rng.normal(0.0, 1.0, frames).astype(np.float64, copy=False)
+        frame_origin = self.state.sample_clock
+        bearing_noise = self._noise_block(frame_origin, frames, salt=17)
+        windage_noise = self._noise_block(frame_origin, frames, salt=29)
         scheduled_now = self._prepare_scheduled_events(frames, scheduled_events)
         self.state, _chunk, diagnostics = render_audio_diagnostic_chunk(
             self.state,

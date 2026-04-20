@@ -10,12 +10,12 @@ import numpy.typing as npt
 from clatterdrive.audio import HDDAudioEngine
 from clatterdrive.storage_events import StorageEventRecorder, storage_event_to_dict
 from generate_audio_samples import (
-    EXTRA_SCENARIOS,
     ROOT,
     ScenarioUpdater,
     _load_power_on_trace,
-    update_random_flush,
-    update_sequential_read,
+    update_copy_heavy,
+    update_idle_to_standby_wake,
+    update_metadata_storm,
     update_spinup_idle,
 )
 
@@ -242,12 +242,12 @@ def render_trace_scenario(
 
 
 def _scenario_specs() -> tuple[ScenarioSpec, ...]:
-    power_on_duration = _load_power_on_trace()[1] + 3.0
+    power_on_duration = _load_power_on_trace()[1] + 5.25
     return (
         ("spinup-idle-park", power_on_duration, update_spinup_idle, 7),
-        ("sequential-read-stream", 6.0, update_sequential_read, 11),
-        ("random-seek-journal-flush", 6.0, update_random_flush, 13),
-        *EXTRA_SCENARIOS,
+        ("idle-standby-wake", 7.0, update_idle_to_standby_wake, 19),
+        ("metadata-storm", 6.0, update_metadata_storm, 23),
+        ("copy-heavy-writeback", 6.0, update_copy_heavy, 17),
     )
 
 

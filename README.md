@@ -106,11 +106,10 @@ Important files:
 - [clatterdrive/fs/simulator.py](clatterdrive/fs/simulator.py): fake filesystem state wrapper
 - [clatterdrive/fs/core.py](clatterdrive/fs/core.py): fake filesystem allocation plus metadata I/O
 - [clatterdrive/scheduler.py](clatterdrive/scheduler.py): request merging and dispatch policy
-- [hdd_model.py](hdd_model.py): geometry, caches, timing, power states, write-back flushing
+- [clatterdrive/hdd/latency.py](clatterdrive/hdd/latency.py): geometry, caches, timing, power states, and write-back flushing
 - [clatterdrive/storage_events.py](clatterdrive/storage_events.py): storage-event protocol and event bus
-- [clatterdrive/audio/plant.py](clatterdrive/audio/plant.py): constrained seek planning and plant-side motion helpers
-- [clatterdrive/audio/voices.py](clatterdrive/audio/voices.py): first-class audio voice grouping and voice-path mixing
-- [clatterdrive/audio/core.py](clatterdrive/audio/core.py): plant/voice orchestration, explicit enclosure/table coupling, and render chunk coordination
+- [clatterdrive/audio/commands.py](clatterdrive/audio/commands.py): event-to-command adapter for the audio runtime
+- [clatterdrive/audio/core.py](clatterdrive/audio/core.py): sampled-servo plant, enclosure/table coupling, and render chunk coordination
 - [clatterdrive/audio/engine.py](clatterdrive/audio/engine.py): live engine shell, event scheduling, tee output, and diagnostics export
 
 ## Running It
@@ -274,12 +273,15 @@ Trace and visualization tooling:
 
 ```powershell
 uv run python trace_audio_scenarios.py
+uv run python audit_audio_stack.py
 ```
 
-That runs a silent offline render for the built-in scenarios and writes:
+That runs silent offline renders and stack analysis, then writes:
 
 - `.runtime/traces/*.trace.json`: emitted event stream plus diagnostic arrays
 - `.runtime/traces/*.trace.svg`: a simple visualization of RPM, queue depth, head position, output, and power-state spans
+- `.runtime/audio-baseline/callgraph.json`: a focused call graph for the audio stack
+- `.runtime/audio-baseline/metrics.json`: per-scenario loudness/spectral/transient metrics plus pairwise correlations
 
 The current built-in extra scenarios include:
 
@@ -299,7 +301,7 @@ Runtime scratch space such as smoke/profiling temp trees now lives under `.runti
 
 If you want to change the overall character, start with a profile in [clatterdrive/profiles.py](clatterdrive/profiles.py) before editing low-level constants.
 
-If you still want to tune the raw mechanics directly, the main knobs live in [hdd_model.py](hdd_model.py):
+If you still want to tune the raw mechanics directly, the main drive-behavior knobs live in [clatterdrive/hdd/latency.py](clatterdrive/hdd/latency.py) and [clatterdrive/profiles.py](clatterdrive/profiles.py):
 
 - `avg_seek_ms`
 - `track_to_track_ms`

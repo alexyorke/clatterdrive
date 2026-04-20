@@ -267,17 +267,40 @@ def update_idle_to_standby_wake(engine: HDDAudioEngine, t: float, emitted_flags:
     if t < 1.0:
         engine.emit_telemetry(target_rpm, is_seq=True, queue_depth=1, op_kind="data")
         return
-    if t < 3.4:
+    if t < 1.4:
         if "park" not in emitted_flags:
             emitted_flags.add("park")
             engine.emit_telemetry(target_rpm, is_park=True, queue_depth=1, op_kind="metadata")
+        else:
+            engine.emit_telemetry(target_rpm, queue_depth=1, op_kind="metadata")
         return
-    if "wake" not in emitted_flags:
-        emitted_flags.add("wake")
-        engine.emit_telemetry(600.0, queue_depth=1, op_kind="metadata", is_spinup=True)
+    if t < 3.8:
+        engine.emit_telemetry(0.0, queue_depth=1, op_kind="metadata")
         return
-    if t < 5.4:
-        engine.emit_telemetry(target_rpm, seek_trigger=True, seek_dist=180, queue_depth=2, op_kind="data")
+    wake_elapsed = t - 3.8
+    if wake_elapsed < 1.6:
+        wake_step = int(wake_elapsed * 10)
+        event_key = f"wake-{wake_step}"
+        if event_key in emitted_flags:
+            return
+        emitted_flags.add(event_key)
+        phase = wake_elapsed / 1.6
+        rpm = max(180.0, target_rpm * (0.05 + 0.95 * phase * phase))
+        if wake_step % 5 == 2:
+            engine.emit_telemetry(rpm, is_cal=True, queue_depth=1, op_kind="metadata", is_spinup=True)
+            return
+        engine.emit_telemetry(rpm, queue_depth=1, op_kind="metadata", is_spinup=True)
+        return
+    if wake_elapsed < 2.8:
+        step = int(wake_elapsed * 8)
+        event_key = f"post-wake-{step}"
+        if event_key in emitted_flags:
+            return
+        emitted_flags.add(event_key)
+        if step % 3 == 0:
+            engine.emit_telemetry(target_rpm, seek_trigger=True, seek_dist=180, queue_depth=2, op_kind="metadata")
+        else:
+            engine.emit_telemetry(target_rpm, seek_trigger=True, seek_dist=40, queue_depth=2, op_kind="journal")
         return
     engine.emit_telemetry(target_rpm, is_seq=True, queue_depth=2, op_kind="data")
 
