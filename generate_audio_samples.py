@@ -82,6 +82,7 @@ def render_scenario(
     drive_profile: str | DriveProfile | None = None,
     acoustic_profile: str | AcousticProfile | None = None,
     normalize_peak: float | None = None,
+    force_silence_prefix_s: float = 0.0,
 ) -> Path:
     engine = HDDAudioEngine(
         sample_rate=44100,
@@ -105,6 +106,9 @@ def render_scenario(
     samples = np.concatenate(rendered) if rendered else np.zeros(0, dtype=np.float64)
     if normalize_peak is not None:
         samples = normalize_demo_audio(samples, target_peak=normalize_peak)
+    if force_silence_prefix_s > 0.0 and samples.size:
+        silence_frames = min(len(samples), int(force_silence_prefix_s * engine.fs))
+        samples[:silence_frames] = 0.0
     write_wav(output_path, samples, engine.fs)
     return output_path
 
@@ -112,9 +116,14 @@ def render_scenario(
 def update_spinup_idle(engine: HDDAudioEngine, t: float, emitted_flags: set[str]) -> None:
     target_rpm = float(engine.synthesizer.drive_profile.rpm)
     power_on_trace, power_on_total_s = _power_on_trace_for(engine)
-    if t < power_on_total_s and power_on_trace:
+    startup_delay_s = 0.85
+    if t < startup_delay_s:
+        return
+
+    startup_elapsed = t - startup_delay_s
+    if startup_elapsed < power_on_total_s and power_on_trace:
         step_ms = power_on_trace[1].time_ms - power_on_trace[0].time_ms if len(power_on_trace) > 1 else 20.0
-        trace_index = min(round((t * 1000.0) / max(step_ms, 1.0)), len(power_on_trace) - 1)
+        trace_index = min(round((startup_elapsed * 1000.0) / max(step_ms, 1.0)), len(power_on_trace) - 1)
         point = power_on_trace[trace_index]
         if point.seek_distance > 0.0:
             engine.emit_telemetry(
@@ -142,10 +151,26 @@ def update_spinup_idle(engine: HDDAudioEngine, t: float, emitted_flags: set[str]
             )
         return
 
-    idle_elapsed = t - power_on_total_s
-    if idle_elapsed < 2.0:
+    ready_elapsed = startup_elapsed - power_on_total_s
+    if ready_elapsed < 1.9:
+        step = int(ready_elapsed * 11)
+        event_key = f"post-ready-{step}"
+        if event_key in emitted_flags:
+            return
+        emitted_flags.add(event_key)
+        if step % 6 == 0:
+            engine.emit_telemetry(target_rpm, seek_trigger=True, seek_dist=180, queue_depth=2, op_kind="metadata")
+            return
+        if step % 4 == 0:
+            engine.emit_telemetry(target_rpm, seek_trigger=True, seek_dist=64, queue_depth=2, op_kind="journal")
+            return
+        engine.emit_telemetry(target_rpm, is_seq=True, queue_depth=1, op_kind="metadata")
+        return
+
+    idle_elapsed = ready_elapsed - 1.9
+    if idle_elapsed < 1.7:
         calibrate = False
-        if idle_elapsed >= 0.9 and "idle-cal" not in emitted_flags:
+        if idle_elapsed >= 0.7 and "idle-cal" not in emitted_flags:
             emitted_flags.add("idle-cal")
             calibrate = True
         engine.emit_telemetry(target_rpm, is_cal=calibrate, queue_depth=1, op_kind="metadata")
@@ -310,11 +335,12 @@ def generate_readme_demo_samples() -> list[Path]:
     outputs = [
         render_scenario(
             "spinup-idle-park",
-            _load_power_on_trace()[1] + 3.0,
+            _load_power_on_trace()[1] + 5.25,
             update_spinup_idle,
             seed=7,
             acoustic_profile="drive_on_desk",
             normalize_peak=0.92,
+            force_silence_prefix_s=0.85,
         ),
         render_scenario(
             "idle-standby-wake",
