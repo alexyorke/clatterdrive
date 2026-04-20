@@ -7,12 +7,12 @@ from pathlib import Path
 import pytest
 from _pytest.monkeypatch import MonkeyPatch
 
-import generate_audio_samples
-import profile_core
-import profile_fragmentation
+from tools import generate_audio_samples
+from tools import profile_core
+from tools import profile_fragmentation
 import smoke
-import trace_audio_scenarios
-from generate_audio_samples import render_scenario, update_random_flush, update_sequential_read, update_spinup_idle
+from tools import trace_audio_scenarios
+from tools.generate_audio_samples import render_scenario, update_random_flush, update_sequential_read, update_spinup_idle
 from tests.helpers import _run_test_server, _wav_metrics
 
 def test_render_scenario_writes_nonempty_wav(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:

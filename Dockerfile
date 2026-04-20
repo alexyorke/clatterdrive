@@ -19,7 +19,8 @@ COPY --from=uv /uv /uvx /bin/
 
 COPY pyproject.toml uv.lock README.md ./
 COPY clatterdrive ./clatterdrive
-COPY main.py smoke.py profile_core.py profile_fragmentation.py generate_audio_samples.py generate_readme_demo_samples.py trace_audio_scenarios.py ./
+COPY tools ./tools
+COPY main.py smoke.py ./
 
 RUN uv sync --locked --no-dev
 

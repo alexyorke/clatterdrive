@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from clatterdrive.audio import HDDAudioEngine
-from generate_audio_samples import (
+from tools.generate_audio_samples import (
     ROOT,
     ScenarioUpdater,
     _load_power_on_trace,

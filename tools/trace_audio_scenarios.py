@@ -9,7 +9,7 @@ import numpy.typing as npt
 
 from clatterdrive.audio import HDDAudioEngine
 from clatterdrive.storage_events import StorageEventRecorder, storage_event_to_dict
-from generate_audio_samples import (
+from tools.generate_audio_samples import (
     ROOT,
     ScenarioUpdater,
     _load_power_on_trace,

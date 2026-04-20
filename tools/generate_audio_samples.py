@@ -14,7 +14,7 @@ from clatterdrive.hdd import HDDLatencyModel, StartupTracePoint
 from clatterdrive.profiles import AcousticProfile, DriveProfile
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[1]
 SAMPLES_DIR = ROOT / "samples"
 DOCS_AUDIO_DIR = ROOT / "docs" / "audio"
 FloatArray = npt.NDArray[np.float64]
