@@ -348,6 +348,9 @@
       seekTorque: 0.55,
       armResonanceHz: 1120,
       armDamping: 0.12,
+      bodyResonanceHz: 640,
+      bodyDamping: 0.10,
+      bodyCoupling: 0.18,
       flexureResonanceHz: 2080,
       flexureDamping: 0.11,
       flexureCoupling: 0.20,
@@ -367,6 +370,9 @@
       ["seekTorque", "Seek Torque", 0.2, 2.0, 0.01, "How hard the arm launches/brakes during short seeks."],
       ["armResonanceHz", "Arm Resonance", 450, 2400, 10, "Main actuator/arm mode that carries the shh/tick texture."],
       ["armDamping", "Arm Damping", 0.03, 0.30, 0.005, "Higher values shorten the arm ring."],
+      ["bodyResonanceHz", "Body Resonance", 280, 1200, 5, "Low-mid body mode that adds the missing thonk to each micro-seek."],
+      ["bodyDamping", "Body Damping", 0.03, 0.30, 0.005, "Higher values shorten the thonk under the thrash."],
+      ["bodyCoupling", "Body Coupling", 0.0, 0.60, 0.005, "How much low-mid body each micro-seek excites."],
       ["flexureResonanceHz", "Flexure Resonance", 900, 3600, 10, "Higher suspension/flexure mode that adds the fine shh texture."],
       ["flexureDamping", "Flexure Damping", 0.03, 0.30, 0.005, "Higher values shorten the fine flexure ring."],
       ["flexureCoupling", "Flexure Coupling", 0.0, 0.60, 0.005, "How much high flexure texture rides over the arm mode."],
@@ -477,6 +483,8 @@
         brakeFired: false,
         armModeX: 0,
         armModeV: 0,
+        bodyModeX: 0,
+        bodyModeV: 0,
         flexureModeX: 0,
         flexureModeV: 0,
         cavityModeX: 0,
@@ -499,6 +507,7 @@
         sim.seekTimer = 0.010 + 0.014 * nextRand();
         const launch = direction * state.seekTorque * (0.10 + 0.20 * nextRand());
         sim.armModeV += launch * 0.26;
+        sim.bodyModeV += launch * state.bodyCoupling * 0.20;
         sim.flexureModeV += launch * state.flexureCoupling * 0.18;
         sim.cavityModeV += launch * state.cavityCoupling * 0.05;
       }
@@ -549,6 +558,7 @@
               if (!sim.brakeFired) {
                 const brake = -Math.sign(sim.headVel || direction || 1) * maxSeekTorque * (0.05 + 0.10 * nextRand());
                 sim.armModeV += brake * 0.22;
+                sim.bodyModeV += brake * state.bodyCoupling * 0.18;
                 sim.flexureModeV += brake * state.flexureCoupling * 0.14;
                 sim.cavityModeV += brake * state.cavityCoupling * 0.03;
                 sim.brakeFired = true;
@@ -576,6 +586,7 @@
               );
               const textureKick = headCommand * state.readTextureGain;
               sim.armModeV += textureKick * 0.12;
+              sim.bodyModeV += textureKick * state.bodyCoupling * 0.05;
               sim.flexureModeV += textureKick * state.flexureCoupling * 0.26;
               sim.cavityModeV += textureKick * state.cavityCoupling * 0.02;
             }
@@ -598,6 +609,13 @@
           armWn * armWn * sim.armModeX;
         sim.armModeV += armAccel * dt;
         sim.armModeX += sim.armModeV * dt;
+
+        const bodyWn = TAU * state.bodyResonanceHz;
+        const bodyAccel =
+          -2 * state.bodyDamping * bodyWn * sim.bodyModeV -
+          bodyWn * bodyWn * sim.bodyModeX;
+        sim.bodyModeV += bodyAccel * dt;
+        sim.bodyModeX += sim.bodyModeV * dt;
 
         const flexureWn = TAU * state.flexureResonanceHz;
         const flexureAccel =
@@ -629,6 +647,7 @@
         const structure = 0.52 * sim.v + 0.14 * accel / Math.max(wn, 1);
         const thrashSignal =
           0.52 * sim.armModeV +
+          state.bodyCoupling * 0.46 * sim.bodyModeV +
           state.flexureCoupling * 0.88 * sim.flexureModeV +
           state.cavityCoupling * 0.18 * sim.cavityModeV;
         const sample = Math.tanh(0.84 * structure + 0.14 * direct + thrashSignal);
@@ -665,6 +684,8 @@
         sim.brakeFired = false;
         sim.armModeX = 0;
         sim.armModeV = 0;
+        sim.bodyModeX = 0;
+        sim.bodyModeV = 0;
         sim.flexureModeX = 0;
         sim.flexureModeV = 0;
         sim.cavityModeX = 0;
