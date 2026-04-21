@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ClatterDrive Square-One Lab</title>
+  <title>ClatterDrive Thrash Lab</title>
   <style>
     :root {
       --bg: #091018;
@@ -13,7 +13,6 @@
       --muted: #8ea3b7;
       --line: #233343;
       --accent: #7dd5ff;
-      --accent-2: #ffb46e;
       --good: #92e4ba;
     }
     * { box-sizing: border-box; }
@@ -98,22 +97,6 @@
       border-radius: 50%;
       border: 1px solid rgba(255,255,255,0.08);
     }
-    .read-zone {
-      position: absolute;
-      top: 50%;
-      left: 50%;
-      width: 110px;
-      height: 110px;
-      transform: translate(-50%, -50%);
-      border-radius: 50%;
-      border: 2px dashed rgba(125, 213, 255, 0.46);
-      box-shadow: 0 0 0 1px rgba(125, 213, 255, 0.10), inset 0 0 24px rgba(125, 213, 255, 0.05);
-      opacity: 0;
-      transition: opacity 120ms ease;
-    }
-    .read-zone.active {
-      opacity: 1;
-    }
     .spindle {
       position: absolute;
       top: 166px;
@@ -125,29 +108,6 @@
         radial-gradient(circle at 40% 35%, rgba(255,255,255,0.82), transparent 22%),
         radial-gradient(circle at 50% 50%, #dce5ee 0 24%, #7d8b98 24% 42%, #36404b 42% 100%);
       box-shadow: 0 0 0 6px rgba(13,18,25,0.8), 0 8px 22px rgba(0,0,0,0.35);
-    }
-    .motor {
-      position: absolute;
-      right: 92px;
-      top: 96px;
-      width: 112px;
-      height: 112px;
-      border-radius: 50%;
-      background:
-        radial-gradient(circle at 42% 34%, rgba(255,255,255,0.20), transparent 24%),
-        radial-gradient(circle at 50% 50%, #2d3947 0 36%, #17212d 36% 60%, #0e141b 60% 100%);
-      box-shadow: inset 0 2px 8px rgba(255,255,255,0.05), 0 18px 26px rgba(0,0,0,0.28);
-    }
-    .coil {
-      position: absolute;
-      right: 84px;
-      top: 88px;
-      width: 128px;
-      height: 128px;
-      border-radius: 50%;
-      border: 10px solid rgba(255, 180, 110, 0.78);
-      opacity: 0.72;
-      filter: drop-shadow(0 10px 12px rgba(255, 168, 96, 0.10));
     }
     .actuator-pivot {
       position: absolute;
@@ -228,7 +188,7 @@
     }
     .controls { padding: 18px; display: grid; gap: 16px; }
     .button-row { display: flex; flex-wrap: wrap; gap: 10px; }
-    button {
+    button.control {
       appearance: none;
       border: 0;
       border-radius: 999px;
@@ -239,7 +199,7 @@
       cursor: pointer;
       box-shadow: 0 10px 22px rgba(91, 198, 251, 0.16);
     }
-    button.secondary {
+    .secondary {
       background: linear-gradient(180deg, #2a3849, #1a2734);
       color: var(--ink);
       border: 1px solid rgba(255,255,255,0.08);
@@ -255,49 +215,44 @@
       grid-template-columns: 1fr 1fr;
       gap: 12px 16px;
     }
-    .control {
+    .control-box {
       padding: 12px;
       border-radius: 14px;
-      background: rgba(8, 13, 20, 0.54);
+      background: rgba(8,13,20,0.54);
       border: 1px solid rgba(255,255,255,0.05);
     }
-    .control label {
+    .control-box label {
       display: flex;
       justify-content: space-between;
       gap: 12px;
       font-weight: 600;
       margin-bottom: 8px;
     }
-    .control .hint {
-      color: var(--muted);
-      font-size: 12px;
-      margin-top: 7px;
-    }
-    input[type="range"] {
-      width: 100%;
-      accent-color: var(--accent);
-    }
-    .readout {
-      padding: 16px;
-      border-top: 1px solid rgba(255,255,255,0.05);
-      background: rgba(5, 10, 16, 0.45);
-    }
-    .readout pre {
-      margin: 0;
-      padding: 14px;
-      border-radius: 14px;
-      overflow: auto;
-      background: #09111a;
-      border: 1px solid rgba(255,255,255,0.06);
-      color: #d8e4ef;
-      font: 12px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
-    }
-    .small {
+    .control-box .hint {
       color: var(--muted);
       font-size: 12px;
       margin-top: 8px;
     }
-    @media (max-width: 980px) {
+    input[type="range"] { width: 100%; }
+    .readout {
+      padding: 0 18px 18px;
+    }
+    pre {
+      margin: 0;
+      padding: 14px;
+      border-radius: 14px;
+      background: #09111a;
+      border: 1px solid rgba(255,255,255,0.06);
+      color: #d8e4ef;
+      font: 12px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
+      overflow: auto;
+    }
+    .small {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    @media (max-width: 1080px) {
       .shell { grid-template-columns: 1fr; }
       .grid { grid-template-columns: 1fr; }
       .scene { min-height: 390px; }
@@ -306,8 +261,6 @@
       .spindle { left: 105px; top: 135px; }
       .actuator-pivot { left: 228px; top: 248px; }
       .actuator-arm { left: 228px; top: 258px; width: 142px; }
-      .motor { right: 42px; top: 82px; width: 98px; height: 98px; }
-      .coil { right: 34px; top: 74px; width: 114px; height: 114px; }
       .meter-row { grid-template-columns: repeat(2, 1fr); }
     }
   </style>
@@ -316,22 +269,18 @@
   <div class="shell">
     <section class="panel">
       <div class="head">
-        <h1>ClatterDrive Square-One Lab</h1>
-        <p class="lede">This is intentionally tiny: a spindle motor, one low-frequency structure/desk resonator, and one simple sampled actuator read-hold loop. No backend, no seek scheduler, no EQ, no output-shaping controls.</p>
+        <h1>ClatterDrive Thrash Lab</h1>
+        <p class="lede">This isolates disk thrashing rather than one clean seek tick. It uses a spindle bed plus repeated short actuator motions and sampled read corrections to make the fine `sshh-shh-shh` texture you hear during busy random reads.</p>
       </div>
       <div class="viz-wrap">
         <div class="scene">
           <div class="drive"></div>
-          <div class="platter" id="platter">
-            <div class="read-zone" id="readZone"></div>
-          </div>
+          <div class="platter" id="platter"></div>
           <div class="spindle"></div>
           <div class="actuator-pivot"></div>
           <div class="actuator-arm" id="arm">
             <div class="head-slider"></div>
           </div>
-          <div class="motor"></div>
-          <div class="coil" id="coil"></div>
           <div class="desk" id="desk"></div>
         </div>
         <div class="meter-row">
@@ -340,16 +289,16 @@
             <div class="value" id="rpmValue">0</div>
           </div>
           <div class="meter">
-            <div class="label">Motor Torque</div>
-            <div class="value" id="torqueValue">0.00</div>
+            <div class="label">Thrash Rate</div>
+            <div class="value" id="rateValue">0.0</div>
           </div>
           <div class="meter">
-            <div class="label">Actuator Torque</div>
-            <div class="value" id="actuatorValue">0.00</div>
+            <div class="label">Head Radius</div>
+            <div class="value" id="radiusValue">0.58</div>
           </div>
           <div class="meter">
-            <div class="label">0 to 90% Time</div>
-            <div class="value" id="spinupValue">-</div>
+            <div class="label">Texture Level</div>
+            <div class="value" id="textureValue">0.00</div>
           </div>
         </div>
       </div>
@@ -358,23 +307,22 @@
     <section class="panel">
       <div class="head">
         <h2>Physical Controls</h2>
-        <p class="lede">Hit <strong>Start Audio</strong>, then <strong>Motor On</strong>. Toggle <strong>Read On</strong> for steady track-follow. Move <strong>Read Radius</strong> or hit <strong>Random Sector</strong> to trigger an actual seek-launch, brake, and settle process.</p>
+        <p class="lede">Hit <strong>Start Audio</strong>, then <strong>Motor On</strong>, then <strong>Thrash On</strong>. These controls change only physical behavior: how often the head gets yanked around, how big the short seeks are, how much low cavity/body comes through, and how much fine read texture rides on top.</p>
       </div>
       <div class="controls">
         <div class="button-row">
-          <button id="startBtn">Start Audio</button>
-          <button class="secondary" id="motorBtn">Motor On</button>
-          <button class="secondary" id="readBtn">Read Off</button>
-          <button class="secondary" id="randomReadBtn">Random Sector</button>
-          <button class="secondary" id="resetBtn">Reset State</button>
-          <button class="secondary" id="copyBtn">Copy Values</button>
+          <button class="control" id="startBtn">Start Audio</button>
+          <button class="control secondary" id="motorBtn">Motor On</button>
+          <button class="control secondary" id="thrashBtn">Thrash Off</button>
+          <button class="control secondary" id="resetBtn">Reset State</button>
+          <button class="control secondary" id="copyBtn">Copy Values</button>
         </div>
         <div class="status" id="status">Audio not started.</div>
         <div class="grid" id="controlsGrid"></div>
       </div>
       <div class="readout">
         <pre id="jsonOut"></pre>
-        <div class="small">The seek tick now comes from a voice-coil launch/brake plus fixed arm resonances. `Read On` alone should be mild; moving `Read Radius` or pressing `Random Sector` is the clearer actuator event.</div>
+        <div class="small">This page is for `sshh-shh-shh` busy random-read texture, not single clean seek ticks. The fine texture comes from many small seek launches plus very small servo-wedge corrections riding on fixed arm and case modes.</div>
       </div>
     </section>
   </div>
@@ -391,82 +339,84 @@
       bearingLinear: 0.00010,
       imbalance: 0.00020,
       torqueRipple: 0.040,
-      structureResonanceHz: 191,
-      structureDamping: 0.165,
-      structureCoupling: 0.26,
-      directRadiation: 0.010,
-      readEnabled: false,
-      readRadius: 0.58,
-      runout: 0.00040,
-      servoGain: 1.60,
-      actuatorResonanceHz: 1320,
-      actuatorDamping: 0.11,
-      actuatorCoupling: 0.060
+      structureResonanceHz: 185,
+      structureDamping: 0.18,
+      structureCoupling: 0.22,
+      directRadiation: 0.008,
+      thrashRateHz: 17.0,
+      seekSpan: 0.050,
+      seekTorque: 0.55,
+      armResonanceHz: 1120,
+      armDamping: 0.12,
+      flexureResonanceHz: 2080,
+      flexureDamping: 0.11,
+      flexureCoupling: 0.20,
+      cavityResonanceHz: 360,
+      cavityDamping: 0.11,
+      cavityCoupling: 0.08,
+      readTextureGain: 0.22,
+      runout: 0.00055,
+      servoGain: 0.85,
+      brakeBias: 0.45
     };
 
     const sliderSpec = [
       ["targetRpm", "Target RPM", 4800, 10000, 50, "Spindle target speed."],
-      ["inertia", "Platter Inertia", 0.4, 2.4, 0.01, "Higher values spin up slower and smooth the torque response."],
-      ["motorTorqueMax", "Motor Torque Limit", 0.2, 2.0, 0.01, "Maximum torque the spindle motor can apply."],
-      ["dragLinear", "Linear Drag", 0.00005, 0.0010, 0.00001, "Low-speed drag/friction term."],
-      ["dragQuadratic", "Quadratic Drag", 0.0000005, 0.0000080, 0.0000001, "High-speed aerodynamic drag term."],
-      ["bearingFriction", "Bearing Friction", 0.001, 0.08, 0.001, "Coulomb-like spindle bearing friction."],
-      ["bearingLinear", "Bearing Viscous Loss", 0.00001, 0.0010, 0.00001, "Speed-proportional bearing damping."],
-      ["imbalance", "Mass Imbalance", 0.00001, 0.00120, 0.00001, "Unbalance exciting 1x and 2x spindle orders."],
-      ["torqueRipple", "Torque Ripple", 0.0, 0.18, 0.001, "Motor commutation ripple / reaction torque roughness."],
-      ["structureResonanceHz", "Structure Resonance", 40, 220, 1, "One simplified base/desk resonance."],
-      ["structureDamping", "Structure Damping", 0.02, 0.40, 0.005, "Higher values make the structure ring less."],
-      ["structureCoupling", "Structure Coupling", 0.02, 1.20, 0.01, "How hard spindle forces drive the structure."],
-      ["directRadiation", "Direct Airborne Radiation", 0.0, 0.25, 0.005, "A small direct airborne spindle path."],
-      ["readRadius", "Read Radius", 0.15, 0.85, 0.005, "The radial band the head is trying to hold while reading."],
-      ["runout", "Disk Runout", 0.0, 0.0030, 0.00005, "Eccentricity disturbing track hold as the platter turns."],
-      ["servoGain", "Servo Gain", 0.2, 4.0, 0.02, "How hard the sampled servo corrects track error."],
-      ["actuatorResonanceHz", "Actuator Resonance", 250, 2400, 10, "One arm/pivot resonance excited by read corrections."],
-      ["actuatorDamping", "Actuator Damping", 0.02, 0.40, 0.005, "Higher values make the read ticks shorter and softer."],
-      ["actuatorCoupling", "Actuator Coupling", 0.0, 0.30, 0.002, "How much actuator correction reaches the output."],
+      ["thrashRateHz", "Thrash Rate", 1.0, 28.0, 0.1, "How often short random seeks happen per second."],
+      ["seekSpan", "Seek Span", 0.005, 0.20, 0.0025, "How far each short thrash seek jumps across the disk radius."],
+      ["seekTorque", "Seek Torque", 0.2, 2.0, 0.01, "How hard the arm launches/brakes during short seeks."],
+      ["armResonanceHz", "Arm Resonance", 450, 2400, 10, "Main actuator/arm mode that carries the shh/tick texture."],
+      ["armDamping", "Arm Damping", 0.03, 0.30, 0.005, "Higher values shorten the arm ring."],
+      ["flexureResonanceHz", "Flexure Resonance", 900, 3600, 10, "Higher suspension/flexure mode that adds the fine shh texture."],
+      ["flexureDamping", "Flexure Damping", 0.03, 0.30, 0.005, "Higher values shorten the fine flexure ring."],
+      ["flexureCoupling", "Flexure Coupling", 0.0, 0.60, 0.005, "How much high flexure texture rides over the arm mode."],
+      ["cavityResonanceHz", "Cavity / Case Mode", 180, 700, 5, "Lower case/cavity mode underneath the arm tick."],
+      ["cavityDamping", "Cavity Damping", 0.03, 0.25, 0.005, "Higher values make the low body less hollow."],
+      ["cavityCoupling", "Cavity Coupling", 0.0, 0.50, 0.005, "How much low case/body rides under the thrash."],
+      ["readTextureGain", "Read Texture Gain", 0.0, 0.60, 0.005, "Strength of tiny sampled read corrections between seeks."],
+      ["runout", "Disk Runout", 0.0, 0.0030, 0.00005, "Eccentricity that creates repeated position error during reading."],
+      ["servoGain", "Servo Gain", 0.05, 2.0, 0.01, "How hard the sampled servo corrects small read errors."],
+      ["brakeBias", "Brake Bias", 0.2, 1.2, 0.01, "How much of each short seek shows up as brake-heavy texture."],
+      ["structureResonanceHz", "Desk / Mount Resonance", 40, 220, 1, "Low-frequency structure resonance under the spindle."],
+      ["structureDamping", "Desk / Mount Damping", 0.02, 0.40, 0.005, "How long the desk/mount rings."],
+      ["structureCoupling", "Desk / Mount Coupling", 0.02, 1.20, 0.01, "How much spindle/body energy reaches the desk/mount."],
+      ["directRadiation", "Direct Spindle Radiation", 0.0, 0.20, 0.005, "A small direct airborne spindle path."],
     ];
 
     const state = { ...defaults };
-    const SPINDLE_ACCEL_SCALE = 85;
     const ui = {};
+    const SPINDLE_ACCEL_SCALE = 85;
     let ctx = null;
     let processor = null;
     let audioStarted = false;
     let motorOn = false;
+    let thrashOn = false;
     let actualRpm = 0;
-    let motorTorque = 0;
-    let actuatorTorque = 0;
-    let structureLevel = 0;
-    let actuatorPosition = state.readRadius;
-    let actuatorTargetView = state.readRadius;
-    let spinupStartTime = null;
-    let spinup90Time = null;
+    let thrashRate = 0;
+    let headRadius = 0.58;
+    let textureLevel = 0;
     let platterAngle = 0;
     let deskShake = 0;
-    let readTargetRadius = state.readRadius;
-    let pendingReadNonce = 0;
     let lastFrame = performance.now();
     let lastUiUpdate = 0;
 
+    function clamp(value, lo, hi) {
+      return Math.min(Math.max(value, lo), hi);
+    }
+
     function formatValue(key, value) {
-      if (key === "targetRpm" || key === "structureResonanceHz" || key === "actuatorResonanceHz") {
-        return String(Math.round(value));
-      }
-      if (typeof value === "boolean") {
-        return value ? "on" : "off";
-      }
+      if (key === "targetRpm" || key.endsWith("Hz")) return String(Math.round(value));
       if (value < 0.001) return Number(value).toExponential(2);
       return Number(value).toFixed(3);
     }
 
     function updateMeters() {
       document.getElementById("rpmValue").textContent = Math.round(actualRpm).toString();
-      document.getElementById("torqueValue").textContent = motorTorque.toFixed(2);
-      document.getElementById("actuatorValue").textContent = actuatorTorque.toFixed(2);
-      document.getElementById("spinupValue").textContent =
-        spinup90Time === null ? "-" : `${spinup90Time.toFixed(1)}s`;
+      document.getElementById("rateValue").textContent = thrashRate.toFixed(1);
+      document.getElementById("radiusValue").textContent = headRadius.toFixed(3);
+      document.getElementById("textureValue").textContent = textureLevel.toFixed(2);
       document.getElementById("motorBtn").textContent = motorOn ? "Motor Off" : "Motor On";
-      document.getElementById("readBtn").textContent = state.readEnabled ? "Read On" : "Read Off";
+      document.getElementById("thrashBtn").textContent = thrashOn ? "Thrash On" : "Thrash Off";
     }
 
     function updateJsonReadout() {
@@ -477,7 +427,7 @@
       const grid = document.getElementById("controlsGrid");
       for (const [key, label, min, max, step, hint] of sliderSpec) {
         const wrap = document.createElement("div");
-        wrap.className = "control";
+        wrap.className = "control-box";
         const value = document.createElement("span");
         value.id = `${key}Value`;
         value.textContent = formatValue(key, state[key]);
@@ -493,11 +443,6 @@
         input.addEventListener("input", () => {
           state[key] = Number(input.value);
           value.textContent = formatValue(key, state[key]);
-          if (key === "readRadius") {
-            readTargetRadius = state.readRadius;
-            state.readEnabled = true;
-            pendingReadNonce += 1;
-          }
           updateJsonReadout();
           updateMeters();
         });
@@ -514,10 +459,6 @@
       updateMeters();
     }
 
-    function clamp(value, lo, hi) {
-      return Math.min(Math.max(value, lo), hi);
-    }
-
     function createProcessor(context) {
       const node = context.createScriptProcessor(4096, 0, 1);
       const sim = {
@@ -527,41 +468,53 @@
         motorTorqueState: 0,
         x: 0,
         v: 0,
-        lastTorque: 0,
-        actuatorPos: state.readRadius,
-        actuatorVel: 0,
-        actuatorTorque: 0,
-        actuatorModeX: 0,
-        actuatorModeV: 0,
-        actuatorModeLoX: 0,
-        actuatorModeLoV: 0,
+        headPos: 0.58,
+        headVel: 0,
+        headTarget: 0.58,
+        seekTimer: 0,
+        thrashTimer: 0,
+        seekMode: false,
+        brakeFired: false,
+        armModeX: 0,
+        armModeV: 0,
+        flexureModeX: 0,
+        flexureModeV: 0,
+        cavityModeX: 0,
+        cavityModeV: 0,
         servoPhase: 0,
-        readTargetRadius: state.readRadius,
-        consumedReadNonce: 0,
-        seekActive: false,
-        seekLaunchFired: false,
-        seekBrakeFired: false,
-        seekDirection: 1,
-        seekCommandTorque: 0,
-        settleTimer: 0,
+        rng: 0x12345678,
       };
+
+      function nextRand() {
+        sim.rng = (1664525 * sim.rng + 1013904223) >>> 0;
+        return sim.rng / 0x100000000;
+      }
+
+      function triggerThrashSeek() {
+        const span = state.seekSpan * (0.25 + 0.75 * nextRand());
+        const direction = nextRand() < 0.5 ? -1 : 1;
+        sim.headTarget = clamp(sim.headPos + direction * span, 0.10, 0.90);
+        sim.seekMode = true;
+        sim.brakeFired = false;
+        sim.seekTimer = 0.010 + 0.014 * nextRand();
+        const launch = direction * state.seekTorque * (0.10 + 0.20 * nextRand());
+        sim.armModeV += launch * 0.26;
+        sim.flexureModeV += launch * state.flexureCoupling * 0.18;
+        sim.cavityModeV += launch * state.cavityCoupling * 0.05;
+      }
 
       function stepSample(dt) {
         const targetOmega = motorOn ? state.targetRpm * TAU / 60 : 0;
         const error = targetOmega - sim.omega;
-        const kp = 0.12;
-        const ki = 0.65;
         sim.integral = clamp(sim.integral + error * dt, -8, 8);
-
         const torqueCmd = clamp(
-          kp * error + ki * sim.integral,
+          0.12 * error + 0.65 * sim.integral,
           -state.motorTorqueMax,
           state.motorTorqueMax
         );
         const motorTau = 0.075;
         sim.motorTorqueState += (torqueCmd - sim.motorTorqueState) * (1 - Math.exp(-dt / motorTau));
         const torque = sim.motorTorqueState + state.torqueRipple * Math.sin(6 * sim.theta);
-
         const referenceOmega = Math.max(state.targetRpm * TAU / 60, 1e-6);
         const omegaNorm = sim.omega / referenceOmega;
         const drag =
@@ -570,62 +523,40 @@
         const bearing =
           state.bearingFriction * Math.tanh(sim.omega / 6) +
           state.bearingLinear * omegaNorm;
-
         const domega = SPINDLE_ACCEL_SCALE * (torque - drag - bearing) / Math.max(state.inertia, 1e-6);
         sim.omega = Math.max(sim.omega + domega * dt, 0);
         sim.theta = (sim.theta + sim.omega * dt) % TAU;
-        sim.lastTorque = torque;
 
         const rpmNorm = targetOmega > 1e-6 ? clamp(sim.omega / targetOmega, 0, 1.3) : 0;
-        if (sim.consumedReadNonce !== pendingReadNonce) {
-          sim.consumedReadNonce = pendingReadNonce;
-          sim.readTargetRadius = readTargetRadius;
-          const targetStep = sim.readTargetRadius - sim.actuatorPos;
-          if (Math.abs(targetStep) > 0.0008) {
-            sim.seekActive = true;
-            sim.seekLaunchFired = false;
-            sim.seekBrakeFired = false;
-            sim.seekDirection = Math.sign(targetStep) || 1;
-            sim.settleTimer = 0;
+        let headCommand = 0;
+        if (motorOn && thrashOn && rpmNorm > 0.80) {
+          sim.thrashTimer -= dt;
+          while (sim.thrashTimer <= 0) {
+            const rate = Math.max(state.thrashRateHz, 0.1);
+            sim.thrashTimer += -Math.log(Math.max(1e-6, 1 - nextRand())) / rate;
+            triggerThrashSeek();
           }
-        }
-        if (motorOn && state.readEnabled && rpmNorm > 0.78) {
-          let commandTorque = 0;
-          if (sim.seekActive) {
-            const errorToTarget = sim.readTargetRadius - sim.actuatorPos;
-            const direction = Math.sign(errorToTarget || -sim.actuatorVel || 1);
-            const maxSeekTorque = 2.2;
-            const effectiveAccel = 520 * maxSeekTorque;
-            const brakingDistance = (sim.actuatorVel * sim.actuatorVel) / Math.max(2 * effectiveAccel, 1e-6);
-            if (!sim.seekLaunchFired) {
-              const launchStrike =
-                sim.seekDirection * (0.65 + 6.4 * Math.min(Math.abs(errorToTarget), 0.28));
-              sim.actuatorModeV += launchStrike * 0.95;
-              sim.actuatorModeLoV += launchStrike * 0.11;
-              sim.v += launchStrike * 0.00042;
-              sim.seekLaunchFired = true;
-            }
-            if (Math.abs(errorToTarget) > brakingDistance + 0.0012) {
-              commandTorque = direction * maxSeekTorque;
+          if (sim.seekMode) {
+            const seekError = sim.headTarget - sim.headPos;
+            const direction = Math.sign(seekError || -sim.headVel || 1);
+            const maxSeekTorque = state.seekTorque;
+            const effectiveAccel = 360 * maxSeekTorque;
+            const brakingDistance = (sim.headVel * sim.headVel) / Math.max(2 * effectiveAccel, 1e-6);
+            if (Math.abs(seekError) > brakingDistance + 0.0010) {
+              headCommand = direction * maxSeekTorque;
             } else {
-              commandTorque = -Math.sign(sim.actuatorVel || direction) * maxSeekTorque * 0.96;
-              if (!sim.seekBrakeFired) {
-                const brakeStrike =
-                  -Math.sign(sim.actuatorVel || sim.seekDirection || 1) *
-                  (0.50 + 5.6 * Math.min(Math.abs(sim.actuatorVel), 0.20));
-                sim.actuatorModeV += brakeStrike * 0.82;
-                sim.actuatorModeLoV += brakeStrike * 0.15;
-                sim.v += brakeStrike * 0.00035;
-                sim.seekBrakeFired = true;
+              headCommand = -Math.sign(sim.headVel || direction) * maxSeekTorque * state.brakeBias;
+              if (!sim.brakeFired) {
+                const brake = -Math.sign(sim.headVel || direction || 1) * maxSeekTorque * (0.05 + 0.10 * nextRand());
+                sim.armModeV += brake * 0.22;
+                sim.flexureModeV += brake * state.flexureCoupling * 0.14;
+                sim.cavityModeV += brake * state.cavityCoupling * 0.03;
+                sim.brakeFired = true;
               }
             }
-            if (Math.abs(errorToTarget) < 0.0012 && Math.abs(sim.actuatorVel) < 0.020) {
-              sim.seekActive = false;
-              const settleStrike = -Math.sign(sim.actuatorVel || sim.seekDirection || 1) * 0.12;
-              sim.actuatorModeV += settleStrike * 0.40;
-              sim.actuatorModeLoV += settleStrike * 0.05;
-              sim.settleTimer = 0.028;
-              commandTorque = 0;
+            sim.seekTimer -= dt;
+            if (Math.abs(seekError) < 0.0025 || sim.seekTimer <= 0) {
+              sim.seekMode = false;
             }
           } else {
             const wedgeRate = Math.max((sim.omega / TAU) * 120, 0);
@@ -637,57 +568,57 @@
                 0.35 * Math.sin(2 * sim.theta + 0.45) +
                 0.18 * Math.sin(3 * sim.theta + 1.15)
               );
-              const holdError = sim.readTargetRadius + runout - sim.actuatorPos;
-              const servoCommand = clamp(
-                state.servoGain * (6.5 * holdError - 0.18 * sim.actuatorVel),
-                -0.08,
-                0.08
+              const holdError = sim.headTarget + runout - sim.headPos;
+              headCommand = clamp(
+                state.servoGain * (6.0 * holdError - 0.14 * sim.headVel),
+                -0.10,
+                0.10
               );
-              commandTorque = servoCommand;
+              const textureKick = headCommand * state.readTextureGain;
+              sim.armModeV += textureKick * 0.12;
+              sim.flexureModeV += textureKick * state.flexureCoupling * 0.26;
+              sim.cavityModeV += textureKick * state.cavityCoupling * 0.02;
             }
           }
-          if (sim.settleTimer > 0) {
-            sim.settleTimer = Math.max(sim.settleTimer - dt, 0);
-            commandTorque += -0.20 * sim.actuatorVel;
-          }
-          const torqueTau = 0.00018;
-          sim.seekCommandTorque += (commandTorque - sim.seekCommandTorque) * (1 - Math.exp(-dt / torqueTau));
-          sim.actuatorTorque = sim.seekCommandTorque;
         } else {
-          sim.servoPhase = 0;
-          sim.seekActive = false;
-          sim.seekLaunchFired = false;
-          sim.seekBrakeFired = false;
-          sim.seekCommandTorque *= 0.995;
-          sim.actuatorTorque = sim.seekCommandTorque;
+          sim.seekMode = false;
+          sim.brakeFired = false;
         }
 
-        const actuatorAccel =
-          360 * sim.actuatorTorque -
-          44 * sim.actuatorVel -
-          310 * (sim.actuatorPos - sim.readTargetRadius);
-        sim.actuatorVel += actuatorAccel * dt;
-        sim.actuatorPos = clamp(sim.actuatorPos + sim.actuatorVel * dt, 0.08, 0.92);
+        const headAccel =
+          280 * headCommand -
+          36 * sim.headVel -
+          220 * (sim.headPos - sim.headTarget);
+        sim.headVel += headAccel * dt;
+        sim.headPos = clamp(sim.headPos + sim.headVel * dt, 0.08, 0.92);
 
-        const actuatorWn = TAU * state.actuatorResonanceHz;
-        const actuatorModeAccel =
-          -2 * state.actuatorDamping * actuatorWn * sim.actuatorModeV -
-          actuatorWn * actuatorWn * sim.actuatorModeX;
-        sim.actuatorModeV += actuatorModeAccel * dt;
-        sim.actuatorModeX += sim.actuatorModeV * dt;
-        const actuatorLoWn = TAU * Math.max(260, state.actuatorResonanceHz * 0.58);
-        const actuatorModeLoAccel =
-          -2 * (state.actuatorDamping * 1.45) * actuatorLoWn * sim.actuatorModeLoV -
-          actuatorLoWn * actuatorLoWn * sim.actuatorModeLoX;
-        sim.actuatorModeLoV += actuatorModeLoAccel * dt;
-        sim.actuatorModeLoX += sim.actuatorModeLoV * dt;
+        const armWn = TAU * state.armResonanceHz;
+        const armAccel =
+          -2 * state.armDamping * armWn * sim.armModeV -
+          armWn * armWn * sim.armModeX;
+        sim.armModeV += armAccel * dt;
+        sim.armModeX += sim.armModeV * dt;
+
+        const flexureWn = TAU * state.flexureResonanceHz;
+        const flexureAccel =
+          -2 * state.flexureDamping * flexureWn * sim.flexureModeV -
+          flexureWn * flexureWn * sim.flexureModeX;
+        sim.flexureModeV += flexureAccel * dt;
+        sim.flexureModeX += sim.flexureModeV * dt;
+
+        const cavityWn = TAU * state.cavityResonanceHz;
+        const cavityAccel =
+          -2 * state.cavityDamping * cavityWn * sim.cavityModeV -
+          cavityWn * cavityWn * sim.cavityModeX;
+        sim.cavityModeV += cavityAccel * dt;
+        sim.cavityModeX += sim.cavityModeV * dt;
 
         const wn = TAU * state.structureResonanceHz;
         const imbalanceForce =
           state.imbalance * sim.omega * sim.omega *
           (0.75 * Math.sin(sim.theta) + 0.25 * Math.sin(2 * sim.theta));
         const reactionForce =
-          state.structureCoupling * (imbalanceForce + 0.28 * torque + 0.02 * sim.actuatorTorque);
+          state.structureCoupling * (imbalanceForce + 0.25 * torque);
         const accel = reactionForce - 2 * state.structureDamping * wn * sim.v - wn * wn * sim.x;
         sim.v += accel * dt;
         sim.x += sim.v * dt;
@@ -696,23 +627,16 @@
           state.directRadiation *
           (0.65 * Math.sin(sim.theta) + 0.18 * Math.sin(2 * sim.theta) + 0.09 * Math.sin(6 * sim.theta));
         const structure = 0.52 * sim.v + 0.14 * accel / Math.max(wn, 1);
-        const actuatorSignal =
-          state.actuatorCoupling *
-          (
-            0.03 * sim.actuatorModeLoV +
-            0.88 * sim.actuatorModeV
-          );
-        const sample = Math.tanh(0.84 * structure + 0.14 * direct + actuatorSignal);
+        const thrashSignal =
+          0.52 * sim.armModeV +
+          state.flexureCoupling * 0.88 * sim.flexureModeV +
+          state.cavityCoupling * 0.18 * sim.cavityModeV;
+        const sample = Math.tanh(0.84 * structure + 0.14 * direct + thrashSignal);
 
         actualRpm = sim.omega * 60 / TAU;
-        motorTorque = torque;
-        actuatorTorque = sim.actuatorTorque;
-        actuatorPosition = sim.actuatorPos;
-        actuatorTargetView = sim.readTargetRadius;
-        structureLevel = Math.abs(structure) * 10;
-        if (motorOn && spinupStartTime !== null && spinup90Time === null && actualRpm >= state.targetRpm * 0.9) {
-          spinup90Time = ctx.currentTime - spinupStartTime;
-        }
+        thrashRate = thrashOn ? state.thrashRateHz : 0;
+        headRadius = sim.headPos;
+        textureLevel = Math.abs(thrashSignal) * 2.6;
         return sample;
       }
 
@@ -732,31 +656,25 @@
         sim.motorTorqueState = 0;
         sim.x = 0;
         sim.v = 0;
-        sim.lastTorque = 0;
-        sim.actuatorPos = state.readRadius;
-        sim.actuatorVel = 0;
-        sim.actuatorTorque = 0;
-        sim.actuatorModeX = 0;
-        sim.actuatorModeV = 0;
-        sim.actuatorModeLoX = 0;
-        sim.actuatorModeLoV = 0;
+        sim.headPos = 0.58;
+        sim.headVel = 0;
+        sim.headTarget = 0.58;
+        sim.seekTimer = 0;
+        sim.thrashTimer = 0;
+        sim.seekMode = false;
+        sim.brakeFired = false;
+        sim.armModeX = 0;
+        sim.armModeV = 0;
+        sim.flexureModeX = 0;
+        sim.flexureModeV = 0;
+        sim.cavityModeX = 0;
+        sim.cavityModeV = 0;
         sim.servoPhase = 0;
-        sim.readTargetRadius = state.readRadius;
-        sim.consumedReadNonce = pendingReadNonce;
-        sim.seekActive = false;
-        sim.seekLaunchFired = false;
-        sim.seekBrakeFired = false;
-        sim.seekDirection = 1;
-        sim.seekCommandTorque = 0;
-        sim.settleTimer = 0;
+        sim.rng = 0x12345678;
         actualRpm = 0;
-        motorTorque = 0;
-        actuatorTorque = 0;
-        actuatorPosition = state.readRadius;
-        actuatorTargetView = state.readRadius;
-        structureLevel = 0;
-        spinupStartTime = null;
-        spinup90Time = null;
+        thrashRate = 0;
+        headRadius = 0.58;
+        textureLevel = 0;
         updateMeters();
       };
       return node;
@@ -770,11 +688,12 @@
       }
       processor = createProcessor(ctx);
       audioStarted = true;
-      document.getElementById("status").textContent = "Audio running. Toggle Motor On to spin up.";
+      document.getElementById("status").textContent = "Audio running. Toggle Motor On, then Thrash On.";
     }
 
     function resetState() {
       motorOn = false;
+      thrashOn = false;
       if (processor && processor.resetState) {
         processor.resetState();
       }
@@ -783,72 +702,36 @@
     }
 
     function toggleMotor() {
-      if (!audioStarted) {
-        startAudio().then(() => {
-          motorOn = !motorOn;
-          if (motorOn && ctx) {
-            spinupStartTime = ctx.currentTime;
-            spinup90Time = null;
-          }
-          updateMeters();
-          document.getElementById("status").textContent = motorOn ? "Motor engaged." : "Motor disengaged.";
-        });
-        return;
-      }
-      motorOn = !motorOn;
-      if (motorOn && ctx) {
-        spinupStartTime = ctx.currentTime;
-        spinup90Time = null;
-      }
-      updateMeters();
-      document.getElementById("status").textContent = motorOn ? "Motor engaged." : "Motor disengaged.";
-    }
-
-    function toggleRead() {
-      state.readEnabled = !state.readEnabled;
-      if (state.readEnabled) {
-        readTargetRadius = state.readRadius;
-        pendingReadNonce += 1;
-      }
-      updateJsonReadout();
-      updateMeters();
-      document.getElementById("readZone").classList.toggle("active", state.readEnabled);
-      document.getElementById("status").textContent = state.readEnabled
-        ? "Read hold engaged. Move Read Radius or hit Random Sector to launch a seek and hear the arm ring."
-        : "Read hold disengaged.";
-    }
-
-    function triggerRandomRead() {
-      const armRandomRead = () => {
-        if (!motorOn && ctx) {
-          motorOn = true;
-          spinupStartTime = ctx.currentTime;
-          spinup90Time = null;
-        }
-        state.readEnabled = true;
-        state.readRadius = Number((0.16 + Math.random() * 0.68).toFixed(3));
-        readTargetRadius = state.readRadius;
-        pendingReadNonce += 1;
-        if (ui.readRadius) {
-          ui.readRadius.value = String(state.readRadius);
-        }
-        const radiusValue = document.getElementById("readRadiusValue");
-        if (radiusValue) {
-          radiusValue.textContent = formatValue("readRadius", state.readRadius);
-        }
-        updateJsonReadout();
+      const doToggle = () => {
+        motorOn = !motorOn;
         updateMeters();
-        document.getElementById("readZone").classList.add("active");
-        document.getElementById("status").textContent = `Random sector read target: radius ${state.readRadius.toFixed(3)}.`;
+        document.getElementById("status").textContent = motorOn ? "Motor engaged." : "Motor disengaged.";
       };
-
       if (!audioStarted) {
-        startAudio().then(armRandomRead).catch((error) => {
+        startAudio().then(doToggle).catch((error) => {
           document.getElementById("status").textContent = `Audio failed: ${error.message}`;
         });
         return;
       }
-      armRandomRead();
+      doToggle();
+    }
+
+    function toggleThrash() {
+      const doToggle = () => {
+        if (!motorOn) motorOn = true;
+        thrashOn = !thrashOn;
+        updateMeters();
+        document.getElementById("status").textContent = thrashOn
+          ? "Thrash engaged. This should sound like busy short random reads."
+          : "Thrash disengaged.";
+      };
+      if (!audioStarted) {
+        startAudio().then(doToggle).catch((error) => {
+          document.getElementById("status").textContent = `Audio failed: ${error.message}`;
+        });
+        return;
+      }
+      doToggle();
     }
 
     function copyValues() {
@@ -864,16 +747,10 @@
       const dt = Math.min((now - lastFrame) / 1000, 0.05);
       lastFrame = now;
       platterAngle += (actualRpm / 60) * 360 * dt * 0.16;
-      deskShake += (structureLevel * 0.02 - deskShake) * 0.12;
+      deskShake += (textureLevel * 0.03 - deskShake) * 0.10;
       document.getElementById("platter").style.transform = `rotate(${platterAngle}deg)`;
       document.getElementById("desk").style.transform = `translateY(${Math.sin(now * 0.018) * deskShake}px)`;
-      document.getElementById("coil").style.opacity = String(0.38 + Math.min(Math.abs(motorTorque) * 0.4, 0.4));
-      const readZone = document.getElementById("readZone");
-      const readZoneSize = 34 + actuatorTargetView * 128;
-      readZone.style.width = `${readZoneSize}px`;
-      readZone.style.height = `${readZoneSize}px`;
-      readZone.classList.toggle("active", state.readEnabled);
-      const armAngle = 222 - actuatorPosition * 92 - actuatorTorque * 5.5;
+      const armAngle = 222 - headRadius * 92;
       document.getElementById("arm").style.transform = `rotate(${armAngle}deg)`;
       if (now - lastUiUpdate > 120) {
         updateMeters();
@@ -888,8 +765,7 @@
       });
     });
     document.getElementById("motorBtn").addEventListener("click", toggleMotor);
-    document.getElementById("readBtn").addEventListener("click", toggleRead);
-    document.getElementById("randomReadBtn").addEventListener("click", triggerRandomRead);
+    document.getElementById("thrashBtn").addEventListener("click", toggleThrash);
     document.getElementById("resetBtn").addEventListener("click", resetState);
     document.getElementById("copyBtn").addEventListener("click", copyValues);
 

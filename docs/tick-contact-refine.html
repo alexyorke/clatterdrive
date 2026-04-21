@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ClatterDrive Contact-Family Tick Refinement</title>
+  <style>
+    :root {
+      --bg: #091018;
+      --panel: #101925;
+      --line: #233343;
+      --ink: #eaf2f8;
+      --muted: #8ea3b7;
+      --good: #92e4ba;
+      --warn: #ffb46e;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif;
+      background:
+        radial-gradient(circle at 15% 0%, rgba(125, 213, 255, 0.12), transparent 24%),
+        radial-gradient(circle at 100% 0%, rgba(255, 180, 110, 0.10), transparent 22%),
+        linear-gradient(180deg, #091018, #0b121a 72%);
+    }
+    .shell {
+      max-width: 1360px;
+      margin: 0 auto;
+      padding: 24px;
+      display: grid;
+      gap: 18px;
+    }
+    .panel {
+      background: linear-gradient(180deg, rgba(20, 33, 49, 0.94), rgba(12, 20, 30, 0.98));
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      overflow: hidden;
+      box-shadow: 0 18px 50px rgba(0, 0, 0, 0.34);
+    }
+    .head {
+      padding: 18px 20px 14px;
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+    }
+    .body {
+      padding: 18px 20px 20px;
+    }
+    h1, h2, p { margin: 0; }
+    h1 { font-size: 28px; }
+    h2 { font-size: 18px; }
+    .lede {
+      margin-top: 8px;
+      max-width: 82ch;
+      color: var(--muted);
+    }
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 14px;
+    }
+    button {
+      appearance: none;
+      border: 0;
+      border-radius: 999px;
+      padding: 12px 16px;
+      background: linear-gradient(180deg, #8fdcff, #5bc6fb);
+      color: #04131d;
+      font-weight: 700;
+      cursor: pointer;
+      box-shadow: 0 10px 22px rgba(91,198,251,0.16);
+    }
+    button.secondary {
+      background: linear-gradient(180deg, #2a3849, #1a2734);
+      color: var(--ink);
+      border: 1px solid rgba(255,255,255,0.08);
+      box-shadow: none;
+    }
+    .status {
+      color: var(--good);
+      font-weight: 600;
+      min-height: 1.4em;
+    }
+    .small {
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 4px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+    .card {
+      padding: 16px;
+      border-radius: 16px;
+      background: rgba(8,13,20,0.54);
+      border: 1px solid rgba(255,255,255,0.05);
+      display: grid;
+      gap: 12px;
+    }
+    .meta {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: baseline;
+    }
+    .tag {
+      color: var(--warn);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .note {
+      color: var(--muted);
+    }
+    audio { width: 100%; }
+    pre {
+      margin: 0;
+      padding: 12px;
+      border-radius: 12px;
+      background: #09111a;
+      border: 1px solid rgba(255,255,255,0.06);
+      color: #d8e4ef;
+      font: 12px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
+      overflow: auto;
+    }
+    @media (max-width: 980px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <section class="panel">
+      <div class="head">
+        <h1>ClatterDrive Contact-Family Refinement</h1>
+        <p class="lede">You picked the old contact-ish/pivot-heavy family as the least wrong one. These 10 clips stay in that lower-mid, denser knock family and vary only the remaining disputed pieces: how much true low pivot body there is, whether there is a faint higher metallic edge, whether the event is single or double, and how much case/mount comes through.</p>
+      </div>
+      <div class="body">
+        <div class="toolbar">
+          <button id="renderBtn">Render 10 Variants</button>
+          <button class="secondary" id="openHypBtn">Open Wide Hypotheses</button>
+          <button class="secondary" id="openLabBtn">Open Tick Lab</button>
+          <div class="status" id="status">Not rendered yet.</div>
+        </div>
+        <div class="small">Reply with the closest label plus one phrase, for example: <code>M closest, still too pebbly</code> or <code>Q closest, needs a bit more metal</code>.</div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="head">
+        <h2>Narrowed Variant Set</h2>
+        <p class="lede">These are intentionally closer together than the previous page, but still physically distinct.</p>
+      </div>
+      <div class="body">
+        <div class="grid" id="clips"></div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const TAU = Math.PI * 2;
+    const base = {
+      sampleRate: 24000,
+      durationS: 1.05,
+      eventTimeS: 0.22,
+      targetRpm: 7200,
+      spindleDirect: 0.006,
+      spindleStructure: 0.012,
+      structureHz: 185,
+      structureDamping: 0.18,
+    };
+
+    const variants = [
+      {
+        id: "K",
+        name: "K Dry Pivot",
+        note: "Shorter, drier pivot-led knock with little bright edge.",
+        modes: [
+          { hz: 980, zeta: 0.095, mix: 0.50 },
+          { hz: 420, zeta: 0.095, mix: 0.34 },
+          { hz: 2050, zeta: 0.18, mix: 0.06 },
+        ],
+        events: [
+          { ms: 0, hi: 0.52, lo: 0.30, body: 0.10 },
+        ],
+      },
+      {
+        id: "L",
+        name: "L Denser Body",
+        note: "More mount/case body underneath the knock.",
+        modes: [
+          { hz: 940, zeta: 0.10, mix: 0.46 },
+          { hz: 390, zeta: 0.090, mix: 0.40 },
+          { hz: 1700, zeta: 0.16, mix: 0.08 },
+        ],
+        events: [
+          { ms: 0, hi: 0.46, lo: 0.38, body: 0.14 },
+        ],
+      },
+      {
+        id: "M",
+        name: "M Clearer Edge",
+        note: "Same family, but with a small metallic edge on top of the knock.",
+        modes: [
+          { hz: 1080, zeta: 0.088, mix: 0.48 },
+          { hz: 470, zeta: 0.098, mix: 0.30 },
+          { hz: 2280, zeta: 0.11, mix: 0.12 },
+        ],
+        events: [
+          { ms: 0, hi: 0.58, lo: 0.30, body: 0.11 },
+        ],
+      },
+      {
+        id: "N",
+        name: "N Small Doublet",
+        note: "Two short knocks, second one lighter and closer in time.",
+        modes: [
+          { hz: 1010, zeta: 0.095, mix: 0.48 },
+          { hz: 430, zeta: 0.100, mix: 0.30 },
+          { hz: 1900, zeta: 0.15, mix: 0.08 },
+        ],
+        events: [
+          { ms: 0, hi: 0.46, lo: 0.28, body: 0.10 },
+          { ms: 16, hi: -0.22, lo: 0.10, body: 0.03 },
+        ],
+      },
+      {
+        id: "O",
+        name: "O Tighter Knock",
+        note: "Less body, narrower and more controlled.",
+        modes: [
+          { hz: 1160, zeta: 0.11, mix: 0.50 },
+          { hz: 520, zeta: 0.12, mix: 0.22 },
+          { hz: 2100, zeta: 0.16, mix: 0.06 },
+        ],
+        events: [
+          { ms: 0, hi: 0.46, lo: 0.20, body: 0.07 },
+        ],
+      },
+      {
+        id: "P",
+        name: "P Heavier Brake",
+        note: "Contact-family sound, but the second event carries more of the identity.",
+        modes: [
+          { hz: 970, zeta: 0.09, mix: 0.46 },
+          { hz: 450, zeta: 0.095, mix: 0.28 },
+          { hz: 1830, zeta: 0.14, mix: 0.08 },
+        ],
+        events: [
+          { ms: 0, hi: 0.28, lo: 0.14, body: 0.04 },
+          { ms: 22, hi: -0.60, lo: 0.26, body: 0.09 },
+        ],
+      },
+      {
+        id: "Q",
+        name: "Q Slight Metal",
+        note: "Probably the closest if you want a touch more clear 'tick' without losing the knock family.",
+        modes: [
+          { hz: 1120, zeta: 0.082, mix: 0.46 },
+          { hz: 470, zeta: 0.100, mix: 0.24 },
+          { hz: 2440, zeta: 0.09, mix: 0.15 },
+        ],
+        events: [
+          { ms: 0, hi: 0.60, lo: 0.24, body: 0.08 },
+        ],
+      },
+      {
+        id: "R",
+        name: "R Muted Chassis",
+        note: "Like the contact family heard through more enclosure damping.",
+        modes: [
+          { hz: 930, zeta: 0.13, mix: 0.44 },
+          { hz: 410, zeta: 0.12, mix: 0.30 },
+          { hz: 1750, zeta: 0.18, mix: 0.05 },
+        ],
+        events: [
+          { ms: 0, hi: 0.42, lo: 0.24, body: 0.09 },
+        ],
+      },
+      {
+        id: "S",
+        name: "S Hollow Knock",
+        note: "More low cavity/case body; likely too hollow, but useful if the others feel too dry.",
+        modes: [
+          { hz: 880, zeta: 0.09, mix: 0.38 },
+          { hz: 320, zeta: 0.075, mix: 0.48 },
+          { hz: 1850, zeta: 0.16, mix: 0.05 },
+        ],
+        events: [
+          { ms: 0, hi: 0.34, lo: 0.38, body: 0.16 },
+        ],
+      },
+      {
+        id: "T",
+        name: "T Whisper Knock",
+        note: "Same family, but very restrained and small.",
+        modes: [
+          { hz: 1000, zeta: 0.105, mix: 0.44 },
+          { hz: 430, zeta: 0.105, mix: 0.24 },
+          { hz: 2100, zeta: 0.13, mix: 0.06 },
+        ],
+        events: [
+          { ms: 0, hi: 0.24, lo: 0.14, body: 0.05 },
+        ],
+      },
+    ];
+
+    function clamp(value, lo, hi) {
+      return Math.min(Math.max(value, lo), hi);
+    }
+
+    function encodeWav(float32, sampleRate) {
+      const frameCount = float32.length;
+      const buffer = new ArrayBuffer(44 + frameCount * 2);
+      const view = new DataView(buffer);
+      const writeString = (offset, text) => {
+        for (let i = 0; i < text.length; i += 1) {
+          view.setUint8(offset + i, text.charCodeAt(i));
+        }
+      };
+      writeString(0, "RIFF");
+      view.setUint32(4, 36 + frameCount * 2, true);
+      writeString(8, "WAVE");
+      writeString(12, "fmt ");
+      view.setUint32(16, 16, true);
+      view.setUint16(20, 1, true);
+      view.setUint16(22, 1, true);
+      view.setUint32(24, sampleRate, true);
+      view.setUint32(28, sampleRate * 2, true);
+      view.setUint16(32, 2, true);
+      view.setUint16(34, 16, true);
+      writeString(36, "data");
+      view.setUint32(40, frameCount * 2, true);
+      let offset = 44;
+      for (let i = 0; i < frameCount; i += 1) {
+        const sample = clamp(float32[i], -1, 1);
+        view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+        offset += 2;
+      }
+      return new Blob([buffer], { type: "audio/wav" });
+    }
+
+    function renderVariant(variant) {
+      const sampleRate = base.sampleRate;
+      const frames = Math.floor(base.durationS * sampleRate);
+      const out = new Float32Array(frames);
+      const omega = base.targetRpm * TAU / 60;
+      const eventFrame = Math.floor(base.eventTimeS * sampleRate);
+      const structure = { x: 0, v: 0 };
+      const modes = variant.modes.map((mode) => ({ ...mode, x: 0, v: 0 }));
+      let theta = 0;
+      const perFrameEvents = new Map();
+      for (const event of variant.events) {
+        perFrameEvents.set(eventFrame + Math.floor(event.ms * sampleRate / 1000), event);
+      }
+
+      for (let i = 0; i < frames; i += 1) {
+        const dt = 1 / sampleRate;
+        theta = (theta + omega * dt) % TAU;
+        const spindleBed =
+          base.spindleDirect * (
+            0.75 * Math.sin(theta) +
+            0.18 * Math.sin(2 * theta + 0.3) +
+            0.04 * Math.sin(6 * theta + 0.9)
+          );
+        const structureInput =
+          base.spindleStructure * (
+            0.55 * Math.sin(theta + 0.1) +
+            0.18 * Math.sin(2 * theta + 0.6)
+          );
+
+        const evt = perFrameEvents.get(i);
+        if (evt) {
+          structure.v += evt.body * 0.015;
+          for (let m = 0; m < modes.length; m += 1) {
+            const mode = modes[m];
+            const drive = m === 0 ? evt.hi : evt.lo;
+            mode.v += drive * mode.mix * 1.05;
+          }
+        }
+
+        const structureWn = TAU * base.structureHz;
+        const structureAccel =
+          structureInput -
+          2 * base.structureDamping * structureWn * structure.v -
+          structureWn * structureWn * structure.x;
+        structure.v += structureAccel * dt;
+        structure.x += structure.v * dt;
+
+        let modalOut = 0;
+        for (const mode of modes) {
+          const wn = TAU * mode.hz;
+          const accel = -2 * mode.zeta * wn * mode.v - wn * wn * mode.x;
+          mode.v += accel * dt;
+          mode.x += mode.v * dt;
+          modalOut += mode.mix * mode.v * 0.085;
+        }
+
+        out[i] = Math.tanh(spindleBed + 0.68 * structure.v + modalOut);
+      }
+
+      const peak = Math.max(...out.map((v) => Math.abs(v)), 1e-6);
+      const gain = Math.min(0.92 / peak, 8.0);
+      for (let i = 0; i < out.length; i += 1) {
+        out[i] *= gain;
+      }
+      return out;
+    }
+
+    function createCard(variant, blob) {
+      const card = document.createElement("div");
+      card.className = "card";
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      meta.innerHTML = `<div><h2>${variant.name}</h2><div class="note">${variant.note}</div></div><div class="tag">Variant ${variant.id}</div>`;
+      const audio = document.createElement("audio");
+      audio.controls = true;
+      audio.preload = "metadata";
+      audio.src = URL.createObjectURL(blob);
+      const copy = document.createElement("button");
+      copy.className = "secondary";
+      copy.textContent = "Copy Variant";
+      const pre = document.createElement("pre");
+      pre.textContent = JSON.stringify({
+        id: variant.id,
+        name: variant.name,
+        note: variant.note,
+        modes: variant.modes,
+        events: variant.events,
+      }, null, 2);
+      copy.addEventListener("click", () => {
+        navigator.clipboard.writeText(pre.textContent).then(() => {
+          document.getElementById("status").textContent = `Copied ${variant.name}.`;
+        }).catch(() => {
+          document.getElementById("status").textContent = `Copy failed for ${variant.name}.`;
+        });
+      });
+      card.appendChild(meta);
+      card.appendChild(audio);
+      card.appendChild(copy);
+      card.appendChild(pre);
+      return card;
+    }
+
+    async function renderAll() {
+      const clips = document.getElementById("clips");
+      clips.innerHTML = "";
+      document.getElementById("status").textContent = "Rendering clips...";
+      for (const variant of variants) {
+        const blob = encodeWav(renderVariant(variant), base.sampleRate);
+        clips.appendChild(createCard(variant, blob));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      document.getElementById("status").textContent = "Rendered 10 narrowed variants.";
+    }
+
+    document.getElementById("renderBtn").addEventListener("click", () => {
+      renderAll().catch((error) => {
+        document.getElementById("status").textContent = `Render failed: ${error.message}`;
+      });
+    });
+    document.getElementById("openHypBtn").addEventListener("click", () => {
+      window.location.href = "tick-hypotheses.html";
+    });
+    document.getElementById("openLabBtn").addEventListener("click", () => {
+      window.location.href = "tick-lab.html";
+    });
+  </script>
+</body>
+</html>
