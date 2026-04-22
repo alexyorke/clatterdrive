@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ClatterDrive MH Thrash Lab</title>
+  <style>
+    :root {
+      --bg: #091018;
+      --panel: #101925;
+      --line: #233343;
+      --ink: #eaf2f8;
+      --muted: #8ea3b7;
+      --good: #92e4ba;
+      --warn: #ffb46e;
+      --accent: #67d2ff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif;
+      background:
+        radial-gradient(circle at 15% 0%, rgba(125, 213, 255, 0.12), transparent 24%),
+        radial-gradient(circle at 100% 0%, rgba(255, 180, 110, 0.10), transparent 22%),
+        linear-gradient(180deg, #091018, #0b121a 72%);
+    }
+    .shell {
+      max-width: 1420px;
+      margin: 0 auto;
+      padding: 24px;
+      display: grid;
+      gap: 18px;
+    }
+    .panel {
+      background: linear-gradient(180deg, rgba(20, 33, 49, 0.94), rgba(12, 20, 30, 0.98));
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      overflow: hidden;
+      box-shadow: 0 18px 50px rgba(0, 0, 0, 0.34);
+    }
+    .head {
+      padding: 18px 20px 14px;
+      border-bottom: 1px solid rgba(255,255,255,0.05);
+    }
+    .body {
+      padding: 18px 20px 20px;
+    }
+    h1, h2, h3, p { margin: 0; }
+    h1 { font-size: 28px; }
+    h2 { font-size: 18px; }
+    h3 { font-size: 15px; }
+    .lede {
+      margin-top: 8px;
+      max-width: 88ch;
+      color: var(--muted);
+    }
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+    }
+    button {
+      appearance: none;
+      border: 0;
+      border-radius: 999px;
+      padding: 12px 16px;
+      background: linear-gradient(180deg, #8fdcff, #5bc6fb);
+      color: #04131d;
+      font-weight: 700;
+      cursor: pointer;
+      box-shadow: 0 10px 22px rgba(91,198,251,0.16);
+    }
+    button.secondary {
+      background: linear-gradient(180deg, #2a3849, #1a2734);
+      color: var(--ink);
+      border: 1px solid rgba(255,255,255,0.08);
+      box-shadow: none;
+    }
+    .status {
+      color: var(--good);
+      font-weight: 600;
+      min-height: 1.4em;
+    }
+    .small {
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 4px;
+    }
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
+      gap: 18px;
+      align-items: start;
+    }
+    .controls {
+      display: grid;
+      gap: 14px;
+    }
+    .section {
+      padding: 14px;
+      border-radius: 16px;
+      background: rgba(8,13,20,0.54);
+      border: 1px solid rgba(255,255,255,0.05);
+      display: grid;
+      gap: 12px;
+    }
+    .section-grid {
+      display: grid;
+      gap: 10px;
+    }
+    .control {
+      display: grid;
+      gap: 6px;
+    }
+    .label-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: baseline;
+    }
+    .label-row span:last-child {
+      color: var(--accent);
+      font-variant-numeric: tabular-nums;
+    }
+    input[type="range"] {
+      width: 100%;
+      accent-color: var(--accent);
+    }
+    .right {
+      display: grid;
+      gap: 16px;
+    }
+    .preview-card {
+      padding: 16px;
+      border-radius: 16px;
+      background: rgba(8,13,20,0.54);
+      border: 1px solid rgba(255,255,255,0.05);
+      display: grid;
+      gap: 12px;
+    }
+    audio {
+      width: 100%;
+    }
+    pre {
+      margin: 0;
+      padding: 12px;
+      border-radius: 12px;
+      background: #09111a;
+      border: 1px solid rgba(255,255,255,0.06);
+      color: #d8e4ef;
+      font: 12px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
+      overflow: auto;
+    }
+    label.inline {
+      display: inline-flex;
+      gap: 8px;
+      align-items: center;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    @media (max-width: 1100px) {
+      .layout {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <section class="panel">
+      <div class="head">
+        <h1>ClatterDrive MH Thrash Lab</h1>
+        <p class="lede">This is the <code>MH More Shell</code> family turned into a live tuning page. It now uses a short force-pulse exciter and a 3-regime packet scheduler, and the current defaults are cross-validated against the latest local <code>hdd-sample.flac</code> click/thrash reference instead of the older brighter baseline.</p>
+      </div>
+      <div class="body">
+        <div class="toolbar">
+          <button id="renderBtn">Render Loop</button>
+          <button class="secondary" id="copyBtn">Copy JSON</button>
+          <button class="secondary" id="resetBtn">Reset MH</button>
+          <button class="secondary" id="openModalBtn">Open Modal Comparison</button>
+          <label class="inline"><input type="checkbox" id="autoRender" checked> auto-render on slider change</label>
+          <div class="status" id="status">Not rendered yet.</div>
+        </div>
+        <div class="small">Tune the physical/model parameters, let the loop run, then copy the JSON and send it back.</div>
+      </div>
+    </section>
+
+    <div class="layout">
+      <div class="controls" id="controls"></div>
+
+      <div class="right">
+        <section class="panel">
+          <div class="head">
+            <h2>Loop Preview</h2>
+            <p class="lede">This is a rendered loop, not real-time synthesis. That keeps it stable in a plain browser file and avoids the crackly callback problems from earlier pages.</p>
+          </div>
+          <div class="body">
+            <div class="preview-card">
+              <h3>Thrash Loop</h3>
+              <audio id="preview" controls loop></audio>
+              <div class="small">Click play after the first render. If the loop is already playing, new renders will swap in automatically.</div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="head">
+            <h2>Current Parameters</h2>
+            <p class="lede">Only physical/model terms are exposed here: launch/brake pulse shape, modal frequencies, damping, body/center/air balance, seek-span variation, and 3-regime burst timing.</p>
+          </div>
+          <div class="body">
+            <pre id="jsonOut"></pre>
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const TAU = Math.PI * 2;
+    const sampleRate = 24000;
+
+    const groups = [
+      {
+        title: "Exciter",
+        controls: [
+          { key: "directMix", label: "Direct Impulse Mix", min: 0.00, max: 0.20, step: 0.005 },
+          { key: "pulseWidthMs", label: "Force Pulse Width (ms)", min: 0.04, max: 0.50, step: 0.005 },
+          { key: "pulseDecay", label: "Force Pulse Decay", min: 0.20, max: 0.98, step: 0.01 },
+          { key: "launchAmp", label: "Launch Strength", min: 0.45, max: 1.40, step: 0.01 },
+          { key: "brakeDelayMs", label: "Brake Delay (ms)", min: 0.10, max: 0.80, step: 0.01 },
+          { key: "brakeAmp", label: "Brake Strength", min: -1.00, max: -0.05, step: 0.01 },
+          { key: "settleDelayMs", label: "Settle Delay (ms)", min: 0.60, max: 1.80, step: 0.01 },
+          { key: "settleAmp", label: "Settle Strength", min: 0.00, max: 0.18, step: 0.005 },
+          { key: "seekSpanSpreadMs", label: "Seek Span Spread (ms)", min: 0.00, max: 1.80, step: 0.01 },
+        ],
+      },
+      {
+        title: "Thrash Timing",
+        controls: [
+          { key: "loopDurationS", label: "Loop Duration (s)", min: 2.4, max: 6.0, step: 0.1 },
+          { key: "denseGapMs", label: "Dense Gap (ms)", min: 8, max: 38, step: 1 },
+          { key: "midGapMs", label: "Mid Gap (ms)", min: 40, max: 150, step: 1 },
+          { key: "resetGapMs", label: "Reset Gap (ms)", min: 110, max: 420, step: 1 },
+          { key: "packetLengthMean", label: "Packet Length Mean", min: 2, max: 10, step: 0.1 },
+          { key: "packetLengthJitter", label: "Packet Length Jitter", min: 0, max: 5, step: 0.1 },
+          { key: "resetProbability", label: "Reset Probability", min: 0.00, max: 0.70, step: 0.01 },
+          { key: "ampJitter", label: "Amplitude Jitter", min: 0.00, max: 0.80, step: 0.01 },
+          { key: "eventGain", label: "Overall Event Gain", min: 0.45, max: 1.30, step: 0.01 },
+        ],
+      },
+      {
+        title: "Body Modes",
+        controls: [
+          { key: "body1Hz", label: "Body 1 Hz", min: 380, max: 700, step: 1 },
+          { key: "body1Gain", label: "Body 1 Gain", min: 0.10, max: 0.95, step: 0.01 },
+          { key: "body1T60", label: "Body 1 T60 (ms)", min: 18, max: 90, step: 1 },
+          { key: "body2Hz", label: "Body 2 Hz", min: 520, max: 920, step: 1 },
+          { key: "body2Gain", label: "Body 2 Gain", min: 0.00, max: 0.70, step: 0.01 },
+          { key: "body2T60", label: "Body 2 T60 (ms)", min: 12, max: 64, step: 1 },
+        ],
+      },
+      {
+        title: "Click Center",
+        controls: [
+          { key: "center1Hz", label: "Center 1 Hz", min: 980, max: 1600, step: 1 },
+          { key: "center1Gain", label: "Center 1 Gain", min: 0.00, max: 1.20, step: 0.01 },
+          { key: "center1T60", label: "Center 1 T60 (ms)", min: 4, max: 36, step: 1 },
+          { key: "center2Hz", label: "Center 2 Hz", min: 1180, max: 2100, step: 1 },
+          { key: "center2Gain", label: "Center 2 Gain", min: 0.00, max: 0.80, step: 0.01 },
+          { key: "center2T60", label: "Center 2 T60 (ms)", min: 3, max: 28, step: 1 },
+        ],
+      },
+      {
+        title: "Air Tip",
+        controls: [
+          { key: "air1Hz", label: "Air 1 Hz", min: 2400, max: 4200, step: 1 },
+          { key: "air1Gain", label: "Air 1 Gain", min: 0.00, max: 0.22, step: 0.005 },
+          { key: "air1T60", label: "Air 1 T60 (ms)", min: 1.5, max: 14, step: 0.5 },
+          { key: "air2Hz", label: "Air 2 Hz", min: 3200, max: 5200, step: 1 },
+          { key: "air2Gain", label: "Air 2 Gain", min: 0.00, max: 0.12, step: 0.005 },
+          { key: "air2T60", label: "Air 2 T60 (ms)", min: 2, max: 10, step: 0.5 },
+        ],
+      },
+    ];
+
+    const defaults = {
+      body1Phase: 0.00,
+      body2Phase: -0.04,
+      center1Phase: -0.02,
+      center2Phase: 0.10,
+      air1Phase: 0.383,
+      air2Phase: 0.34,
+      directMix: 0.035,
+      pulseWidthMs: 0.17,
+      pulseDecay: 0.94,
+      launchAmp: 0.66,
+      brakeDelayMs: 0.23,
+      brakeAmp: -0.09,
+      settleDelayMs: 1.43,
+      settleAmp: 0.00,
+      seekSpanSpreadMs: 0.65,
+      loopDurationS: 5.5,
+      denseGapMs: 15,
+      midGapMs: 78,
+      resetGapMs: 132,
+      packetLengthMean: 5.5,
+      packetLengthJitter: 1.1,
+      resetProbability: 0.37,
+      ampJitter: 0.70,
+      eventGain: 0.57,
+      body1Hz: 440,
+      body1Gain: 0.39,
+      body1T60: 24,
+      body2Hz: 480,
+      body2Gain: 0.00,
+      body2T60: 32,
+      center1Hz: 1039,
+      center1Gain: 0.01,
+      center1T60: 4,
+      center2Hz: 1297,
+      center2Gain: 0.00,
+      center2T60: 6,
+      air1Hz: 3103,
+      air1Gain: 0.015,
+      air1T60: 1.5,
+      air2Hz: 5200,
+      air2Gain: 0.035,
+      air2T60: 3.5,
+    };
+
+    const state = { ...defaults };
+    const inputs = {};
+    let currentUrl = null;
+    let renderTimer = null;
+
+    function clamp(value, lo, hi) {
+      return Math.min(Math.max(value, lo), hi);
+    }
+
+    function formatValue(value, step) {
+      const decimals = step >= 1 ? 0 : Math.max(0, String(step).split(".")[1]?.length ?? 0);
+      return Number(value).toFixed(decimals);
+    }
+
+    function buildControls() {
+      const root = document.getElementById("controls");
+      for (const group of groups) {
+        const section = document.createElement("section");
+        section.className = "section";
+        const title = document.createElement("h3");
+        title.textContent = group.title;
+        section.appendChild(title);
+        const grid = document.createElement("div");
+        grid.className = "section-grid";
+        for (const spec of group.controls) {
+          const row = document.createElement("div");
+          row.className = "control";
+          const labelRow = document.createElement("div");
+          labelRow.className = "label-row";
+          const label = document.createElement("span");
+          label.textContent = spec.label;
+          const value = document.createElement("span");
+          value.id = `${spec.key}-value`;
+          labelRow.appendChild(label);
+          labelRow.appendChild(value);
+          const input = document.createElement("input");
+          input.type = "range";
+          input.min = spec.min;
+          input.max = spec.max;
+          input.step = spec.step;
+          input.value = state[spec.key];
+          input.addEventListener("input", () => {
+            state[spec.key] = Number(input.value);
+            syncReadout(spec);
+            syncJson();
+            scheduleAutoRender();
+          });
+          inputs[spec.key] = input;
+          row.appendChild(labelRow);
+          row.appendChild(input);
+          grid.appendChild(row);
+          syncReadout(spec);
+        }
+        section.appendChild(grid);
+        root.appendChild(section);
+      }
+    }
+
+    function syncReadout(spec) {
+      const node = document.getElementById(`${spec.key}-value`);
+      if (node) node.textContent = formatValue(state[spec.key], spec.step);
+    }
+
+    function syncAllReadouts() {
+      for (const group of groups) {
+        for (const spec of group.controls) {
+          inputs[spec.key].value = state[spec.key];
+          syncReadout(spec);
+        }
+      }
+      syncJson();
+    }
+
+    function syncJson() {
+      document.getElementById("jsonOut").textContent = JSON.stringify(state, null, 2);
+    }
+
+    function makeEvents(spanOffsetMs = 0) {
+      return [
+        { ms: 0.00, amp: state.launchAmp },
+        { ms: Math.max(0.02, state.brakeDelayMs + spanOffsetMs), amp: state.brakeAmp },
+        ...(state.settleAmp > 0 ? [{ ms: Math.max(0.04, state.settleDelayMs + spanOffsetMs), amp: state.settleAmp }] : []),
+      ];
+    }
+
+    function makeModes() {
+      return [
+        { hz: state.body1Hz, gain: state.body1Gain, t60Ms: state.body1T60, phase: state.body1Phase ?? 0.00 },
+        { hz: state.body2Hz, gain: state.body2Gain, t60Ms: state.body2T60, phase: state.body2Phase ?? 0.08 },
+        { hz: state.center1Hz, gain: state.center1Gain, t60Ms: state.center1T60, phase: state.center1Phase ?? 0.00 },
+        { hz: state.center2Hz, gain: state.center2Gain, t60Ms: state.center2T60, phase: state.center2Phase ?? 0.10 },
+        { hz: state.air1Hz, gain: state.air1Gain, t60Ms: state.air1T60, phase: state.air1Phase ?? 0.16 },
+        { hz: state.air2Hz, gain: state.air2Gain, t60Ms: state.air2T60, phase: state.air2Phase ?? 0.22 },
+      ];
+    }
+
+    function rng(seed) {
+      let s = seed >>> 0;
+      return () => {
+        s = (1664525 * s + 1013904223) >>> 0;
+        return s / 0x100000000;
+      };
+    }
+
+    function buildSchedule() {
+      const rand = rng(0x4d48c0de);
+      const schedule = [];
+      let tS = 0.0;
+      while (tS < state.loopDurationS - 0.15) {
+        const packetLength = Math.max(1, Math.round(state.packetLengthMean + (rand() * 2 - 1) * state.packetLengthJitter));
+        for (let packetIndex = 0; packetIndex < packetLength && tS < state.loopDurationS - 0.15; packetIndex += 1) {
+          const spanOffsetMs = (rand() * 2 - 1) * state.seekSpanSpreadMs;
+          schedule.push({
+            tS,
+            amp: state.eventGain * Math.max(0.10, 1 + (rand() * 2 - 1) * state.ampJitter),
+            shape: makeEvents(spanOffsetMs).map((event, index) => ({
+              ms: event.ms,
+              amp: event.amp * (index === 0 ? 1 : (0.94 + rand() * 0.14)),
+            })),
+          });
+          if (packetIndex < packetLength - 1) {
+            tS += state.denseGapMs * (0.72 + rand() * 0.70) / 1000;
+          }
+        }
+        if (tS >= state.loopDurationS - 0.15) break;
+        if (rand() < state.resetProbability) {
+          tS += state.resetGapMs * (0.70 + rand() * 0.85) / 1000;
+        } else {
+          tS += state.midGapMs * (0.72 + rand() * 0.70) / 1000;
+        }
+      }
+      return schedule;
+    }
+
+    function renderLoop() {
+      const frames = Math.floor(state.loopDurationS * sampleRate);
+      const out = new Float32Array(frames);
+      const onset = Math.floor(0.08 * sampleRate);
+      const modes = makeModes();
+      const schedule = buildSchedule();
+      const pulseWidthSamples = Math.max(1, Math.round((state.pulseWidthMs / 1000) * sampleRate));
+      const pulseKernel = new Float32Array(pulseWidthSamples);
+      let kernelNorm = 0;
+      for (let i = 0; i < pulseWidthSamples; i += 1) {
+        pulseKernel[i] = state.pulseDecay ** i;
+        kernelNorm += Math.abs(pulseKernel[i]);
+      }
+      for (let i = 0; i < pulseWidthSamples; i += 1) {
+        pulseKernel[i] /= kernelNorm || 1;
+      }
+      const modeResponses = modes.map((mode) => {
+        const t60S = Math.max(mode.t60Ms / 1000, 1e-4);
+        const count = Math.max(1, Math.floor(sampleRate * t60S * 3.8));
+        const response = new Float32Array(count);
+        for (let n = 0; n < count; n += 1) {
+          const t = n / sampleRate;
+          const env = Math.exp(-6.91 * t / t60S);
+          response[n] = mode.gain * env * Math.sin(TAU * mode.hz * t + mode.phase);
+        }
+        return response;
+      });
+
+      function excite(index, amp) {
+        for (let tap = 0; tap < pulseKernel.length; tap += 1) {
+          const tapIndex = index + tap;
+          if (tapIndex < 0 || tapIndex >= frames) break;
+          const tapAmp = amp * pulseKernel[tap];
+          out[tapIndex] += tapAmp * state.directMix;
+          for (const response of modeResponses) {
+            const count = Math.min(response.length, frames - tapIndex);
+            for (let n = 0; n < count; n += 1) {
+              out[tapIndex + n] += tapAmp * response[n];
+            }
+          }
+        }
+      }
+
+      for (const macroEvent of schedule) {
+        const macroIndex = onset + Math.floor(macroEvent.tS * sampleRate);
+        for (const event of macroEvent.shape) {
+          const index = macroIndex + Math.floor((event.ms / 1000) * sampleRate);
+          const amplitude = macroEvent.amp * event.amp;
+          excite(index, amplitude);
+        }
+      }
+
+      let peak = 1e-6;
+      for (let i = 0; i < out.length; i += 1) {
+        const mag = Math.abs(out[i]);
+        if (mag > peak) peak = mag;
+      }
+      const gain = Math.min(0.34 / peak, 4.0);
+      for (let i = 0; i < out.length; i += 1) {
+        out[i] = Math.tanh(out[i] * gain);
+      }
+      return out;
+    }
+
+    function encodeWav(float32) {
+      const frameCount = float32.length;
+      const buffer = new ArrayBuffer(44 + frameCount * 2);
+      const view = new DataView(buffer);
+      const writeString = (offset, text) => {
+        for (let i = 0; i < text.length; i += 1) view.setUint8(offset + i, text.charCodeAt(i));
+      };
+      writeString(0, "RIFF");
+      view.setUint32(4, 36 + frameCount * 2, true);
+      writeString(8, "WAVE");
+      writeString(12, "fmt ");
+      view.setUint32(16, 16, true);
+      view.setUint16(20, 1, true);
+      view.setUint16(22, 1, true);
+      view.setUint32(24, sampleRate, true);
+      view.setUint32(28, sampleRate * 2, true);
+      view.setUint16(32, 2, true);
+      view.setUint16(34, 16, true);
+      writeString(36, "data");
+      view.setUint32(40, frameCount * 2, true);
+      let offset = 44;
+      for (let i = 0; i < frameCount; i += 1) {
+        const sample = clamp(float32[i], -1, 1);
+        view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+        offset += 2;
+      }
+      return new Blob([buffer], { type: "audio/wav" });
+    }
+
+    async function renderAndSwap() {
+      const status = document.getElementById("status");
+      status.textContent = "Rendering loop...";
+      const preview = document.getElementById("preview");
+      const wasPlaying = !preview.paused && !preview.ended;
+      const currentTime = preview.currentTime || 0;
+      const blob = encodeWav(renderLoop());
+      const url = URL.createObjectURL(blob);
+      preview.src = url;
+      if (currentUrl) URL.revokeObjectURL(currentUrl);
+      currentUrl = url;
+      preview.loop = true;
+      if (wasPlaying) {
+        try {
+          await preview.play();
+        } catch {
+          // ignore autoplay failure
+        }
+      } else if (currentTime > 0) {
+        preview.currentTime = Math.min(currentTime, Math.max(0, state.loopDurationS - 0.05));
+      }
+      status.textContent = "Rendered MH-family thrash loop.";
+    }
+
+    function scheduleAutoRender() {
+      if (!document.getElementById("autoRender").checked) return;
+      window.clearTimeout(renderTimer);
+      renderTimer = window.setTimeout(() => {
+        renderAndSwap().catch((error) => {
+          document.getElementById("status").textContent = `Render failed: ${error.message}`;
+        });
+      }, 140);
+    }
+
+    buildControls();
+    syncAllReadouts();
+
+    document.getElementById("renderBtn").addEventListener("click", () => {
+      renderAndSwap().catch((error) => {
+        document.getElementById("status").textContent = `Render failed: ${error.message}`;
+      });
+    });
+
+    document.getElementById("copyBtn").addEventListener("click", () => {
+      navigator.clipboard.writeText(JSON.stringify(state, null, 2)).then(() => {
+        document.getElementById("status").textContent = "Copied MH thrash settings.";
+      }).catch(() => {
+        document.getElementById("status").textContent = "Copy failed.";
+      });
+    });
+
+    document.getElementById("resetBtn").addEventListener("click", () => {
+      Object.assign(state, defaults);
+      syncAllReadouts();
+      scheduleAutoRender();
+      document.getElementById("status").textContent = "Reset to MH baseline.";
+    });
+
+    document.getElementById("openModalBtn").addEventListener("click", () => {
+      window.location.href = "click-modal-refine.html";
+    });
+  </script>
+</body>
+</html>
