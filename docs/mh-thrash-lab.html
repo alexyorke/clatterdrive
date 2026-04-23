@@ -233,7 +233,7 @@
           { key: "launchAmp", label: "Launch Strength", min: 0.45, max: 1.40, step: 0.01 },
           { key: "brakeDelayMs", label: "Brake Delay (ms)", min: 0.10, max: 0.80, step: 0.01 },
           { key: "brakeAmp", label: "Brake Strength", min: -1.00, max: -0.05, step: 0.01 },
-          { key: "settleDelayMs", label: "Settle Delay (ms)", min: 0.60, max: 1.80, step: 0.01 },
+          { key: "settleDelayMs", label: "Settle Delay (ms)", min: 0.60, max: 16.00, step: 0.05 },
           { key: "settleAmp", label: "Settle Strength", min: 0.00, max: 0.18, step: 0.005 },
           { key: "seekSpanSpreadMs", label: "Seek Span Spread (ms)", min: 0.00, max: 1.80, step: 0.01 },
         ],
@@ -249,7 +249,18 @@
           { key: "packetLengthJitter", label: "Packet Length Jitter", min: 0, max: 5, step: 0.1 },
           { key: "resetProbability", label: "Reset Probability", min: 0.00, max: 0.70, step: 0.01 },
           { key: "ampJitter", label: "Amplitude Jitter", min: 0.00, max: 0.80, step: 0.01 },
+          { key: "packetAccent", label: "Packet Accent", min: 0.00, max: 1.10, step: 0.01 },
           { key: "eventGain", label: "Overall Event Gain", min: 0.45, max: 1.30, step: 0.01 },
+        ],
+      },
+      {
+        title: "Ringy Family",
+        controls: [
+          { key: "ringyLaunchScale", label: "Ringy Launch Scale", min: 0.45, max: 1.10, step: 0.01 },
+          { key: "ringyBrakeDelayMs", label: "Ringy Brake Delay (ms)", min: 0.16, max: 1.40, step: 0.01 },
+          { key: "ringyBrakeAmp", label: "Ringy Brake Strength", min: -0.95, max: 0.35, step: 0.01 },
+          { key: "ringyShellDelayMs", label: "Ringy Shell Delay (ms)", min: 5.0, max: 14.0, step: 0.1 },
+          { key: "ringyShellAmp", label: "Ringy Shell Strength", min: 0.00, max: 0.34, step: 0.005 },
         ],
       },
       {
@@ -289,47 +300,71 @@
 
     const defaults = {
       body1Phase: 0.00,
-      body2Phase: -0.04,
-      center1Phase: -0.02,
+      body2Phase: 0.531,
+      center1Phase: -0.244,
       center2Phase: 0.10,
-      air1Phase: 0.383,
-      air2Phase: 0.34,
-      directMix: 0.035,
+      air1Phase: 0.023,
+      air2Phase: 0.3368,
+      ringDelayedLaunchMul: 0.95,
+      ringDelayedBrakeDelayAddMs: 3.45,
+      ringDelayedBrakeAmpMul: 1.16,
+      ringDelayedShellDelayAddMs: 4.0,
+      ringDelayedShellAmp: 0.18,
+      ringDelayedSettleDelayMs: 19.6,
+      ringDelayedSettleAmp: 0.042,
+      ringDelayedModalDampScale: 0.97,
+      ringDelayedAirTiltDb: 1.6,
+      ringResonantLaunchMul: 0.85,
+      ringResonantBrakeDelayAddMs: 1.0,
+      ringResonantBrakeAmpMul: 0.85,
+      ringResonantShellDelayMs: 6.3,
+      ringResonantShellAmp: 0.16,
+      ringResonantSettleDelayMs: 18.0,
+      ringResonantSettleAmp: 0.22,
+      ringResonantModalDampScale: 0.72,
+      ringResonantAirTiltDb: 2.1,
+      directMix: 0.045,
       pulseWidthMs: 0.17,
-      pulseDecay: 0.94,
-      launchAmp: 0.66,
-      brakeDelayMs: 0.23,
-      brakeAmp: -0.09,
-      settleDelayMs: 1.43,
-      settleAmp: 0.00,
+      pulseDecay: 0.8728,
+      launchAmp: 0.702,
+      brakeDelayMs: 0.205,
+      brakeAmp: -0.203,
+      settleDelayMs: 0.6,
+      settleAmp: 0.18,
       seekSpanSpreadMs: 0.65,
       loopDurationS: 5.5,
       denseGapMs: 15,
-      midGapMs: 78,
-      resetGapMs: 132,
-      packetLengthMean: 5.5,
-      packetLengthJitter: 1.1,
-      resetProbability: 0.37,
+      midGapMs: 74.16,
+      resetGapMs: 134.88,
+      packetLengthMean: 4.5,
+      packetLengthJitter: 0.014,
+      resetProbability: 0.306,
       ampJitter: 0.70,
+      packetAccent: 1.10,
+      ringyLaunchScale: 0.962,
+      ringyBrakeDelayMs: 0.5,
+      ringyBrakeAmp: 0.15,
+      ringyShellDelayMs: 10.368,
+      ringyShellAmp: 0.156,
       eventGain: 0.57,
-      body1Hz: 440,
-      body1Gain: 0.39,
-      body1T60: 24,
-      body2Hz: 480,
-      body2Gain: 0.00,
-      body2T60: 32,
-      center1Hz: 1039,
-      center1Gain: 0.01,
+      body1Hz: 458,
+      body1Gain: 0.324,
+      body1T60: 48,
+      body2Hz: 644.2,
+      body2Gain: 0.03,
+      body2T60: 34.51,
+      center1Hz: 952,
+      center1Gain: 0.07,
       center1T60: 4,
       center2Hz: 1297,
       center2Gain: 0.00,
       center2T60: 6,
-      air1Hz: 3103,
-      air1Gain: 0.015,
+      air1Hz: 3193,
+      air1Gain: 0.035,
       air1T60: 1.5,
-      air2Hz: 5200,
-      air2Gain: 0.035,
-      air2T60: 3.5,
+      air2Hz: 5081.8,
+      air2Gain: 0.063,
+      air2T60: 3.74125,
     };
 
     const state = { ...defaults };
@@ -409,23 +444,93 @@
       document.getElementById("jsonOut").textContent = JSON.stringify(state, null, 2);
     }
 
-    function makeEvents(spanOffsetMs = 0) {
+    function makeEventShape(family, spanOffsetMs = 0, rand = null) {
+      const jitter = () => rand ? (0.94 + rand() * 0.14) : 1;
+      if (family === "ringy") {
+        const shape = [
+          { stage: "launch", ms: 0.00, amp: state.launchAmp * state.ringyLaunchScale },
+          { stage: "brake", ms: Math.max(0.04, state.ringyBrakeDelayMs + spanOffsetMs * 0.45), amp: state.ringyBrakeAmp * jitter() },
+          { stage: "shell", ms: Math.max(1.00, state.ringyShellDelayMs + spanOffsetMs * 2.4), amp: state.ringyShellAmp * jitter() },
+        ];
+        if (state.settleAmp > 0) {
+          shape.push({ stage: "settle", ms: Math.max(0.10, state.settleDelayMs + spanOffsetMs * 0.45), amp: state.settleAmp * 0.72 * jitter() });
+        }
+        return shape;
+      }
+      if (family === "ring_delayed") {
+        return [
+          { stage: "launch", ms: 0.00, amp: state.launchAmp * state.ringyLaunchScale * state.ringDelayedLaunchMul },
+          { stage: "brake", ms: Math.max(0.04, state.ringyBrakeDelayMs + state.ringDelayedBrakeDelayAddMs + spanOffsetMs * 0.45), amp: state.ringyBrakeAmp * state.ringDelayedBrakeAmpMul * jitter() },
+          { stage: "shell", ms: Math.max(1.00, state.ringyShellDelayMs + state.ringDelayedShellDelayAddMs + spanOffsetMs * 2.4), amp: state.ringDelayedShellAmp * jitter() },
+          ...(state.ringDelayedSettleAmp > 0 ? [{ stage: "settle", ms: Math.max(0.10, state.ringDelayedSettleDelayMs + spanOffsetMs * 0.45), amp: state.ringDelayedSettleAmp * jitter() }] : []),
+        ];
+      }
+      if (family === "ring_resonant") {
+        return [
+          { stage: "launch", ms: 0.00, amp: state.launchAmp * state.ringResonantLaunchMul },
+          { stage: "brake", ms: Math.max(0.02, state.brakeDelayMs + state.ringResonantBrakeDelayAddMs + spanOffsetMs), amp: state.brakeAmp * state.ringResonantBrakeAmpMul * jitter() },
+          ...(state.ringResonantShellAmp > 0 ? [{ stage: "shell", ms: Math.max(1.00, state.ringResonantShellDelayMs + spanOffsetMs * 0.45), amp: state.ringResonantShellAmp * jitter() }] : []),
+          ...(state.ringResonantSettleAmp > 0 ? [{ stage: "settle", ms: Math.max(0.04, state.ringResonantSettleDelayMs + spanOffsetMs * 0.60), amp: state.ringResonantSettleAmp * jitter() }] : []),
+        ];
+      }
       return [
-        { ms: 0.00, amp: state.launchAmp },
-        { ms: Math.max(0.02, state.brakeDelayMs + spanOffsetMs), amp: state.brakeAmp },
-        ...(state.settleAmp > 0 ? [{ ms: Math.max(0.04, state.settleDelayMs + spanOffsetMs), amp: state.settleAmp }] : []),
+        { stage: "launch", ms: 0.00, amp: state.launchAmp },
+        { stage: "brake", ms: Math.max(0.02, state.brakeDelayMs + spanOffsetMs), amp: state.brakeAmp * jitter() },
+        ...(state.settleAmp > 0 ? [{ stage: "settle", ms: Math.max(0.04, state.settleDelayMs + spanOffsetMs), amp: state.settleAmp * jitter() }] : []),
       ];
     }
 
     function makeModes() {
       return [
-        { hz: state.body1Hz, gain: state.body1Gain, t60Ms: state.body1T60, phase: state.body1Phase ?? 0.00 },
-        { hz: state.body2Hz, gain: state.body2Gain, t60Ms: state.body2T60, phase: state.body2Phase ?? 0.08 },
-        { hz: state.center1Hz, gain: state.center1Gain, t60Ms: state.center1T60, phase: state.center1Phase ?? 0.00 },
-        { hz: state.center2Hz, gain: state.center2Gain, t60Ms: state.center2T60, phase: state.center2Phase ?? 0.10 },
-        { hz: state.air1Hz, gain: state.air1Gain, t60Ms: state.air1T60, phase: state.air1Phase ?? 0.16 },
-        { hz: state.air2Hz, gain: state.air2Gain, t60Ms: state.air2T60, phase: state.air2Phase ?? 0.22 },
+        { band: "body", hz: state.body1Hz, gain: state.body1Gain, t60Ms: state.body1T60, phase: state.body1Phase ?? 0.00 },
+        { band: "body", hz: state.body2Hz, gain: state.body2Gain, t60Ms: state.body2T60, phase: state.body2Phase ?? 0.08 },
+        { band: "center", hz: state.center1Hz, gain: state.center1Gain, t60Ms: state.center1T60, phase: state.center1Phase ?? 0.00 },
+        { band: "center", hz: state.center2Hz, gain: state.center2Gain, t60Ms: state.center2T60, phase: state.center2Phase ?? 0.10 },
+        { band: "air", hz: state.air1Hz, gain: state.air1Gain, t60Ms: state.air1T60, phase: state.air1Phase ?? 0.16 },
+        { band: "air", hz: state.air2Hz, gain: state.air2Gain, t60Ms: state.air2T60, phase: state.air2Phase ?? 0.22 },
       ];
+    }
+
+    function stageBandScale(family, stage, band) {
+      if (family === "ringy" || family === "ring_delayed") {
+        if (stage === "launch") {
+          return { body: 0.82, center: 0.66, air: 0.24 }[band];
+        }
+        if (stage === "brake") {
+          return { body: 0.28, center: 1.06, air: 1.22 }[band];
+        }
+        if (stage === "shell") {
+          return { body: 1.08, center: 0.74, air: 0.20 }[band];
+        }
+        return { body: 0.52, center: 0.38, air: 0.16 }[band];
+      }
+      if (stage === "launch") {
+        return { body: 1.00, center: 0.72, air: 0.32 }[band];
+      }
+      if (stage === "brake") {
+        return { body: 0.34, center: 1.00, air: 1.18 }[band];
+      }
+      return { body: 0.68, center: 0.42, air: 0.20 }[band];
+    }
+
+    function stageDirectScale(family, stage) {
+      if (family === "ringy" || family === "ring_delayed") {
+        if (stage === "launch") return 0.75;
+        if (stage === "brake") return 0.42;
+        if (stage === "shell") return 0.0;
+        return 0.12;
+      }
+      if (stage === "launch") return 1.0;
+      if (stage === "brake") return 0.62;
+      return 0.18;
+    }
+
+    function chooseFreeFamily(packetIndex, packetLength, previousGapMs, macroAmp, rand) {
+      if (packetIndex === 0 && previousGapMs >= Math.max(58, state.midGapMs * 0.72)) return "ringy";
+      if (packetIndex === 0 && packetLength <= 2) return "ringy";
+      if (packetIndex === 0 && previousGapMs >= 36 && rand() < 0.55) return "ringy";
+      if (packetLength <= 2 && macroAmp < state.eventGain * 0.95 && rand() < 0.28) return "ringy";
+      return "tight";
     }
 
     function rng(seed) {
@@ -440,28 +545,35 @@
       const rand = rng(0x4d48c0de);
       const schedule = [];
       let tS = 0.0;
+      let previousGapMs = state.resetGapMs;
       while (tS < state.loopDurationS - 0.15) {
         const packetLength = Math.max(1, Math.round(state.packetLengthMean + (rand() * 2 - 1) * state.packetLengthJitter));
+        const packetSpan = Math.max(state.packetLengthMean + state.packetLengthJitter, 1);
+        const packetNorm = Math.min(Math.max((packetLength - 1) / packetSpan, 0), 1);
+        let packetGain = 1 + state.packetAccent * (0.85 - 1.10 * packetNorm);
+        if (packetLength <= 2) packetGain *= 1 + 0.15 * state.packetAccent;
         for (let packetIndex = 0; packetIndex < packetLength && tS < state.loopDurationS - 0.15; packetIndex += 1) {
           const spanOffsetMs = (rand() * 2 - 1) * state.seekSpanSpreadMs;
+          const macroAmp = state.eventGain * packetGain * Math.max(0.10, 1 + (rand() * 2 - 1) * state.ampJitter);
+          const family = chooseFreeFamily(packetIndex, packetLength, previousGapMs, macroAmp, rand);
           schedule.push({
             tS,
-            amp: state.eventGain * Math.max(0.10, 1 + (rand() * 2 - 1) * state.ampJitter),
-            shape: makeEvents(spanOffsetMs).map((event, index) => ({
-              ms: event.ms,
-              amp: event.amp * (index === 0 ? 1 : (0.94 + rand() * 0.14)),
-            })),
+            amp: macroAmp,
+            family,
+            shape: makeEventShape(family, spanOffsetMs, rand),
           });
           if (packetIndex < packetLength - 1) {
-            tS += state.denseGapMs * (0.72 + rand() * 0.70) / 1000;
+            previousGapMs = state.denseGapMs * (0.72 + rand() * 0.70);
+            tS += previousGapMs / 1000;
           }
         }
         if (tS >= state.loopDurationS - 0.15) break;
         if (rand() < state.resetProbability) {
-          tS += state.resetGapMs * (0.70 + rand() * 0.85) / 1000;
+          previousGapMs = state.resetGapMs * (0.70 + rand() * 0.85);
         } else {
-          tS += state.midGapMs * (0.72 + rand() * 0.70) / 1000;
+          previousGapMs = state.midGapMs * (0.72 + rand() * 0.70);
         }
+        tS += previousGapMs / 1000;
       }
       return schedule;
     }
@@ -474,9 +586,14 @@
       const schedule = buildSchedule();
       const pulseWidthSamples = Math.max(1, Math.round((state.pulseWidthMs / 1000) * sampleRate));
       const pulseKernel = new Float32Array(pulseWidthSamples);
+      const pivot = Math.max(1, Math.round(pulseWidthSamples * 0.38));
       let kernelNorm = 0;
       for (let i = 0; i < pulseWidthSamples; i += 1) {
-        pulseKernel[i] = state.pulseDecay ** i;
+        if (i <= pivot) {
+          pulseKernel[i] = state.pulseDecay ** i;
+        } else {
+          pulseKernel[i] = -0.58 * (state.pulseDecay ** (i - pivot));
+        }
         kernelNorm += Math.abs(pulseKernel[i]);
       }
       for (let i = 0; i < pulseWidthSamples; i += 1) {
@@ -494,16 +611,21 @@
         return response;
       });
 
-      function excite(index, amp) {
+      function excite(index, amp, stage, family) {
+        const directAmp = amp * state.directMix * stageDirectScale(family, stage);
+        out[index] += directAmp;
+        if (index + 1 < frames) {
+          out[index + 1] -= directAmp * 0.35;
+        }
         for (let tap = 0; tap < pulseKernel.length; tap += 1) {
           const tapIndex = index + tap;
           if (tapIndex < 0 || tapIndex >= frames) break;
           const tapAmp = amp * pulseKernel[tap];
-          out[tapIndex] += tapAmp * state.directMix;
           for (const response of modeResponses) {
-            const count = Math.min(response.length, frames - tapIndex);
+            const routedAmp = tapAmp * stageBandScale(family, stage, response.band);
+            const count = Math.min(response.response.length, frames - tapIndex);
             for (let n = 0; n < count; n += 1) {
-              out[tapIndex + n] += tapAmp * response[n];
+              out[tapIndex + n] += routedAmp * response.response[n];
             }
           }
         }
@@ -514,7 +636,7 @@
         for (const event of macroEvent.shape) {
           const index = macroIndex + Math.floor((event.ms / 1000) * sampleRate);
           const amplitude = macroEvent.amp * event.amp;
-          excite(index, amplitude);
+          excite(index, amplitude, event.stage, macroEvent.family || "tight");
         }
       }
 
