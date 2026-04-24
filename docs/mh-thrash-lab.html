@@ -305,32 +305,32 @@
       center2Phase: 0.10,
       air1Phase: 0.023,
       air2Phase: 0.3368,
-      ringDelayedLaunchMul: 0.95,
+      ringDelayedLaunchMul: 0.947,
       ringDelayedBrakeDelayAddMs: 3.45,
-      ringDelayedBrakeAmpMul: 1.16,
+      ringDelayedBrakeAmpMul: 1.1816,
       ringDelayedShellDelayAddMs: 4.0,
-      ringDelayedShellAmp: 0.18,
-      ringDelayedSettleDelayMs: 19.6,
-      ringDelayedSettleAmp: 0.022,
+      ringDelayedShellAmp: 0.1328,
+      ringDelayedSettleDelayMs: 20.8,
+      ringDelayedSettleAmp: 0.0588,
       ringDelayedModalDampScale: 0.97,
-      ringDelayedAirTiltDb: 1.6,
-      ringResonantLaunchMul: 0.85,
+      ringDelayedAirTiltDb: 1.258,
+      ringResonantLaunchMul: 0.9,
       ringResonantBrakeDelayAddMs: 1.0,
-      ringResonantBrakeAmpMul: 0.85,
+      ringResonantBrakeAmpMul: 0.9444,
       ringResonantShellDelayMs: 6.3,
       ringResonantShellAmp: 0.16,
-      ringResonantSettleDelayMs: 18.0,
-      ringResonantSettleAmp: 0.2128,
+      ringResonantSettleDelayMs: 17.496,
+      ringResonantSettleAmp: 0.1612,
       ringResonantModalDampScale: 0.7,
-      ringResonantAirTiltDb: 1.9,
+      ringResonantAirTiltDb: 1.828,
       directMix: 0.045,
       pulseWidthMs: 0.17,
-      pulseDecay: 0.9028,
+      pulseDecay: 0.9208,
       launchAmp: 0.702,
       brakeDelayMs: 0.205,
       brakeAmp: -0.203,
       settleDelayMs: 0.6,
-      settleAmp: 0.18,
+      settleAmp: 0.29,
       seekSpanSpreadMs: 0.65,
       loopDurationS: 5.5,
       denseGapMs: 15,
@@ -341,7 +341,7 @@
       resetProbability: 0.306,
       ampJitter: 0.70,
       packetAccent: 1.10,
-      ringyLaunchScale: 0.962,
+      ringyLaunchScale: 0.98,
       ringyBrakeDelayMs: 0.5,
       ringyBrakeAmp: 0.15,
       ringyShellDelayMs: 10.368,
@@ -350,9 +350,9 @@
       body1Hz: 458,
       body1Gain: 0.324,
       body1T60: 48,
-      body2Hz: 666.4,
+      body2Hz: 660.16,
       body2Gain: 0.02868,
-      body2T60: 37.855,
+      body2T60: 43.939,
       center1Hz: 952,
       center1Gain: 0.07,
       center1T60: 4,
@@ -363,7 +363,7 @@
       air1Gain: 0.035,
       air1T60: 1.5,
       air2Hz: 5081.8,
-      air2Gain: 0.063,
+      air2Gain: 0.06348,
       air2T60: 3.74125,
     };
 
@@ -504,6 +504,9 @@
         }
         return { body: 0.52, center: 0.38, air: 0.16 }[band];
       }
+      if (family === "ring_resonant" && stage === "settle") {
+        return { body: 0.68, center: 0.76, air: 0.28 }[band];
+      }
       if (stage === "launch") {
         return { body: 1.00, center: 0.72, air: 0.32 }[band];
       }
@@ -518,7 +521,13 @@
         if (stage === "launch") return 0.75;
         if (stage === "brake") return 0.42;
         if (stage === "shell") return 0.0;
-        return 0.12;
+        return 0.14;
+      }
+      if (family === "ring_resonant") {
+        if (stage === "launch") return 1.0;
+        if (stage === "brake") return 0.62;
+        if (stage === "shell") return 0.18;
+        return 0.16;
       }
       if (stage === "launch") return 1.0;
       if (stage === "brake") return 0.62;

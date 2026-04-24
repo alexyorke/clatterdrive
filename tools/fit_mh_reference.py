@@ -477,6 +477,12 @@ def stage_band_scale(stage: str, band: str, family: str = "tight") -> float:
             "center": 0.38,
             "air": 0.16,
         }[band]
+    if family == "ring_resonant" and stage == "settle":
+        return {
+            "body": 0.68,
+            "center": 0.76,
+            "air": 0.28,
+        }[band]
     if stage == "launch":
         return {
             "body": 1.00,
@@ -504,7 +510,15 @@ def stage_direct_scale(stage: str, family: str = "tight") -> float:
             return 0.42
         if stage == "shell":
             return 0.0
-        return 0.12
+        return 0.14
+    if family == "ring_resonant":
+        if stage == "launch":
+            return 1.0
+        if stage == "brake":
+            return 0.62
+        if stage == "shell":
+            return 0.18
+        return 0.16
     if stage == "launch":
         return 1.0
     if stage == "brake":
@@ -675,8 +689,8 @@ def classify_reference_families(features: list[ReferenceEventFeature]) -> list[s
     decay_values = np.asarray([feature.decay_slope_db_per_ms for feature in features], dtype=np.float64)
     air_values = np.asarray([feature.air_ratio for feature in features], dtype=np.float64)
     amp_threshold = float(np.quantile(amplitudes, 0.875))
-    decay_q70 = float(np.quantile(decay_values, 0.70))
-    air_q70 = float(np.quantile(air_values, 0.70))
+    decay_q65 = float(np.quantile(decay_values, 0.65))
+    air_q80 = float(np.quantile(air_values, 0.80))
     families: list[str] = []
     for feature in features:
         amp_hint = feature.amplitude >= amp_threshold and feature.late_ratio >= 1.1
@@ -698,24 +712,24 @@ def classify_reference_families(features: list[ReferenceEventFeature]) -> list[s
         resonant = (
             (
                 (
-                    feature.tail_ratio >= 1.9
-                    and feature.late_ratio >= 1.25
-                    and feature.decay_slope_db_per_ms >= decay_q70
+                    feature.tail_ratio >= 1.8
+                    and feature.late_ratio >= 1.20
+                    and feature.decay_slope_db_per_ms >= decay_q65
                 )
-                or (feature.tail_ratio >= 2.1 and feature.air_ratio >= air_q70)
+                or (feature.tail_ratio >= 2.0 and feature.air_ratio >= air_q80)
             )
         )
         if delayed and resonant:
             delay_score = (
                 max((feature.peak_lag_ms - 11.0) / 4.0, 0.0)
-                + 0.9 * float(feature.second_bump_lag_ms >= 7.5 and feature.second_bump_prom >= 0.18)
-                + 0.4 * float(feature.max_gap_ms >= 38.0 and feature.late_ratio >= 0.95)
+                + 0.7 * float(feature.second_bump_lag_ms >= 7.5 and feature.second_bump_prom >= 0.18)
+                + 0.2 * float(feature.max_gap_ms >= 38.0 and feature.late_ratio >= 0.95)
             )
             resonant_score = (
-                max((feature.tail_ratio - 1.9) / 2.0, 0.0)
-                + 0.4 * max((feature.late_ratio - 1.25) / 1.5, 0.0)
-                + 0.8 * max((feature.decay_slope_db_per_ms - decay_q70) / 0.8, 0.0)
-                + 0.8 * max((feature.air_ratio - air_q70) / max(air_q70, 1e-9), 0.0)
+                max((feature.tail_ratio - 1.8) / 2.0, 0.0)
+                + 0.4 * max((feature.late_ratio - 1.20) / 1.5, 0.0)
+                + 0.8 * max((feature.decay_slope_db_per_ms - decay_q65) / 0.8, 0.0)
+                + 0.8 * max((feature.air_ratio - air_q80) / max(air_q80, 1e-9), 0.0)
             )
             families.append("ring_delayed" if delay_score >= resonant_score else "ring_resonant")
         elif delayed:
@@ -1385,6 +1399,7 @@ def optimize_model(params: dict[str, float], reference: ReferenceBundle) -> dict
         "pulseDecay",
         "launchAmp",
         "brakeAmp",
+        "settleAmp",
         "ringyLaunchScale",
         "ringyBrakeDelayMs",
         "body2Hz",
@@ -1401,9 +1416,11 @@ def optimize_model(params: dict[str, float], reference: ReferenceBundle) -> dict
         "ringDelayedSettleAmp",
         "ringDelayedModalDampScale",
         "ringDelayedAirTiltDb",
+        "ringResonantLaunchMul",
         "ringResonantBrakeAmpMul",
         "ringResonantShellDelayMs",
         "ringResonantShellAmp",
+        "ringResonantSettleDelayMs",
         "ringResonantSettleAmp",
         "ringResonantModalDampScale",
         "ringResonantAirTiltDb",
@@ -1412,6 +1429,7 @@ def optimize_model(params: dict[str, float], reference: ReferenceBundle) -> dict
         "pulseDecay": 0.03,
         "launchAmp": 0.04,
         "brakeAmp": 0.04,
+        "settleAmp": 0.02,
         "ringyLaunchScale": 0.05,
         "ringyBrakeDelayMs": 0.06,
         "body2Hz": 8.0,
@@ -1428,9 +1446,11 @@ def optimize_model(params: dict[str, float], reference: ReferenceBundle) -> dict
         "ringDelayedSettleAmp": 0.02,
         "ringDelayedModalDampScale": 0.03,
         "ringDelayedAirTiltDb": 0.30,
+        "ringResonantLaunchMul": 0.05,
         "ringResonantBrakeAmpMul": 0.04,
         "ringResonantShellDelayMs": 0.30,
         "ringResonantShellAmp": 0.02,
+        "ringResonantSettleDelayMs": 1.4,
         "ringResonantSettleAmp": 0.02,
         "ringResonantModalDampScale": 0.02,
         "ringResonantAirTiltDb": 0.20,
@@ -1439,6 +1459,7 @@ def optimize_model(params: dict[str, float], reference: ReferenceBundle) -> dict
         "pulseDecay": (0.55, 0.98),
         "launchAmp": (0.30, 1.10),
         "brakeAmp": (-0.80, -0.05),
+        "settleAmp": (0.05, 0.30),
         "ringyLaunchScale": (0.45, 1.10),
         "ringyBrakeDelayMs": (0.16, 1.40),
         "body2Hz": (620.0, 700.0),
@@ -1455,9 +1476,11 @@ def optimize_model(params: dict[str, float], reference: ReferenceBundle) -> dict
         "ringDelayedSettleAmp": (0.0, 0.20),
         "ringDelayedModalDampScale": (0.90, 1.10),
         "ringDelayedAirTiltDb": (0.0, 3.0),
+        "ringResonantLaunchMul": (0.75, 1.0),
         "ringResonantBrakeAmpMul": (0.60, 1.10),
         "ringResonantShellDelayMs": (4.5, 7.5),
         "ringResonantShellAmp": (0.0, 0.16),
+        "ringResonantSettleDelayMs": (14.0, 26.0),
         "ringResonantSettleAmp": (0.08, 0.35),
         "ringResonantModalDampScale": (0.70, 0.95),
         "ringResonantAirTiltDb": (1.0, 5.0),
@@ -1466,7 +1489,7 @@ def optimize_model(params: dict[str, float], reference: ReferenceBundle) -> dict
     validation = validate_params(best, reference)
     best_score = float(validation["event_conditioned_score"])
 
-    for shrink in (1.0, 0.60, 0.36):
+    for shrink in (1.0, 0.60, 0.36, 0.22, 0.14, 0.09, 0.06):
         improved = True
         while improved:
             improved = False
@@ -1524,6 +1547,7 @@ def main() -> None:
     fitted = optimize_scheduler(starting_params, reference.events)
     fitted = optimize_model(fitted, reference)
     fitted = optimize_family_prototypes(fitted, reference)
+    fitted = optimize_model(fitted, reference)
     final_validation = validate_params(fitted, reference)
 
     exported_params = export_params(fitted)
