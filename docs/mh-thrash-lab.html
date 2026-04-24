@@ -617,7 +617,7 @@
           const env = Math.exp(-6.91 * t / t60S);
           response[n] = mode.gain * env * Math.sin(TAU * mode.hz * t + mode.phase);
         }
-        return response;
+        return { band: mode.band, response };
       });
 
       function excite(index, amp, stage, family) {
