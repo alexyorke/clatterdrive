@@ -230,6 +230,7 @@
           { key: "directMix", label: "Direct Impulse Mix", min: 0.00, max: 0.20, step: 0.005 },
           { key: "pulseWidthMs", label: "Force Pulse Width (ms)", min: 0.04, max: 0.50, step: 0.005 },
           { key: "pulseDecay", label: "Force Pulse Decay", min: 0.20, max: 0.98, step: 0.01 },
+          { key: "rumbleHighpassHz", label: "Rumble Cut (Hz)", min: 0, max: 160, step: 1 },
           { key: "launchAmp", label: "Launch Strength", min: 0.45, max: 1.40, step: 0.01 },
           { key: "brakeDelayMs", label: "Brake Delay (ms)", min: 0.10, max: 0.80, step: 0.01 },
           { key: "brakeAmp", label: "Brake Strength", min: -1.00, max: -0.05, step: 0.01 },
@@ -326,6 +327,7 @@
       directMix: 0.045,
       pulseWidthMs: 0.17,
       pulseDecay: 0.9208,
+      rumbleHighpassHz: 32,
       launchAmp: 0.662,
       brakeDelayMs: 0.205,
       brakeAmp: -0.243,
@@ -587,6 +589,47 @@
       return schedule;
     }
 
+    function highpassBiquad(values, cutoffHz) {
+      const cutoff = Math.min(Math.max(cutoffHz, 1), sampleRate * 0.49);
+      const k = Math.tan(Math.PI * cutoff / sampleRate);
+      const norm = 1 / (1 + Math.SQRT2 * k + k * k);
+      const b0 = norm;
+      const b1 = -2 * norm;
+      const b2 = norm;
+      const a1 = 2 * (k * k - 1) * norm;
+      const a2 = (1 - Math.SQRT2 * k + k * k) * norm;
+      const filtered = new Float32Array(values.length);
+      let x1 = 0;
+      let x2 = 0;
+      let y1 = 0;
+      let y2 = 0;
+      for (let i = 0; i < values.length; i += 1) {
+        const x0 = values[i];
+        const y0 = b0 * x0 + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+        filtered[i] = y0;
+        x2 = x1;
+        x1 = x0;
+        y2 = y1;
+        y1 = y0;
+      }
+      return filtered;
+    }
+
+    function applyRumbleHighpass(values, cutoffHz) {
+      if (!(cutoffHz > 0)) return values;
+      const forward = highpassBiquad(values, cutoffHz);
+      const reversed = new Float32Array(forward.length);
+      for (let i = 0; i < forward.length; i += 1) {
+        reversed[i] = forward[forward.length - 1 - i];
+      }
+      const backward = highpassBiquad(reversed, cutoffHz);
+      const output = new Float32Array(backward.length);
+      for (let i = 0; i < backward.length; i += 1) {
+        output[i] = backward[backward.length - 1 - i];
+      }
+      return output;
+    }
+
     function renderLoop() {
       const frames = Math.floor(state.loopDurationS * sampleRate);
       const out = new Float32Array(frames);
@@ -658,7 +701,7 @@
       for (let i = 0; i < out.length; i += 1) {
         out[i] = Math.tanh(out[i] * gain);
       }
-      return out;
+      return applyRumbleHighpass(out, state.rumbleHighpassHz);
     }
 
     function encodeWav(float32) {

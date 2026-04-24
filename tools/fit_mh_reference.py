@@ -94,11 +94,16 @@ PROTOTYPE_PARAM_DEFAULTS = {
     "ringResonantAirTiltDb": 2.5,
 }
 
+MODEL_PARAM_DEFAULTS = {
+    "rumbleHighpassHz": 0.0,
+}
+
 
 def with_model_defaults(params: dict[str, float]) -> dict[str, float]:
     return {
         **PHASE_DEFAULTS,
         **PROTOTYPE_PARAM_DEFAULTS,
+        **MODEL_PARAM_DEFAULTS,
         **params,
     }
 
@@ -576,12 +581,59 @@ def render_schedule(
 
     peak = max(float(np.max(np.abs(output))), 1e-6)
     gain = min(0.34 / peak, 4.0)
-    return np.tanh(output * gain)
+    rendered = np.tanh(output * gain)
+    rumble_cut_hz = float(params.get("rumbleHighpassHz", 0.0))
+    if rumble_cut_hz > 0.0:
+        sos = signal.butter(2, rumble_cut_hz, btype="highpass", fs=SAMPLE_RATE, output="sos")
+        rendered = signal.sosfiltfilt(sos, rendered)
+    return rendered
 
 
 def bandpass_clicks(samples: np.ndarray) -> np.ndarray:
     sos = signal.butter(4, [320.0, 5200.0], btype="bandpass", fs=SAMPLE_RATE, output="sos")
     return signal.sosfiltfilt(sos, samples)
+
+
+def band_rms(samples: np.ndarray, lo_hz: float, hi_hz: float) -> float:
+    sos = signal.butter(4, [lo_hz, hi_hz], btype="bandpass", fs=SAMPLE_RATE, output="sos")
+    filtered = signal.sosfiltfilt(sos, samples)
+    return float(np.sqrt(np.mean(filtered * filtered)))
+
+
+def low_frequency_residual_metrics(
+    reference: np.ndarray,
+    candidate: np.ndarray,
+    reference_click_band: np.ndarray,
+    aligned_candidate_click_band: np.ndarray,
+    alignment_lag: int,
+) -> dict[str, Any]:
+    aligned_candidate = _shift_window(candidate, alignment_lag)
+    reference_click_rms = max(float(np.sqrt(np.mean(reference_click_band * reference_click_band))), 1e-9)
+    candidate_click_rms = max(
+        float(np.sqrt(np.mean(aligned_candidate_click_band * aligned_candidate_click_band))),
+        1e-9,
+    )
+    bands = [
+        ("rumble_35_80", 35.0, 80.0, 0.35),
+        ("low_80_160", 80.0, 160.0, 0.45),
+        ("low_160_320", 160.0, 320.0, 0.65),
+    ]
+    band_metrics: dict[str, dict[str, float]] = {}
+    weighted_log_error = 0.0
+    for name, lo_hz, hi_hz, weight in bands:
+        reference_relative = band_rms(reference, lo_hz, hi_hz) / reference_click_rms
+        candidate_relative = band_rms(aligned_candidate, lo_hz, hi_hz) / candidate_click_rms
+        log_error = abs(math.log(max(candidate_relative, 1e-12) / max(reference_relative, 1e-12)))
+        weighted_log_error += weight * log_error
+        band_metrics[name] = {
+            "reference_relative_rms": float(reference_relative),
+            "synth_relative_rms": float(candidate_relative),
+            "log_error": float(log_error),
+        }
+    return {
+        "weighted_log_error": float(weighted_log_error),
+        "bands": band_metrics,
+    }
 
 
 def extract_reference_event_features(
@@ -1039,6 +1091,13 @@ def validate_params(params: dict[str, float], reference: ReferenceBundle) -> dic
     ref_band = bandpass_clicks(reference.samples)
     conditioned_band = bandpass_clicks(conditioned_render)
     aligned_band, lag = align_by_cross_correlation(ref_band, conditioned_band)
+    low_frequency_metrics = low_frequency_residual_metrics(
+        reference.samples,
+        conditioned_render,
+        ref_band,
+        aligned_band,
+        lag,
+    )
 
     ref_peak = max(float(np.max(np.abs(ref_band))), 1e-9)
     aligned_peak = max(float(np.max(np.abs(aligned_band))), 1e-9)
@@ -1123,6 +1182,7 @@ def validate_params(params: dict[str, float], reference: ReferenceBundle) -> dic
             "air_synth": air_synth,
             "spectral_centroid_reference_hz": spectral_centroid(ref_freqs, ref_spectrum),
             "spectral_centroid_synth_hz": spectral_centroid(synth_freqs, synth_spectrum),
+            "low_frequency_residual": low_frequency_metrics,
             **feature_pair,
         },
         "free_running_metrics": {
@@ -1404,6 +1464,7 @@ def optimize_model(
     best = with_model_defaults(params)
     keys = [
         "pulseDecay",
+        "rumbleHighpassHz",
         "launchAmp",
         "brakeAmp",
         "settleAmp",
@@ -1434,6 +1495,7 @@ def optimize_model(
     ]
     step_sizes = {
         "pulseDecay": 0.03,
+        "rumbleHighpassHz": 12.0,
         "launchAmp": 0.04,
         "brakeAmp": 0.04,
         "settleAmp": 0.02,
@@ -1464,6 +1526,7 @@ def optimize_model(
     }
     limits = {
         "pulseDecay": (0.55, 0.98),
+        "rumbleHighpassHz": (0.0, 120.0),
         "launchAmp": (0.30, 1.10),
         "brakeAmp": (-0.80, -0.05),
         "settleAmp": (0.05, 0.30),
