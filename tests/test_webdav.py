@@ -3,9 +3,12 @@ from __future__ import annotations
 import os
 import random
 import urllib.parse
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from tests.helpers import _assert_provider_tree_matches_disk, _list_disk_tree, _request, _run_test_server
+from clatterdrive.audio import HDDAudioEngine
+from clatterdrive.storage_events import CompositeStorageEventSink, StorageEventRecorder
+from tests.helpers import _assert_provider_tree_matches_disk, _list_disk_tree, _request, _run_test_server, _wav_metrics
 
 def test_webdav_end_to_end_directory_lifecycle(tmp_path: Path) -> None:
     backing = tmp_path / "backing"
@@ -52,6 +55,48 @@ def test_webdav_end_to_end_directory_lifecycle(tmp_path: Path) -> None:
         assert "/archive" not in provider.vhdd.fs.directories
         assert "/archive/data.txt" not in provider.vhdd.fs.files
         _assert_provider_tree_matches_disk(provider, backing)
+
+
+def test_webdav_operations_emit_renderable_audio_events(tmp_path: Path) -> None:
+    backing = tmp_path / "backing"
+    backing.mkdir()
+    tee_path = tmp_path / "webdav-audio.wav"
+    audio = HDDAudioEngine(seed=0, tee_path=str(tee_path))
+    recorder = StorageEventRecorder()
+    event_sink = CompositeStorageEventSink([audio, recorder])
+
+    try:
+        with _run_test_server(backing, event_sink=event_sink) as (base_url, provider):
+            status, _, _ = _request(base_url, "MKCOL", "/audio")
+            assert status == 201
+
+            payload = bytes(range(256)) * 512
+            status, _, _ = _request(base_url, "PUT", "/audio/upload.bin", payload)
+            assert status in (200, 201, 204)
+
+            status, body, _ = _request(base_url, "GET", "/audio/upload.bin")
+            assert status == 200
+            assert body == payload
+
+            status, propfind_body, _ = _request(base_url, "PROPFIND", "/audio", headers={"Depth": "1"})
+            assert status == 207
+            assert b"upload.bin" in propfind_body
+
+            provider.vhdd.sync_all()
+
+        for _ in range(32):
+            audio.render_chunk(audio.chunk_size)
+    finally:
+        audio.stop()
+
+    events = recorder.snapshot()
+    assert events
+    assert any(event.op_kind == "data" for event in events)
+    assert any(event.op_kind in {"metadata", "journal"} for event in events)
+    rms, peak = _wav_metrics(tee_path)
+    assert rms > 0.0005
+    assert peak > 0.002
+
 
 def test_webdav_copy_file_and_directory_tree(tmp_path: Path) -> None:
     backing = tmp_path / "backing"
@@ -350,7 +395,9 @@ def test_webdav_proppatch_round_trips_dead_properties_and_models_metadata(tmp_pa
 
         status, propfind_body, _ = _request(base_url, "PROPFIND", "/file.txt", headers={"Depth": "0"})
         assert status == 207
-        assert b"<ns1:color>blue</ns1:color>" in propfind_body or b"<Z:color>blue</Z:color>" in propfind_body
+        color = ET.fromstring(propfind_body).find(".//{urn:example}color")
+        assert color is not None
+        assert color.text == "blue"
         assert provider.prop_manager.get_property("/file.txt", "{urn:example}color") is not None
 
 

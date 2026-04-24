@@ -14,6 +14,7 @@ import numpy as np
 from wsgidav.wsgidav_app import WsgiDAVApp
 
 from clatterdrive.audio import HDDAudioEvent
+from clatterdrive.storage_events import StorageEventSink
 from clatterdrive.webdav import HDDProvider
 
 
@@ -24,8 +25,17 @@ class _NoAuthWsgiDAVApp(WsgiDAVApp):
 
 
 @contextlib.contextmanager
-def _run_test_server(backing_dir: Path) -> Iterator[tuple[str, HDDProvider]]:
-    provider = HDDProvider(str(backing_dir), cold_start=False, async_power_on=False)
+def _run_test_server(
+    backing_dir: Path,
+    *,
+    event_sink: StorageEventSink | None = None,
+) -> Iterator[tuple[str, HDDProvider]]:
+    provider = HDDProvider(
+        str(backing_dir),
+        cold_start=False,
+        async_power_on=False,
+        event_sink=event_sink,
+    )
     provider.vhdd.model.latency_scale = 0.0
     config = {
         "provider_mapping": {"/": provider},
