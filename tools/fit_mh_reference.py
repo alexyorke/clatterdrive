@@ -731,13 +731,16 @@ def classify_reference_families(features: list[ReferenceEventFeature]) -> list[s
                 + 0.8 * max((feature.decay_slope_db_per_ms - decay_q65) / 0.8, 0.0)
                 + 0.8 * max((feature.air_ratio - air_q80) / max(air_q80, 1e-9), 0.0)
             )
-            families.append("ring_delayed" if delay_score >= resonant_score else "ring_resonant")
+            family = "ring_delayed" if delay_score >= resonant_score else "ring_resonant"
         elif delayed:
-            families.append("ring_delayed")
+            family = "ring_delayed"
         elif resonant:
-            families.append("ring_resonant")
+            family = "ring_resonant"
         else:
-            families.append("ring_resonant")
+            family = "ring_resonant"
+        if family == "ring_resonant" and feature.tail_ratio < 50.0:
+            family = "tight"
+        families.append(family)
     return families
 
 
@@ -1393,7 +1396,11 @@ def optimize_scheduler(params: dict[str, float], reference_events: list[dict[str
     return best
 
 
-def optimize_model(params: dict[str, float], reference: ReferenceBundle) -> dict[str, float]:
+def optimize_model(
+    params: dict[str, float],
+    reference: ReferenceBundle,
+    max_evaluations: int = 360,
+) -> dict[str, float]:
     best = with_model_defaults(params)
     keys = [
         "pulseDecay",
@@ -1488,6 +1495,7 @@ def optimize_model(params: dict[str, float], reference: ReferenceBundle) -> dict
 
     validation = validate_params(best, reference)
     best_score = float(validation["event_conditioned_score"])
+    evaluations = 1
 
     for shrink in (1.0, 0.60, 0.36, 0.22, 0.14, 0.09, 0.06):
         improved = True
@@ -1500,11 +1508,14 @@ def optimize_model(params: dict[str, float], reference: ReferenceBundle) -> dict
                     lo, hi = limits[key]
                     candidate[key] = float(min(max(candidate[key] + direction * step, lo), hi))
                     validation = validate_params(candidate, reference)
+                    evaluations += 1
                     score = float(validation["event_conditioned_score"])
                     if score + 1e-9 < best_score:
                         best = candidate
                         best_score = score
                         improved = True
+                    if evaluations >= max_evaluations:
+                        return best
     return best
 
 
