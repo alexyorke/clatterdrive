@@ -111,6 +111,14 @@ docker build -t clatterdrive .
 docker run --rm -p 8080:8080 -e FAKE_HDD_AUDIO=off -v "${PWD}/backing_storage:/data" clatterdrive
 ```
 
+Headless Docker smoke test for WebDAV plus rendered audio artifacts:
+
+```powershell
+uv run python -m tools.docker_webdav_audio_smoke
+```
+
+This writes temporary artifacts under `.runtime/docker-e2e/`, uploads and downloads through WebDAV, then verifies both the event trace and tee WAV are nonempty.
+
 ## Repo Layout
 
 - [clatterdrive](clatterdrive): packaged application code

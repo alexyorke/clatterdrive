@@ -265,6 +265,8 @@ class HDDAudioEngine:
         self.output_enabled = True
         self.tee_path: str | None = tee_path
         self.tee_recorder: _WaveTeeRecorder | None = None
+        self._headless_stop_event = threading.Event()
+        self._headless_render_thread: threading.Thread | None = None
         self.event_trace_sink = event_trace_sink
         self.configure_tee(tee_path)
 
@@ -462,8 +464,40 @@ class HDDAudioEngine:
     def _audio_callback(self, outdata: Any, frames: int, _time_info: Any, status: Any) -> None:
         outdata[:] = self.render_chunk(frames).reshape(-1, 1)
 
+    def _reset_render_clock(self) -> None:
+        self.time_origin = self.clock.now()
+        self.render_frame_cursor = 0
+        self.last_render_at = self.clock.now()
+
+    def _headless_render_loop(self) -> None:
+        frame_period_s = self.chunk_size / self.fs
+        while not self._headless_stop_event.is_set():
+            started_at = self.clock.now()
+            self.render_chunk(self.chunk_size)
+            elapsed_s = max(0.0, self.clock.now() - started_at)
+            self._headless_stop_event.wait(max(0.0, frame_period_s - elapsed_s))
+
+    def _start_headless_render_loop(self) -> None:
+        if self.tee_recorder is None or self._headless_render_thread is not None:
+            return
+        self._headless_stop_event.clear()
+        self._reset_render_clock()
+        self._headless_render_thread = threading.Thread(
+            target=self._headless_render_loop,
+            name="clatterdrive-audio-tee",
+            daemon=True,
+        )
+        self._headless_render_thread.start()
+
+    def _stop_headless_render_loop(self) -> None:
+        if self._headless_render_thread is None:
+            return
+        self._headless_stop_event.set()
+        self._headless_render_thread.join(timeout=2.0)
+        self._headless_render_thread = None
+
     def start(self) -> None:
-        if self.stream is not None:
+        if self.stream is not None or self._headless_render_thread is not None:
             return
         resolved_drive, resolved_acoustic = resolve_selected_profiles_from_env(
             self.synthesizer.drive_profile,
@@ -478,15 +512,11 @@ class HDDAudioEngine:
         audio_setting = (self.env.get("FAKE_HDD_AUDIO", "live") or "live").strip().lower()
         if audio_setting in {"0", "off", "false", "disabled", "none"}:
             self.output_enabled = False
-            self.last_render_at = None
-            self.time_origin = None
-            self.render_frame_cursor = 0
+            self._start_headless_render_loop()
             return
         if sd is None:
             self.output_enabled = False
-            self.last_render_at = None
-            self.time_origin = None
-            self.render_frame_cursor = 0
+            self._start_headless_render_loop()
             return
         self.output_enabled = True
         stream = sd.OutputStream(
@@ -506,6 +536,7 @@ class HDDAudioEngine:
         self.last_render_at = self.clock.now()
 
     def stop(self) -> None:
+        self._stop_headless_render_loop()
         if self.stream is not None:
             try:
                 self.stream.stop()

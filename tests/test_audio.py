@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 import wave
 from dataclasses import replace
 from pathlib import Path
@@ -191,6 +192,33 @@ def test_audio_engine_can_tee_output_from_env_without_live_device(
     rms, peak = _wav_metrics(tee_path)
     assert rms > 0.001
     assert peak > 0.0035
+
+
+def test_audio_engine_headless_tee_renders_without_manual_pull(
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    tee_path = tmp_path / "headless-tee.wav"
+    monkeypatch.setenv("FAKE_HDD_AUDIO", "off")
+    monkeypatch.setenv("FAKE_HDD_AUDIO_TEE_PATH", str(tee_path))
+    engine = HDDAudioEngine(seed=0)
+    engine.start()
+    try:
+        assert engine.output_enabled is False
+        assert engine.stream is None
+        engine.emit_telemetry(7200.0, seek_trigger=True, seek_dist=700, op_kind="data")
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline and engine.render_frame_cursor < engine.chunk_size * 4:
+            time.sleep(0.02)
+    finally:
+        engine.stop()
+
+    assert tee_path.exists()
+    with wave.open(str(tee_path), "rb") as wav_file:
+        assert wav_file.getnframes() >= engine.chunk_size * 4
+    rms, peak = _wav_metrics(tee_path)
+    assert rms > 0.001
+    assert peak > 0.004
 
 
 def test_audio_engine_events_are_buffered_until_render() -> None:

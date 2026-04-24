@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import signal
 from typing import Any
 
 from cheroot import wsgi
@@ -25,6 +26,29 @@ def _env_flag(name: str, default: bool) -> bool:
     return normalized not in {"0", "false", "no", "off"}
 
 
+def _raise_keyboard_interrupt(_signum: int, _frame: Any) -> None:
+    raise KeyboardInterrupt
+
+
+def _install_shutdown_handlers() -> dict[int, Any]:
+    previous_handlers: dict[int, Any] = {}
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        try:
+            previous_handlers[signum] = signal.getsignal(signum)
+            signal.signal(signum, _raise_keyboard_interrupt)
+        except (AttributeError, OSError, ValueError):
+            continue
+    return previous_handlers
+
+
+def _restore_shutdown_handlers(previous_handlers: dict[int, Any]) -> None:
+    for signum, handler in previous_handlers.items():
+        try:
+            signal.signal(signum, handler)
+        except (OSError, ValueError):
+            continue
+
+
 def start_server() -> None:
     audio = get_runtime_engine()
     provider: HDDProvider | None = None
@@ -32,18 +56,22 @@ def start_server() -> None:
     event_recorder: StorageEventRecorder | None = None
     event_trace_path: str | None = None
     audio_started = False
+    previous_signal_handlers = _install_shutdown_handlers()
     drive_profile = os.environ.get("FAKE_HDD_DRIVE_PROFILE")
     acoustic_profile = os.environ.get("FAKE_HDD_ACOUSTIC_PROFILE")
     try:
         try:
             audio.configure_profiles(drive_profile=drive_profile, acoustic_profile=acoustic_profile)
             audio.start()
+            audio_started = True
             if audio.output_enabled:
-                audio_started = True
                 print("Procedural Audio Engine started.")
+            elif audio.tee_path:
+                print("Procedural Audio Engine recording tee output without live audio.")
             else:
-                print("Procedural Audio Engine disabled by FAKE_HDD_AUDIO.")
+                print("Procedural Audio Engine live output disabled or unavailable.")
         except Exception as exc:
+            audio.stop()
             print(f"Warning: Could not start audio engine: {exc}")
 
         root_path = os.path.abspath(os.environ.get("FAKE_HDD_BACKING_DIR", "backing_storage"))
@@ -109,6 +137,7 @@ def start_server() -> None:
             audio.stop()
         if event_recorder is not None and event_trace_path:
             event_recorder.export_json(event_trace_path)
+        _restore_shutdown_handlers(previous_signal_handlers)
 
 
 if __name__ == "__main__":

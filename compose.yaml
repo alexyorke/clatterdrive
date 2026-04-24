@@ -4,14 +4,19 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "8080:8080"
+      - "${FAKE_HDD_PUBLISHED_PORT:-8080}:8080"
     environment:
       FAKE_HDD_HOST: 0.0.0.0
       FAKE_HDD_PORT: 8080
-      FAKE_HDD_AUDIO: off
+      FAKE_HDD_AUDIO: ${FAKE_HDD_AUDIO:-off}
+      FAKE_HDD_AUDIO_TEE_PATH: ${FAKE_HDD_AUDIO_TEE_PATH:-}
+      FAKE_HDD_EVENT_TRACE_PATH: ${FAKE_HDD_EVENT_TRACE_PATH:-}
+      FAKE_HDD_COLD_START: ${FAKE_HDD_COLD_START:-on}
+      FAKE_HDD_ASYNC_POWER_ON: ${FAKE_HDD_ASYNC_POWER_ON:-on}
       FAKE_HDD_BACKING_DIR: /data
       FAKE_HDD_DRIVE_PROFILE: desktop_7200_internal
       FAKE_HDD_ACOUSTIC_PROFILE: mounted_in_case
     volumes:
-      - ./backing_storage:/data
+      - ${FAKE_HDD_BACKING_VOLUME:-./backing_storage}:/data
+      - ${FAKE_HDD_RUNTIME_VOLUME:-./.runtime/docker}:/runtime
     restart: unless-stopped
