@@ -40,6 +40,7 @@ def _run_test_server(
     config = {
         "provider_mapping": {"/": provider},
         "http_authenticator": {"enabled": False},
+        "lock_storage": True,
         "middleware_stack": [
             "wsgidav.error_printer.ErrorPrinter",
             "wsgidav.dir_browser._dir_browser.WsgiDavDirBrowser",

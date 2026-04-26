@@ -465,7 +465,7 @@ def test_webdav_proppatch_round_trips_dead_properties_and_models_metadata(tmp_pa
         assert provider.prop_manager.get_property("/file.txt", "{urn:example}color") is not None
 
 
-def test_webdav_lock_is_intentionally_rejected_without_mutating_state(tmp_path: Path) -> None:
+def test_webdav_lock_round_trips_without_mutating_tree_shape(tmp_path: Path) -> None:
     backing = tmp_path / "backing"
     backing.mkdir()
     lock_body = (
@@ -482,7 +482,7 @@ def test_webdav_lock_is_intentionally_rejected_without_mutating_state(tmp_path: 
         assert status in (200, 201, 204)
 
         before_children = {path: set(children) for path, children in provider.vhdd.fs.dir_children.items()}
-        status, _, _ = _request(
+        status, _, headers = _request(
             base_url,
             "LOCK",
             "/file.txt",
@@ -490,7 +490,11 @@ def test_webdav_lock_is_intentionally_rejected_without_mutating_state(tmp_path: 
             headers={"Content-Type": "application/xml", "Timeout": "Second-60"},
         )
 
-        assert status == 403
+        assert status in (200, 201)
+        lock_token = headers.get("Lock-Token")
+        assert lock_token
+        status, _, _ = _request(base_url, "UNLOCK", "/file.txt", headers={"Lock-Token": lock_token})
+        assert status == 204
         assert before_children == {path: set(children) for path, children in provider.vhdd.fs.dir_children.items()}
         _assert_provider_tree_matches_disk(provider, backing)
 

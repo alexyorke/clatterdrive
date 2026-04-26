@@ -148,7 +148,7 @@ class _LatencyResourceMixin:
         return self._vhdd
 
     def prevent_locking(self) -> bool:
-        return True
+        return False
 
     def set_property_value(self, name: str, value: Any, *, dry_run: bool = False) -> Any:
         resource_super: Any = super()

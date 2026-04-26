@@ -103,6 +103,7 @@ def start_server() -> None:
             "http_authenticator": {
                 "enabled": False,
             },
+            "lock_storage": True,
             "middleware_stack": [
                 "wsgidav.error_printer.ErrorPrinter",
                 "wsgidav.dir_browser._dir_browser.WsgiDavDirBrowser",

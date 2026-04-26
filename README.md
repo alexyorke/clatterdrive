@@ -201,5 +201,5 @@ uv run python -m tools.audit_audio_stack
 
 - This is not a real block device or kernel filesystem.
 - Out-of-band edits to the backing tree are only partially reconciled.
-- WebDAV locking is intentionally rejected instead of being simulated as media traffic.
+- WebDAV locks are in-memory and exist to satisfy clients like the Windows WebClient; they are not persisted across restart.
 - The project is trying to sound cool and feel plausible, not to be a reference-grade HDD/acoustics model.
