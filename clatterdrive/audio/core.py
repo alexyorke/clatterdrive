@@ -106,6 +106,10 @@ class SupervisorState:
     contact_impulse: float = 0.0
     maintenance_activity: float = 0.0
     retry_activity: float = 0.0
+    last_event_signature: int = 0
+    last_event_emitted_at: float = -1.0
+    repetition_pressure: float = 0.0
+    repetition_variant: float = 0.0
 
 
 @dataclass
@@ -392,11 +396,32 @@ def _apply_command(
     supervisor = state.supervisor
     previous_heads_loaded = supervisor.heads_loaded
     previous_track = supervisor.target_track
+    emitted_gap_s = (
+        command.emitted_at - supervisor.last_event_emitted_at
+        if supervisor.last_event_emitted_at >= 0.0
+        else 999.0
+    )
+    repeated_pattern = (
+        command.event_signature == supervisor.last_event_signature
+        and 0.0 <= emitted_gap_s <= 0.45
+    )
+    if repeated_pattern:
+        supervisor.repetition_pressure = min(1.0, supervisor.repetition_pressure * 0.60 + 0.34)
+        variant_cycle = (-0.85, -0.20, 0.45, 0.95)
+        cycle_index = int(supervisor.repetition_pressure * 4.0 + abs(previous_track) * 17.0)
+        supervisor.repetition_variant = variant_cycle[cycle_index % len(variant_cycle)]
+    else:
+        supervisor.repetition_pressure *= 0.28
+        supervisor.repetition_variant *= 0.35
+    supervisor.last_event_signature = command.event_signature
+    supervisor.last_event_emitted_at = command.emitted_at
     supervisor.target_rpm = max(float(command.target_rpm), 0.0)
     supervisor.power_state = command.power_state
     supervisor.queue_depth = max(1, int(command.queue_depth))
     supervisor.op_kind = command.op_kind
-    supervisor.transfer_activity = float(command.transfer_activity)
+    supervisor.transfer_activity = float(command.transfer_activity) * (
+        1.0 + 0.09 * supervisor.repetition_pressure * supervisor.repetition_variant
+    )
     supervisor.transfer_remaining_s = max(supervisor.transfer_remaining_s, command.transfer_duration_s)
     supervisor.directory_activity = (
         min(1.0, math.log2(command.directory_entry_count + 1) / 11.0)
@@ -436,6 +461,11 @@ def _apply_command(
         supervisor.wedge_impulse += 0.035 * supervisor.directory_activity
     if supervisor.fragmentation_activity > 0.0:
         supervisor.wedge_impulse += 0.045 * supervisor.fragmentation_activity
+    if supervisor.repetition_pressure > 0.0 and command.op_kind in {"data", "writeback", "metadata"}:
+        supervisor.wedge_impulse += 0.010 + 0.018 * supervisor.repetition_pressure * (
+            1.0 - abs(supervisor.repetition_variant)
+        )
+        supervisor.contact_impulse += 0.006 * supervisor.repetition_pressure * abs(supervisor.repetition_variant)
 
     if servo_mode == "park":
         supervisor.seek_origin = plant.actuator_pos
@@ -458,15 +488,21 @@ def _apply_command(
         delta = command.track_delta
         if abs(delta) < 0.015 and servo_mode == "seek":
             delta = math.copysign(0.06, delta if delta != 0.0 else 1.0)
+        if supervisor.repetition_pressure > 0.0 and command.op_kind in {"data", "writeback", "metadata"}:
+            delta += 0.020 * supervisor.repetition_pressure * supervisor.repetition_variant
         target = _clamp(previous_track + delta, 0.04, 0.96)
         supervisor.seek_origin = plant.actuator_pos
         supervisor.target_track = target
-        supervisor.seek_duration_s = max(
+        seek_duration_s = max(
             command.motion_duration_s,
             drive_profile.track_to_track_ms / 1000.0 + 0.010 * abs(delta),
         )
+        seek_duration_s *= 1.0 + 0.10 * supervisor.repetition_pressure * max(0.0, supervisor.repetition_variant)
+        supervisor.seek_duration_s = seek_duration_s
         supervisor.seek_elapsed_s = 0.0
-        supervisor.settle_remaining_s = max(command.settle_duration_s, 0.004 if servo_mode == "track" else 0.009)
+        settle_duration_s = max(command.settle_duration_s, 0.004 if servo_mode == "track" else 0.009)
+        settle_duration_s *= 1.0 + 0.14 * supervisor.repetition_pressure * max(0.0, -supervisor.repetition_variant)
+        supervisor.settle_remaining_s = settle_duration_s
     else:
         supervisor.target_track = previous_track
         supervisor.seek_origin = plant.actuator_pos
@@ -639,6 +675,9 @@ def _render_segment_internal(
                 supervisor.transfer_activity *= 0.9991
                 supervisor.directory_activity *= 0.9988
                 supervisor.fragmentation_activity *= 0.9990
+            if supervisor.repetition_pressure > 0.0:
+                supervisor.repetition_pressure *= 0.9992
+                supervisor.repetition_variant *= 0.9988
 
             sectors_per_rev = _command_frequency(drive_profile, supervisor)
             servo_interval = 1.0 / max((plant.spindle_omega / TAU) * sectors_per_rev, 35.0)

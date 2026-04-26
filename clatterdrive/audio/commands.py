@@ -13,6 +13,7 @@ def _clamp(value: float, lo: float, hi: float) -> float:
 @dataclass(frozen=True)
 class AudioCommand:
     emitted_at: float
+    event_signature: int
     target_rpm: float
     power_state: str
     servo_mode: str
@@ -117,6 +118,31 @@ def _derive_transfer_duration_s(event: StorageEvent) -> float:
     return min(duration, 0.750)
 
 
+def _derive_event_signature(event: StorageEvent) -> int:
+    size_bucket = min(15, int(math_log2(max(1, event.size_bytes // 4096) + 1)))
+    block_bucket = min(15, int(math_log2(max(1, event.block_count) + 1)))
+    transfer_bucket = min(15, int(math_log2(max(1.0, event.transfer_ms) + 1.0)))
+    extent_bucket = min(7, max(0, int(event.extent_count)))
+    dir_bucket = min(15, int(math_log2(max(1, event.directory_entry_count) + 1)))
+    frag_bucket = min(15, max(0, int(event.fragmentation_score)))
+    kind_code = {
+        "metadata": 1,
+        "journal": 2,
+        "data": 3,
+        "writeback": 4,
+        "flush": 5,
+        "background": 6,
+    }.get(event.op_kind, 0)
+    signature = kind_code
+    signature = signature * 31 + size_bucket
+    signature = signature * 31 + block_bucket
+    signature = signature * 31 + transfer_bucket
+    signature = signature * 31 + extent_bucket
+    signature = signature * 31 + dir_bucket
+    signature = signature * 31 + frag_bucket
+    return (signature * 31 + int(bool(event.is_sequential))) * 31 + int(bool(event.is_flush))
+
+
 def command_from_event(event: StorageEvent) -> AudioCommand:
     target_rpm = float(event.target_rpm if event.target_rpm is not None else event.rpm)
     power_state = _derive_power_state(event)
@@ -137,6 +163,7 @@ def command_from_event(event: StorageEvent) -> AudioCommand:
     op_kind = event.op_kind or "data"
     return AudioCommand(
         emitted_at=float(event.emitted_at),
+        event_signature=_derive_event_signature(event),
         target_rpm=target_rpm,
         power_state=power_state,
         servo_mode=servo_mode,

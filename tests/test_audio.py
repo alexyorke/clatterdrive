@@ -453,6 +453,37 @@ def test_audio_engine_overlapping_events_render_together() -> None:
     assert _rms(chunk) > 0.0015
 
 
+def test_repeated_similar_events_accumulate_variation_pressure() -> None:
+    engine = HDDAudioEngine(seed=0)
+    repeated = _audio_event(
+        rpm=7200.0,
+        target_rpm=7200.0,
+        queue_depth=1,
+        op_kind="writeback",
+        servo_mode="seek",
+        track_delta=0.10,
+        motion_duration_ms=2.0,
+        settle_duration_ms=1.2,
+        size_bytes=131072,
+        block_count=32,
+        extent_count=1,
+        transfer_ms=8.0,
+    )
+    repeated = replace(repeated, emitted_at=1.0)
+
+    engine.synthesizer.apply_event(repeated)
+    first_target = engine.synthesizer.state.supervisor.target_track
+
+    second = replace(repeated, emitted_at=1.08)
+    engine.synthesizer.apply_event(second)
+    supervisor = engine.synthesizer.state.supervisor
+
+    assert abs(first_target - 0.62) < 1e-9
+    assert supervisor.repetition_pressure > 0.0
+    assert abs(supervisor.repetition_variant) > 0.0
+    assert supervisor.target_track > first_target + 0.10
+
+
 def test_audio_engine_honors_control_event_offsets_within_a_chunk() -> None:
     engine = HDDAudioEngine(seed=0)
     chunk = engine.synthesizer.render_chunk(
