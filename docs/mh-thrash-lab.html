@@ -180,7 +180,6 @@
           <button id="renderBtn">Render Loop</button>
           <button class="secondary" id="copyBtn">Copy JSON</button>
           <button class="secondary" id="resetBtn">Reset MH</button>
-          <button class="secondary" id="openModalBtn">Open Modal Comparison</button>
           <label class="inline"><input type="checkbox" id="autoRender" checked> auto-render on slider change</label>
           <div class="status" id="status">Not rendered yet.</div>
         </div>
@@ -791,9 +790,6 @@
       document.getElementById("status").textContent = "Reset to MH baseline.";
     });
 
-    document.getElementById("openModalBtn").addEventListener("click", () => {
-      window.location.href = "click-modal-refine.html";
-    });
   </script>
 </body>
 </html>

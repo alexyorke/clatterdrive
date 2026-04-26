@@ -283,7 +283,7 @@ def build_conditioned_schedule(
 
 def pulse_kernel(params: dict[str, float]) -> np.ndarray:
     pulse_width_samples = max(1, round((params["pulseWidthMs"] / 1000.0) * SAMPLE_RATE))
-    pivot = max(1, int(round(pulse_width_samples * 0.38)))
+    pivot = max(1, round(pulse_width_samples * 0.38))
     kernel = np.zeros(pulse_width_samples, dtype=np.float64)
     for index in range(pulse_width_samples):
         if index <= pivot:
@@ -763,13 +763,11 @@ def classify_reference_families(features: list[ReferenceEventFeature]) -> list[s
         )
         resonant = (
             (
-                (
-                    feature.tail_ratio >= 1.8
-                    and feature.late_ratio >= 1.20
-                    and feature.decay_slope_db_per_ms >= decay_q65
-                )
-                or (feature.tail_ratio >= 2.0 and feature.air_ratio >= air_q80)
+                feature.tail_ratio >= 1.8
+                and feature.late_ratio >= 1.20
+                and feature.decay_slope_db_per_ms >= decay_q65
             )
+            or (feature.tail_ratio >= 2.0 and feature.air_ratio >= air_q80)
         )
         if delayed and resonant:
             delay_score = (
