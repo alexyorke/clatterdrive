@@ -50,6 +50,7 @@ Windows options:
 
 - open `http://127.0.0.1:8080/` in Explorer as a network location
 - upload/download with `curl.exe`
+- map it as a WebDAV drive, for example `net use X: \\127.0.0.1@8080\DavWWWRoot /persistent:no`
 
 Windows `curl.exe` example:
 
@@ -70,6 +71,48 @@ Notes:
 - `MKCOL` only works for a directory that does not already exist. If you reuse a name like `demo/`, `405 Method Not Allowed` is expected.
 - The `C:\path\to\...` strings were placeholders; replace them with real paths, or use the temp-file example above as-is.
 - `curl.exe --output` will fail if the parent directory does not exist.
+
+WSL option:
+
+- use `davfs2` and disable client-side locks for this server
+
+Verified in WSL 2 (Ubuntu 22.04) on this machine:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y davfs2
+mkdir -p ~/.davfs2 ~/mnt/clatterdrive
+cat > ~/.davfs2/clatterdrive.conf <<'EOF'
+use_locks 0
+delay_upload 0
+EOF
+sudo mount -t davfs http://127.0.0.1:8080/ ~/mnt/clatterdrive -o uid=$(id -u),gid=$(id -g),file_mode=0644,dir_mode=0755,conf=$HOME/.davfs2/clatterdrive.conf
+echo "hello from wsl davfs" > /tmp/clatterdrive-src.txt
+cp /tmp/clatterdrive-src.txt ~/mnt/clatterdrive/wsl-copy-test.txt
+cat ~/mnt/clatterdrive/wsl-copy-test.txt
+cmp -s /tmp/clatterdrive-src.txt ~/mnt/clatterdrive/wsl-copy-test.txt && echo matches=true
+```
+
+WSL notes:
+
+- `davfs2` will prompt for a username and password; press Enter for both because the local server is anonymous.
+- `use_locks 0` is currently required for `davfs2` writes against this server. Without it, `davfs2` tries to lock a not-yet-created path and uploads fail with `Input/output error`.
+
+macOS options:
+
+- Finder: `Go -> Connect to Server...` and enter `http://127.0.0.1:8080/`
+- Terminal with the built-in WebDAV client:
+
+```bash
+mkdir -p ~/mnt/clatterdrive
+mount_webdav http://127.0.0.1:8080/ ~/mnt/clatterdrive
+cp /path/to/local-file ~/mnt/clatterdrive/
+cat ~/mnt/clatterdrive/local-file
+```
+
+macOS note:
+
+- the WSL `davfs2` flow above was verified on this machine; the macOS commands use the standard built-in `mount_webdav` path but were not executed here because this host is Windows.
 
 If live audio is enabled, directory creation and listing, uploads, downloads, overwrites, deletes, fragmented reads, and wake-from-standby activity all feed the audio model.
 
