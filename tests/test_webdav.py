@@ -98,6 +98,70 @@ def test_webdav_operations_emit_renderable_audio_events(tmp_path: Path) -> None:
     assert peak > 0.002
 
 
+def test_webdav_workload_shape_reaches_audio_event_trace(tmp_path: Path) -> None:
+    backing = tmp_path / "backing"
+    backing.mkdir()
+    tee_path = tmp_path / "webdav-workload-shape.wav"
+    audio = HDDAudioEngine(seed=1, tee_path=str(tee_path))
+    recorder = StorageEventRecorder()
+    event_sink = CompositeStorageEventSink([audio, recorder])
+
+    try:
+        with _run_test_server(backing, event_sink=event_sink) as (base_url, provider):
+            status, _, _ = _request(base_url, "MKCOL", "/shape")
+            assert status == 201
+
+            status, _, _ = _request(base_url, "PUT", "/shape/large.bin", b"L" * (128 * 1024))
+            assert status in (200, 201, 204)
+
+            status, _, _ = _request(base_url, "MKCOL", "/shape/small")
+            assert status == 201
+            for index in range(16):
+                status, _, _ = _request(base_url, "PUT", f"/shape/small/file-{index:02d}.bin", b"s" * 1024)
+                assert status in (200, 201, 204)
+
+            status, _, _ = _request(base_url, "MKCOL", "/shape/frag")
+            assert status == 201
+            for index in range(10):
+                status, _, _ = _request(base_url, "PUT", f"/shape/frag/filler-{index:02d}.bin", b"f" * 4096)
+                assert status in (200, 201, 204)
+            for index in range(0, 10, 2):
+                status, _, _ = _request(base_url, "DELETE", f"/shape/frag/filler-{index:02d}.bin")
+                assert status == 204
+            status, _, _ = _request(base_url, "PUT", "/shape/frag/fragmented.bin", b"x" * (6 * 4096))
+            assert status in (200, 201, 204)
+            status, body, _ = _request(base_url, "GET", "/shape/frag/fragmented.bin")
+            assert status == 200
+            assert body == b"x" * (6 * 4096)
+
+            status, _, _ = _request(base_url, "MKCOL", "/shape/list")
+            assert status == 201
+            for index in range(96):
+                status, _, _ = _request(base_url, "PUT", f"/shape/list/entry-{index:03d}.txt", b"l")
+                assert status in (200, 201, 204)
+            status, propfind_body, _ = _request(base_url, "PROPFIND", "/shape/list", headers={"Depth": "1"})
+            assert status == 207
+            assert b"entry-095.txt" in propfind_body
+
+            provider.vhdd.sync_all()
+
+        for _ in range(64):
+            audio.render_chunk(audio.chunk_size)
+    finally:
+        audio.stop()
+
+    events = recorder.snapshot()
+    metadata_events = [event for event in events if event.op_kind in {"journal", "metadata"}]
+    assert len(metadata_events) >= 16
+    assert max(event.block_count for event in events) >= 16
+    assert max(event.transfer_ms for event in events) > 0.0
+    assert max(event.directory_entry_count for event in events) >= 96
+    assert max(event.fragmentation_score for event in events) > 1
+    rms, peak = _wav_metrics(tee_path)
+    assert rms > 0.0005
+    assert peak > 0.002
+
+
 def test_webdav_copy_file_and_directory_tree(tmp_path: Path) -> None:
     backing = tmp_path / "backing"
     backing.mkdir()

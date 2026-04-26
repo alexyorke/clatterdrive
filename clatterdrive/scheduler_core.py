@@ -14,6 +14,9 @@ class SchedulerRequest:
     sync: bool
     arrival_time: float
     deadline: float
+    extent_count: int = 0
+    directory_entry_count: int = 0
+    fragmentation_score: int = 0
 
 
 REQUEST_ID_PREFIX: Final[str] = "req-"
@@ -34,6 +37,9 @@ def build_request(
     arrival_time: float,
     read_deadline_s: float,
     write_deadline_s: float,
+    extent_count: int = 0,
+    directory_entry_count: int = 0,
+    fragmentation_score: int = 0,
 ) -> tuple[SchedulerRequest, int]:
     request_id, next_sequence = next_request_id(sequence)
     deadline = arrival_time + (write_deadline_s if is_write else read_deadline_s)
@@ -47,6 +53,9 @@ def build_request(
             sync=sync,
             arrival_time=arrival_time,
             deadline=deadline,
+            extent_count=max(0, int(extent_count)),
+            directory_entry_count=max(0, int(directory_entry_count)),
+            fragmentation_score=max(0, int(fragmentation_score)),
         ),
         next_sequence,
     )
@@ -90,6 +99,9 @@ def merge_request(
                 request,
                 size=request.size + incoming.size,
                 deadline=min(request.deadline, incoming.deadline),
+                extent_count=request.extent_count + incoming.extent_count,
+                directory_entry_count=max(request.directory_entry_count, incoming.directory_entry_count),
+                fragmentation_score=max(request.fragmentation_score, incoming.fragmentation_score),
             )
             return tuple(updated_queue), request.id
     return (*queue, incoming), None

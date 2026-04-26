@@ -7,6 +7,7 @@ from dataclasses import dataclass, field, replace
 
 Extent = tuple[int, int, int]
 BlockRun = tuple[int, int]
+DIRECTORY_ENTRY_BYTES = 192
 
 
 @dataclass(frozen=True)
@@ -15,6 +16,8 @@ class IOOperation:
     block_count: int
     kind: str
     source: str = ""
+    directory_entry_count: int = 0
+    fragmentation_score: int = 0
 
 
 @dataclass
@@ -211,7 +214,37 @@ def bitmap_ops_for_extents(state: FileSystemState, extents: list[Extent]) -> lis
     return [IOOperation(block, 1, "metadata", "block_bitmap") for block in sorted(bitmap_blocks)]
 
 
-def allocate_blocks(state: FileSystemState, count: int) -> tuple[FileSystemState, list[BlockRun]]:
+def directory_entry_count(state: FileSystemState, path: str) -> int:
+    return len(state.dir_children.get(normalize_path(path), set()))
+
+
+def directory_scan_blocks(state: FileSystemState, path: str) -> int:
+    entries = max(1, directory_entry_count(state, path))
+    return max(1, math.ceil((entries * DIRECTORY_ENTRY_BYTES) / state.block_size))
+
+
+def directory_metadata_op(
+    state: FileSystemState,
+    path: str,
+    source: str,
+) -> IOOperation:
+    normalized = normalize_path(path)
+    directory = state.directories[normalized]
+    return IOOperation(
+        directory.dir_block,
+        directory_scan_blocks(state, normalized),
+        "metadata",
+        source,
+        directory_entry_count(state, normalized),
+    )
+
+
+def allocate_blocks(
+    state: FileSystemState,
+    count: int,
+    *,
+    start_at: int | None = None,
+) -> tuple[FileSystemState, list[BlockRun]]:
     if count <= 0:
         return state, []
 
@@ -220,18 +253,30 @@ def allocate_blocks(state: FileSystemState, count: int) -> tuple[FileSystemState
     found_count = 0
     current_extent_start = -1
     current_extent_len = 0
+    scan_start = next_state.data_start_block
+    if start_at is not None:
+        scan_start = min(max(int(start_at), next_state.data_start_block), next_state.total_blocks - 1)
 
-    for block in range(next_state.data_start_block, next_state.total_blocks):
-        if next_state.bitmap[block] == 0:
-            if current_extent_start == -1:
-                current_extent_start = block
-            current_extent_len += 1
-            next_state.bitmap[block] = 1
-            found_count += 1
-            if found_count == count:
+    scan_ranges = (
+        range(scan_start, next_state.total_blocks),
+        range(next_state.data_start_block, scan_start),
+    )
+    for scan_range in scan_ranges:
+        for block in scan_range:
+            if next_state.bitmap[block] == 0:
+                if current_extent_start == -1:
+                    current_extent_start = block
+                current_extent_len += 1
+                next_state.bitmap[block] = 1
+                found_count += 1
+                if found_count == count:
+                    allocated.append((current_extent_start, current_extent_len))
+                    return next_state, allocated
+            elif current_extent_start != -1:
                 allocated.append((current_extent_start, current_extent_len))
-                return next_state, allocated
-        elif current_extent_start != -1:
+                current_extent_start = -1
+                current_extent_len = 0
+        if current_extent_start != -1:
             allocated.append((current_extent_start, current_extent_len))
             current_extent_start = -1
             current_extent_len = 0
@@ -240,6 +285,12 @@ def allocate_blocks(state: FileSystemState, count: int) -> tuple[FileSystemState
         allocated.append((current_extent_start, current_extent_len))
 
     raise OSError("disk full")
+
+
+def preferred_append_block(inode: FileInode) -> int | None:
+    if not inode.extents:
+        return None
+    return max(physical_start + length for _logical_start, physical_start, length in inode.extents)
 
 
 def free_extents(state: FileSystemState, extents: list[Extent]) -> FileSystemState:
@@ -290,7 +341,15 @@ def range_to_ops(state: FileSystemState, inode: FileInode, offset: int, length: 
         if overlap_start <= overlap_end:
             lba_offset = overlap_start - logical_start
             block_count = overlap_end - overlap_start + 1
-            operations.append(IOOperation(physical_start + lba_offset, block_count, "data", "file_data"))
+            operations.append(
+                IOOperation(
+                    physical_start + lba_offset,
+                    block_count,
+                    "data",
+                    "file_data",
+                    fragmentation_score=len(inode.extents),
+                )
+            )
 
     return operations
 
@@ -333,12 +392,15 @@ def allocate_missing_ranges(
         size=inode.size,
     )
     new_extents: list[Extent] = []
+    preferred_start = preferred_append_block(next_inode)
     for missing_start, missing_end in missing_logical_ranges(next_inode, start_block, end_block):
         blocks_needed = missing_end - missing_start + 1
-        next_state, runs = allocate_blocks(next_state, blocks_needed)
+        next_state, runs = allocate_blocks(next_state, blocks_needed, start_at=preferred_start)
         for physical_start, length in runs:
             new_extents.append((missing_start, physical_start, length))
             missing_start += length
+        if runs:
+            preferred_start = runs[-1][0] + runs[-1][1]
     next_inode.extents.extend(new_extents)
     next_inode = coalesce_extents(next_inode)
     return next_state, next_inode, new_extents
@@ -376,12 +438,12 @@ def rename_metadata_ops(
     next_state, journal = journal_op(state, 2, source)
     operations = [journal]
     if old_parent == new_parent:
-        operations.append(IOOperation(next_state.directories[old_parent].dir_block, 1, "metadata", "dir_rename"))
+        operations.append(directory_metadata_op(next_state, old_parent, "dir_rename"))
     else:
         operations.extend(
             [
-                IOOperation(next_state.directories[old_parent].dir_block, 1, "metadata", "dir_remove"),
-                IOOperation(next_state.directories[new_parent].dir_block, 1, "metadata", "dir_insert"),
+                directory_metadata_op(next_state, old_parent, "dir_remove"),
+                directory_metadata_op(next_state, new_parent, "dir_insert"),
             ]
         )
     operations.append(IOOperation(inode_block, 1, "metadata", "inode_rename"))
@@ -414,7 +476,7 @@ def list_directory(state: FileSystemState, path: str) -> list[IOOperation]:
     directory = state.directories.get(normalized)
     if not directory:
         return []
-    return [IOOperation(directory.dir_block, 1, "metadata", "readdir")]
+    return [directory_metadata_op(state, normalized, "readdir")]
 
 
 def materialize_existing_directory(state: FileSystemState, path: str) -> tuple[FileSystemState, DirectoryInode]:
@@ -469,9 +531,9 @@ def create_directory(state: FileSystemState, path: str) -> tuple[FileSystemState
     next_state, journal = journal_op(next_state, 2, "mkdir_intent")
     return next_state, [
         journal,
-        IOOperation(parent_entry.dir_block, 1, "metadata", "dir_insert"),
+        directory_metadata_op(next_state, parent_entry.path, "dir_insert"),
         IOOperation(directory.inode_block, 1, "metadata", "inode_create"),
-        IOOperation(directory.dir_block, 1, "metadata", "dir_init"),
+        directory_metadata_op(next_state, directory.path, "dir_init"),
     ]
 
 
@@ -489,7 +551,7 @@ def update_directory(
     return next_state, [
         journal,
         IOOperation(directory.inode_block, 1, "metadata", "inode_update"),
-        IOOperation(directory.dir_block, 1, "metadata", "dir_metadata"),
+        directory_metadata_op(next_state, normalized, "dir_metadata"),
     ]
 
 
@@ -530,7 +592,7 @@ def create_empty_file(state: FileSystemState, path: str) -> tuple[FileSystemStat
     next_state, journal = journal_op(next_state, 2, "create_intent")
     return next_state, [
         journal,
-        IOOperation(parent_entry.dir_block, 1, "metadata", "dir_insert"),
+        directory_metadata_op(next_state, parent_entry.path, "dir_insert"),
         IOOperation(inode.inode_block, 1, "metadata", "inode_create"),
     ]
 
@@ -571,7 +633,7 @@ def write(state: FileSystemState, path: str, offset: int, length: int) -> tuple[
         ),
     ]
     if created:
-        metadata_ops.append(IOOperation(parent_entry.dir_block, 1, "metadata", "dir_insert"))
+        metadata_ops.append(directory_metadata_op(next_state, parent_entry.path, "dir_insert"))
     if new_extents:
         metadata_ops.extend(bitmap_ops_for_extents(next_state, new_extents))
 
@@ -605,7 +667,7 @@ def delete(state: FileSystemState, path: str) -> tuple[FileSystemState, list[IOO
     next_state, journal = journal_op(next_state, 2, "delete_intent")
     operations = [
         journal,
-        IOOperation(parent_entry.dir_block, 1, "metadata", "dir_remove"),
+        directory_metadata_op(next_state, parent_entry.path, "dir_remove"),
         IOOperation(inode.inode_block, 1, "metadata", "inode_delete"),
     ]
     operations.extend(bitmap_ops_for_extents(next_state, inode.extents))
@@ -651,7 +713,7 @@ def delete_directory(
         parent_entry = next_state.directories[inode.parent_dir]
         operations.extend(
             [
-                IOOperation(parent_entry.dir_block, 1, "metadata", "dir_remove"),
+                directory_metadata_op(next_state, parent_entry.path, "dir_remove"),
                 IOOperation(inode.inode_block, 1, "metadata", "inode_delete"),
             ]
         )
@@ -662,8 +724,8 @@ def delete_directory(
         parent_entry = next_state.directories[directory.parent_dir]
         operations.extend(
             [
-                IOOperation(parent_entry.dir_block, 1, "metadata", "dir_remove"),
-                IOOperation(directory.dir_block, 1, "metadata", "dir_teardown"),
+                directory_metadata_op(next_state, parent_entry.path, "dir_remove"),
+                directory_metadata_op(next_state, directory.path, "dir_teardown"),
                 IOOperation(directory.inode_block, 1, "metadata", "inode_delete"),
             ]
         )
@@ -756,7 +818,7 @@ def rename(state: FileSystemState, source_path: str, dest_path: str) -> tuple[Fi
         "rename_intent",
     )
     if old_parent != dest_parent_path:
-        operations.append(IOOperation(root_dir.dir_block, 1, "metadata", "dir_parent_update"))
+        operations.append(directory_metadata_op(next_state, root_dir.path, "dir_parent_update"))
     return next_state, operations
 
 

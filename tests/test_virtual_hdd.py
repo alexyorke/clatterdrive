@@ -313,7 +313,7 @@ def test_virtual_hdd_clusters_adjacent_writeback_entries_into_fewer_media_ops(is
 
         batch = vhdd._dequeue_writeback_batch(force=True)
         operations = vhdd._cluster_writeback_operations(batch)
-        data_operations = [operation for operation in operations if operation.kind == "data"]
+        data_operations = [operation for operation in operations if operation.kind == "writeback"]
 
         assert len(batch) > 4
         assert len(operations) < len(batch)
@@ -422,6 +422,42 @@ def test_virtual_hdd_can_emit_to_injected_event_sink(isolated_backing_dir: Path)
         assert any(event.op_kind == "data" for event in sink.events)
     finally:
         vhdd.stop()
+
+
+def test_many_small_writes_emit_more_metadata_events_than_one_large_write(
+    isolated_backing_dir: Path,
+) -> None:
+    class CapturingSink:
+        def __init__(self) -> None:
+            self.events: list[StorageEvent] = []
+
+        def publish_event(self, event: StorageEvent) -> None:
+            self.events.append(event)
+
+    large_sink = CapturingSink()
+    large = VirtualHDD(str(isolated_backing_dir / "large"), latency_scale=0.0, event_sink=large_sink)
+    try:
+        large.access_file("/large.bin", 0, 16 * 4096, is_write=True)
+        large.sync_all()
+    finally:
+        large.stop()
+
+    small_sink = CapturingSink()
+    small = VirtualHDD(str(isolated_backing_dir / "small"), latency_scale=0.0, event_sink=small_sink)
+    try:
+        small.create_directory("/small")
+        for index in range(16):
+            small.access_file(f"/small/file-{index:02d}.bin", 0, 4096, is_write=True)
+        small.sync_all()
+    finally:
+        small.stop()
+
+    large_metadata_events = [event for event in large_sink.events if event.op_kind in {"journal", "metadata"}]
+    small_metadata_events = [event for event in small_sink.events if event.op_kind in {"journal", "metadata"}]
+
+    assert len(small_metadata_events) > len(large_metadata_events)
+    assert max(event.block_count for event in large_sink.events) >= 16
+
 
 def test_random_operation_invariants_hold_under_mixed_workload(isolated_backing_dir: Path) -> None:
     random.seed(3)

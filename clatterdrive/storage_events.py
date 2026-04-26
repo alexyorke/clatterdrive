@@ -28,6 +28,12 @@ class StorageEvent:
     transfer_activity: float = 0.0
     motion_duration_ms: float = 0.0
     settle_duration_ms: float = 0.0
+    size_bytes: int = 0
+    block_count: int = 0
+    extent_count: int = 0
+    transfer_ms: float = 0.0
+    directory_entry_count: int = 0
+    fragmentation_score: int = 0
 
     # Legacy compatibility telemetry. The current synth should prefer the
     # command-domain fields above and treat these as optional fallbacks only.

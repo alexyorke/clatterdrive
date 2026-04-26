@@ -97,18 +97,52 @@ def _exercise_webdav(base_url: str) -> None:
     if status != 201:
         raise RuntimeError(f"MKCOL failed with HTTP {status}")
 
-    payload = bytes(range(256)) * 2048
-    status, _body, _headers = _request(base_url, "PUT", "/e2e/upload.bin", payload)
+    payload = bytes(range(256)) * 1024
+    status, _body, _headers = _request(base_url, "PUT", "/e2e/large.bin", payload)
     if status not in {200, 201, 204}:
-        raise RuntimeError(f"PUT failed with HTTP {status}")
+        raise RuntimeError(f"large PUT failed with HTTP {status}")
 
-    status, body, _headers = _request(base_url, "GET", "/e2e/upload.bin")
+    status, body, _headers = _request(base_url, "GET", "/e2e/large.bin")
     if status != 200 or body != payload:
         raise RuntimeError(f"GET failed with HTTP {status} and {len(body)} bytes")
 
-    status, body, _headers = _request(base_url, "PROPFIND", "/e2e", headers={"Depth": "1"})
-    if status != 207 or b"upload.bin" not in body:
-        raise RuntimeError(f"PROPFIND failed with HTTP {status}")
+    status, _body, _headers = _request(base_url, "MKCOL", "/e2e/small")
+    if status != 201:
+        raise RuntimeError(f"small MKCOL failed with HTTP {status}")
+    for index in range(16):
+        status, _body, _headers = _request(base_url, "PUT", f"/e2e/small/file-{index:02d}.bin", b"s" * 1024)
+        if status not in {200, 201, 204}:
+            raise RuntimeError(f"small PUT {index} failed with HTTP {status}")
+
+    status, _body, _headers = _request(base_url, "MKCOL", "/e2e/frag")
+    if status != 201:
+        raise RuntimeError(f"frag MKCOL failed with HTTP {status}")
+    for index in range(10):
+        status, _body, _headers = _request(base_url, "PUT", f"/e2e/frag/filler-{index:02d}.bin", b"f" * 4096)
+        if status not in {200, 201, 204}:
+            raise RuntimeError(f"filler PUT {index} failed with HTTP {status}")
+    for index in range(0, 10, 2):
+        status, _body, _headers = _request(base_url, "DELETE", f"/e2e/frag/filler-{index:02d}.bin")
+        if status != 204:
+            raise RuntimeError(f"filler DELETE {index} failed with HTTP {status}")
+    fragmented_payload = b"x" * (6 * 4096)
+    status, _body, _headers = _request(base_url, "PUT", "/e2e/frag/fragmented.bin", fragmented_payload)
+    if status not in {200, 201, 204}:
+        raise RuntimeError(f"fragmented PUT failed with HTTP {status}")
+    status, body, _headers = _request(base_url, "GET", "/e2e/frag/fragmented.bin")
+    if status != 200 or body != fragmented_payload:
+        raise RuntimeError(f"fragmented GET failed with HTTP {status} and {len(body)} bytes")
+
+    status, _body, _headers = _request(base_url, "MKCOL", "/e2e/list")
+    if status != 201:
+        raise RuntimeError(f"list MKCOL failed with HTTP {status}")
+    for index in range(96):
+        status, _body, _headers = _request(base_url, "PUT", f"/e2e/list/entry-{index:03d}.txt", b"l")
+        if status not in {200, 201, 204}:
+            raise RuntimeError(f"list PUT {index} failed with HTTP {status}")
+    status, body, _headers = _request(base_url, "PROPFIND", "/e2e/list", headers={"Depth": "1"})
+    if status != 207 or b"entry-095.txt" not in body:
+        raise RuntimeError(f"large directory PROPFIND failed with HTTP {status}")
 
 
 def _wav_metrics(path: Path) -> tuple[int, float, float]:
@@ -138,6 +172,27 @@ def _validate_artifacts() -> None:
     kinds = {str(event.get("op_kind")) for event in events}
     if "data" not in kinds or not ({"metadata", "journal"} & kinds):
         raise RuntimeError(f"Event trace did not capture expected WebDAV media events: {sorted(kinds)}")
+    max_block_count = max(int(event.get("block_count", 0) or 0) for event in events)
+    transfer_block_count = sum(
+        int(event.get("block_count", 0) or 0)
+        for event in events
+        if event.get("op_kind") in {"data", "writeback"}
+    )
+    max_transfer_ms = max(float(event.get("transfer_ms", 0.0) or 0.0) for event in events)
+    max_directory_entries = max(int(event.get("directory_entry_count", 0) or 0) for event in events)
+    max_fragmentation = max(int(event.get("fragmentation_score", 0) or 0) for event in events)
+    metadata_events = [event for event in events if event.get("op_kind") in {"journal", "metadata"}]
+    if len(metadata_events) < 16:
+        raise RuntimeError(f"Expected many small-file metadata events, saw {len(metadata_events)}")
+    if transfer_block_count < 64 or max_transfer_ms <= 0.0:
+        raise RuntimeError(
+            "Expected large transfer detail, "
+            f"transfer_blocks={transfer_block_count} max_transfer_ms={max_transfer_ms}"
+        )
+    if max_directory_entries < 96:
+        raise RuntimeError(f"Expected large directory detail, entries={max_directory_entries}")
+    if max_fragmentation <= 1:
+        raise RuntimeError(f"Expected fragmented workload detail, fragmentation={max_fragmentation}")
 
     if not WAV_PATH.exists():
         raise RuntimeError(f"Missing audio tee WAV: {WAV_PATH}")
@@ -147,7 +202,9 @@ def _validate_artifacts() -> None:
 
     print(
         f"Docker WebDAV audio smoke passed: events={len(events)} "
-        f"kinds={sorted(kinds)} frames={frames} rms={rms:.6f} peak={peak:.6f}"
+        f"kinds={sorted(kinds)} max_blocks={max_block_count} transfer_blocks={transfer_block_count} "
+        f"max_dir_entries={max_directory_entries} max_frag={max_fragmentation} "
+        f"frames={frames} rms={rms:.6f} peak={peak:.6f}"
     )
 
 

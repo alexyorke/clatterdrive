@@ -157,6 +157,12 @@ class OperationStats:
     retry_count: int = 0
     recovery_ms: float = 0.0
     maintenance_wait_ms: float = 0.0
+    size_bytes: int = 0
+    block_count: int = 0
+    extent_count: int = 0
+    transfer_ms: float = 0.0
+    directory_entry_count: int = 0
+    fragmentation_score: int = 0
 
     def __getitem__(self, key: str) -> Any:
         if key == "type":
@@ -204,6 +210,12 @@ def merge_operation_stats(op_type: str, *results: OperationStats | None) -> Oper
             retry_count=combined.retry_count + result.retry_count,
             recovery_ms=combined.recovery_ms + result.recovery_ms,
             maintenance_wait_ms=combined.maintenance_wait_ms + result.maintenance_wait_ms,
+            size_bytes=combined.size_bytes + result.size_bytes,
+            block_count=combined.block_count + result.block_count,
+            extent_count=combined.extent_count + result.extent_count,
+            transfer_ms=combined.transfer_ms + result.transfer_ms,
+            directory_entry_count=max(combined.directory_entry_count, result.directory_entry_count),
+            fragmentation_score=max(combined.fragmentation_score, result.fragmentation_score),
         )
     if not saw_result:
         return empty_operation_stats(op_type)

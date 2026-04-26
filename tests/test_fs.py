@@ -26,6 +26,45 @@ def test_lookup_reads_directory_and_inode_metadata() -> None:
     assert operations[0].source == "dentry_lookup"
     assert operations[1].source == "inode_lookup"
 
+
+def test_directory_listing_cost_scales_with_child_count() -> None:
+    fs = FileSystemSimulator(total_gb=1)
+    fs.create_directory("/small")
+    fs.create_directory("/large")
+
+    for index in range(10):
+        fs.create_empty_file(f"/small/file-{index:04d}.txt")
+    for index in range(1000):
+        fs.create_empty_file(f"/large/file-{index:04d}.txt")
+
+    small_readdir = fs.list_directory("/small")[0]
+    large_readdir = fs.list_directory("/large")[0]
+
+    assert small_readdir.source == "readdir"
+    assert large_readdir.source == "readdir"
+    assert small_readdir.directory_entry_count == 10
+    assert large_readdir.directory_entry_count == 1000
+    assert large_readdir.block_count > small_readdir.block_count
+
+
+def test_fragmented_read_produces_more_data_operations_than_contiguous_read() -> None:
+    fs = FileSystemSimulator(total_gb=1)
+    fs.create_directory("/frag")
+    fs.write("/contiguous.bin", 0, 6 * 4096)
+
+    for index in range(10):
+        fs.write(f"/frag/filler-{index}.bin", 0, 4096)
+    for index in range(0, 10, 2):
+        fs.delete(f"/frag/filler-{index}.bin")
+    fs.write("/frag/fragmented.bin", 0, 6 * 4096)
+
+    contiguous_ops = fs.read("/contiguous.bin", 0, 6 * 4096)
+    fragmented_ops = fs.read("/frag/fragmented.bin", 0, 6 * 4096)
+
+    assert len(fragmented_ops) > len(contiguous_ops)
+    assert max(operation.fragmentation_score for operation in fragmented_ops) > 1
+
+
 def test_path_normalization_stays_posix_like_on_windows() -> None:
     fs = FileSystemSimulator(total_gb=1)
     assert fs._normalize_path("foo/bar") == "/foo/bar"

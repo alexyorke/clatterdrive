@@ -875,6 +875,12 @@ class HDDLatencyModel:
         servo_mode: str | None = None,
         motion_duration_ms: float = 0.0,
         settle_duration_ms: float = 0.0,
+        size_bytes: int = 0,
+        block_count: int = 0,
+        extent_count: int = 0,
+        transfer_ms: float = 0.0,
+        directory_entry_count: int = 0,
+        fragmentation_score: int = 0,
     ) -> None:
         if servo_mode is None:
             servo_mode = "track" if is_seq else None
@@ -916,6 +922,12 @@ class HDDLatencyModel:
                 transfer_activity=transfer_activity,
                 motion_duration_ms=motion_duration_ms,
                 settle_duration_ms=settle_duration_ms,
+                size_bytes=max(0, int(size_bytes)),
+                block_count=max(0, int(block_count)),
+                extent_count=max(0, int(extent_count)),
+                transfer_ms=max(0.0, float(transfer_ms)),
+                directory_entry_count=max(0, int(directory_entry_count)),
+                fragmentation_score=max(0, int(fragmentation_score)),
                 seek_distance=seek_dist,
             )
         )
@@ -1026,8 +1038,17 @@ class HDDLatencyModel:
         op_kind: str = "data",
         force_unit_access: bool = False,
         queue_depth: int = 1,
+        extent_count: int = 0,
+        directory_entry_count: int = 0,
+        fragmentation_score: int = 0,
     ) -> Stats:
         block_count = max(1, math.ceil(size_bytes / self.block_bytes))
+        requested_size_bytes = max(0, int(size_bytes))
+        reported_extent_count = (
+            max(1, int(extent_count))
+            if op_kind in {"data", "writeback"}
+            else max(0, int(extent_count))
+        )
         ready_info = self._wait_for_ready_poll()
 
         with self.io_lock:
@@ -1052,6 +1073,11 @@ class HDDLatencyModel:
                             is_seq=True,
                             queue_depth=queue_depth,
                             op_kind=op_kind,
+                            size_bytes=requested_size_bytes,
+                            block_count=block_count,
+                            extent_count=reported_extent_count,
+                            directory_entry_count=directory_entry_count,
+                            fragmentation_score=fragmentation_score,
                         )
                         self.last_access_time = now
                         return OperationStats(
@@ -1065,6 +1091,11 @@ class HDDLatencyModel:
                             ready_poll_ms=ready_info.ready_poll_ms,
                             ready_poll_count=ready_info.ready_poll_count,
                             maintenance_wait_ms=maintenance_wait_ms,
+                            size_bytes=requested_size_bytes,
+                            block_count=block_count,
+                            extent_count=reported_extent_count,
+                            directory_entry_count=directory_entry_count,
+                            fragmentation_score=fragmentation_score,
                         )
                     if overlap > 0:
                         partial_hit = True
@@ -1095,20 +1126,25 @@ class HDDLatencyModel:
                     + recovery_ms
                 )
                 seek_trigger = distance > 0 or target_head != self.current_head
+                transfer_ms = self._transfer_ms_for_span(lba, block_count)
+                is_sequential_access = op_kind in {"data", "writeback"} and (
+                    (op_kind == "data" and distance == 0 and not is_write)
+                    or (block_count >= 16 and reported_extent_count <= 1)
+                )
                 motion_duration_ms, settle_duration_ms = self._actuator_profile(
                     seek_distance=distance,
                     queue_depth=queue_depth,
                     op_kind=op_kind,
                     is_flush=(force_unit_access or op_kind == "flush"),
                     head_switch=(target_head != self.current_head),
-                    is_sequential=(distance == 0 and op_kind == "data" and not is_write),
+                    is_sequential=is_sequential_access,
                 )
 
                 self._publish_event(
                     self.current_rpm,
                     seek_trigger=seek_trigger,
                     seek_dist=distance,
-                    is_seq=(distance == 0 and op_kind == "data" and not is_write),
+                    is_seq=is_sequential_access,
                     queue_depth=queue_depth,
                     op_kind=op_kind,
                     is_flush=(force_unit_access or op_kind == "flush"),
@@ -1116,6 +1152,12 @@ class HDDLatencyModel:
                     motion_duration_ms=motion_duration_ms,
                     settle_duration_ms=settle_duration_ms,
                     target_rpm=self.target_rpm,
+                    size_bytes=size_bytes,
+                    block_count=block_count,
+                    extent_count=reported_extent_count,
+                    transfer_ms=transfer_ms,
+                    directory_entry_count=directory_entry_count,
+                    fragmentation_score=fragmentation_score,
                 )
 
             self._sleep_ms(total_latency_ms - ready_info.ready_poll_ms)
@@ -1148,6 +1190,12 @@ class HDDLatencyModel:
                     retry_count=retry_count,
                     recovery_ms=recovery_ms,
                     maintenance_wait_ms=maintenance_wait_ms,
+                    size_bytes=size_bytes,
+                    block_count=block_count,
+                    extent_count=reported_extent_count,
+                    transfer_ms=transfer_ms,
+                    directory_entry_count=directory_entry_count,
+                    fragmentation_score=fragmentation_score,
                 )
 
     def _background_tasks_loop(self) -> None:

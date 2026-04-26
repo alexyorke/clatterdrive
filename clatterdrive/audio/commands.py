@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from ..storage_events import StorageEvent
@@ -27,6 +28,12 @@ class AudioCommand:
     is_sequential: bool
     maintenance: bool
     retry: bool
+    size_bytes: int
+    block_count: int
+    extent_count: int
+    transfer_duration_s: float
+    directory_entry_count: int
+    fragmentation_score: int
 
 
 ScheduledCommand = tuple[AudioCommand, int]
@@ -68,22 +75,46 @@ def _derive_track_delta(event: StorageEvent) -> float:
 
 
 def _derive_transfer_activity(event: StorageEvent) -> float:
-    if event.transfer_activity:
-        return _clamp(float(event.transfer_activity), 0.0, 3.0)
-    base = {
-        "metadata": 0.38,
-        "journal": 0.58,
-        "data": 0.74,
-        "writeback": 0.86,
-        "flush": 1.05,
-        "background": 0.44,
-    }.get(event.op_kind, 0.52)
+    base = (
+        float(event.transfer_activity)
+        if event.transfer_activity
+        else {
+            "metadata": 0.38,
+            "journal": 0.58,
+            "data": 0.74,
+            "writeback": 0.86,
+            "flush": 1.05,
+            "background": 0.44,
+        }.get(event.op_kind, 0.52)
+    )
+    block_count = max(0, int(event.block_count))
+    if event.op_kind in {"data", "writeback"} and block_count > 1:
+        base *= 1.0 + min(0.35, 0.045 * math_log2(block_count + 1))
+    if event.op_kind == "metadata" and event.directory_entry_count > 0:
+        base *= 1.0 + min(0.45, 0.040 * math_log2(event.directory_entry_count + 1))
+    if event.fragmentation_score > 1:
+        base *= 1.0 + min(0.30, 0.035 * (event.fragmentation_score - 1))
     if event.is_sequential:
         base *= 0.82
     if event.is_flush:
         base *= 1.10
     base *= 1.0 + 0.06 * max(event.queue_depth - 1, 0)
     return _clamp(base, 0.0, 3.0)
+
+
+def math_log2(value: float) -> float:
+    if value <= 0.0:
+        return 0.0
+    return math.log2(value)
+
+
+def _derive_transfer_duration_s(event: StorageEvent) -> float:
+    duration = max(0.0, float(event.transfer_ms) / 1000.0)
+    if duration <= 0.0 and event.block_count > 0 and event.op_kind in {"data", "writeback", "metadata"}:
+        duration = max(0.002, min(0.350, event.block_count * 0.00010))
+    if event.directory_entry_count > 0:
+        duration = max(duration, min(0.250, 0.003 + event.directory_entry_count * 0.00005))
+    return min(duration, 0.750)
 
 
 def command_from_event(event: StorageEvent) -> AudioCommand:
@@ -121,4 +152,10 @@ def command_from_event(event: StorageEvent) -> AudioCommand:
         is_sequential=bool(event.is_sequential),
         maintenance=op_kind in {"background", "metadata"},
         retry=op_kind in {"retry", "recovery"},
+        size_bytes=max(0, int(event.size_bytes)),
+        block_count=max(0, int(event.block_count)),
+        extent_count=max(0, int(event.extent_count)),
+        transfer_duration_s=_derive_transfer_duration_s(event),
+        directory_entry_count=max(0, int(event.directory_entry_count)),
+        fragmentation_score=max(0, int(event.fragmentation_score)),
     )

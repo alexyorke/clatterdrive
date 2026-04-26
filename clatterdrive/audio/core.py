@@ -94,6 +94,9 @@ class SupervisorState:
     queue_depth: int = 1
     op_kind: str = "data"
     transfer_activity: float = 0.0
+    transfer_remaining_s: float = 0.0
+    directory_activity: float = 0.0
+    fragmentation_activity: float = 0.0
     target_track: float = 0.52
     seek_origin: float = 0.52
     seek_duration_s: float = 0.0
@@ -394,6 +397,17 @@ def _apply_command(
     supervisor.queue_depth = max(1, int(command.queue_depth))
     supervisor.op_kind = command.op_kind
     supervisor.transfer_activity = float(command.transfer_activity)
+    supervisor.transfer_remaining_s = max(supervisor.transfer_remaining_s, command.transfer_duration_s)
+    supervisor.directory_activity = (
+        min(1.0, math.log2(command.directory_entry_count + 1) / 11.0)
+        if command.directory_entry_count > 0
+        else 0.0
+    )
+    supervisor.fragmentation_activity = (
+        min(1.0, math.log2(command.fragmentation_score + 1) / 4.0)
+        if command.fragmentation_score > 1
+        else 0.0
+    )
     supervisor.is_sequential = bool(command.is_sequential)
     supervisor.is_flush = bool(command.is_flush)
     supervisor.maintenance_activity = 0.55 if command.maintenance else 0.0
@@ -418,6 +432,10 @@ def _apply_command(
 
     servo_mode = command.servo_mode or "idle"
     supervisor.servo_mode = servo_mode
+    if supervisor.directory_activity > 0.0 and command.op_kind == "metadata":
+        supervisor.wedge_impulse += 0.035 * supervisor.directory_activity
+    if supervisor.fragmentation_activity > 0.0:
+        supervisor.wedge_impulse += 0.045 * supervisor.fragmentation_activity
 
     if servo_mode == "park":
         supervisor.seek_origin = plant.actuator_pos
@@ -615,6 +633,13 @@ def _render_segment_internal(
                     else:
                         supervisor.servo_mode = "idle"
 
+            if supervisor.transfer_remaining_s > 0.0:
+                supervisor.transfer_remaining_s = max(0.0, supervisor.transfer_remaining_s - dt)
+            else:
+                supervisor.transfer_activity *= 0.9991
+                supervisor.directory_activity *= 0.9988
+                supervisor.fragmentation_activity *= 0.9990
+
             sectors_per_rev = _command_frequency(drive_profile, supervisor)
             servo_interval = 1.0 / max((plant.spindle_omega / TAU) * sectors_per_rev, 35.0)
             plant.servo_wedge_timer_s -= dt
@@ -638,6 +663,8 @@ def _render_segment_internal(
                 )
                 torque_command *= 1.0 + 0.03 * max(supervisor.queue_depth - 1, 0)
                 torque_command += 0.18 * supervisor.retry_activity
+                torque_command += 0.11 * supervisor.fragmentation_activity
+                torque_command += 0.07 * supervisor.directory_activity
                 torque_command = _clamp(torque_command, -8.0, 8.0)
                 torque_delta = torque_command - plant.actuator_torque
                 plant.actuator_torque += 0.62 * torque_delta
@@ -649,10 +676,14 @@ def _render_segment_internal(
             if supervisor.is_sequential and supervisor.transfer_activity > 0.2 and supervisor.heads_loaded:
                 plant.boundary_timer_s -= dt
                 if plant.boundary_timer_s <= 0.0:
-                    interval = max(0.004, 0.010 / max(supervisor.transfer_activity, 0.25))
+                    duration_scale = 0.82 if supervisor.transfer_remaining_s > 0.0 else 1.18
+                    interval = duration_scale * max(0.004, 0.010 / max(supervisor.transfer_activity, 0.25))
                     plant.boundary_timer_s += interval
                     supervisor.wedge_impulse += (
-                        0.045 * acoustic_profile.sequential_boundary_gain * (0.8 + 0.2 * rpm_norm)
+                        0.045
+                        * acoustic_profile.sequential_boundary_gain
+                        * (0.8 + 0.2 * rpm_norm)
+                        * (1.0 + 0.25 * supervisor.fragmentation_activity)
                     )
             else:
                 plant.boundary_timer_s = 0.0
@@ -771,6 +802,8 @@ def _render_segment_internal(
                 + 0.18 * abs(plant.actuator_vel)
                 + 0.10 * contact_force
                 + 0.06 * supervisor.transfer_activity
+                + 0.045 * supervisor.directory_activity
+                + 0.055 * supervisor.fragmentation_activity
             )
             enclosure_force = (
                 acoustic_profile.enclosure_coupling * (0.30 * base_force + 0.20 * cover_force)

@@ -76,6 +76,9 @@ class OSScheduler:
         is_write: bool,
         op_kind: str = "data",
         sync: bool = False,
+        extent_count: int = 0,
+        directory_entry_count: int = 0,
+        fragmentation_score: int = 0,
     ) -> str:
         now = time.monotonic()
         with self.condition:
@@ -93,6 +96,9 @@ class OSScheduler:
                 arrival_time=now,
                 read_deadline_s=self.read_deadline_s,
                 write_deadline_s=self.write_deadline_s,
+                extent_count=extent_count,
+                directory_entry_count=directory_entry_count,
+                fragmentation_score=fragmentation_score,
             )
             event = threading.Event()
             self.outstanding = outstanding_after_submit(self.outstanding)
@@ -176,6 +182,9 @@ class OSScheduler:
                     op_kind=request.op_kind,
                     force_unit_access=request.sync,
                     queue_depth=min(queue_depth, self.max_queue_depth),
+                    extent_count=request.extent_count,
+                    directory_entry_count=request.directory_entry_count,
+                    fragmentation_score=request.fragmentation_score,
                 )
             except Exception as exc:
                 result = exc

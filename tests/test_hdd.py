@@ -47,6 +47,20 @@ def test_zone_boundary_transfer_latency_uses_per_zone_rates() -> None:
     finally:
         model.stop()
 
+
+def test_transfer_workload_fields_scale_with_request_size() -> None:
+    model = HDDLatencyModel(addressable_blocks=100000, latency_scale=0.0)
+    try:
+        small = model.submit_physical_access(0, 4096, False, op_kind="data")
+        large = model.submit_physical_access(4096, 1024 * 1024, False, op_kind="data")
+
+        assert large["block_count"] > small["block_count"]
+        assert large["size_bytes"] > small["size_bytes"]
+        assert large["transfer_ms"] > small["transfer_ms"]
+    finally:
+        model.stop()
+
+
 def test_drive_profile_changes_rpm_and_command_classes() -> None:
     model = HDDLatencyModel(
         addressable_blocks=4096,

@@ -24,6 +24,8 @@ class DirtyWrite:
     size_bytes: int
     op_kind: str
     enqueued_at: float
+    directory_entry_count: int = 0
+    fragmentation_score: int = 0
 
     @property
     def block_count(self) -> int:
@@ -260,10 +262,13 @@ class VirtualHDD:
             ready_poll_ms=0.0,
             ready_poll_count=0,
             op_type="WRITE" if is_write else "READ",
+            extent_count=len([operation for operation in operations if operation.kind == "data"]),
         )
 
+        data_extent_count = len([operation for operation in operations if operation.kind == "data"])
         for operation in operations:
             size_bytes = operation.block_count * self.fs.block_size
+            operation_extent_count = data_extent_count if operation.kind == "data" else 0
             if self.scheduler:
                 request_id = self.scheduler.submit_bio(
                     operation.lba,
@@ -271,6 +276,9 @@ class VirtualHDD:
                     is_write,
                     op_kind=operation.kind,
                     sync=force_unit_access,
+                    extent_count=operation_extent_count,
+                    directory_entry_count=operation.directory_entry_count,
+                    fragmentation_score=operation.fragmentation_score,
                 )
                 result = self.scheduler.wait_for_completion(request_id)
             else:
@@ -280,6 +288,9 @@ class VirtualHDD:
                     is_write,
                     op_kind=operation.kind,
                     force_unit_access=force_unit_access,
+                    extent_count=operation_extent_count,
+                    directory_entry_count=operation.directory_entry_count,
+                    fragmentation_score=operation.fragmentation_score,
                 )
 
             total_stats = OperationStats(
@@ -295,6 +306,15 @@ class VirtualHDD:
                 ready_poll_count=total_stats.ready_poll_count + result.ready_poll_count,
                 op_type=total_stats.op_type,
                 transfer_rate_mbps=result.transfer_rate_mbps or total_stats.transfer_rate_mbps,
+                retry_count=total_stats.retry_count + result.retry_count,
+                recovery_ms=total_stats.recovery_ms + result.recovery_ms,
+                maintenance_wait_ms=total_stats.maintenance_wait_ms + result.maintenance_wait_ms,
+                size_bytes=total_stats.size_bytes + result.size_bytes,
+                block_count=total_stats.block_count + result.block_count,
+                extent_count=max(total_stats.extent_count, result.extent_count),
+                transfer_ms=total_stats.transfer_ms + result.transfer_ms,
+                directory_entry_count=max(total_stats.directory_entry_count, result.directory_entry_count),
+                fragmentation_score=max(total_stats.fragmentation_score, result.fragmentation_score),
             )
 
         return total_stats
@@ -308,8 +328,10 @@ class VirtualHDD:
                     DirtyWrite(
                         lba=operation.lba,
                         size_bytes=size_bytes,
-                        op_kind=operation.kind,
+                        op_kind="writeback" if operation.kind == "data" else operation.kind,
                         enqueued_at=self.clock.now(),
+                        directory_entry_count=operation.directory_entry_count,
+                        fragmentation_score=operation.fragmentation_score,
                     )
                 )
                 self.writeback_bytes += size_bytes
@@ -361,6 +383,8 @@ class VirtualHDD:
         current_start = sorted_batch[0].lba
         current_end = sorted_batch[0].lba + max(1, math.ceil(sorted_batch[0].size_bytes / self.fs.block_size))
         current_kind = sorted_batch[0].op_kind
+        current_directory_entry_count = sorted_batch[0].directory_entry_count
+        current_fragmentation_score = sorted_batch[0].fragmentation_score
 
         for dirty_write in sorted_batch[1:]:
             block_count = max(1, math.ceil(dirty_write.size_bytes / self.fs.block_size))
@@ -368,13 +392,38 @@ class VirtualHDD:
             dirty_end = dirty_start + block_count
             if dirty_write.op_kind == current_kind and dirty_start <= current_end + self.writeback_cluster_gap_blocks:
                 current_end = max(current_end, dirty_end)
+                current_directory_entry_count = max(
+                    current_directory_entry_count,
+                    dirty_write.directory_entry_count,
+                )
+                current_fragmentation_score = max(current_fragmentation_score, dirty_write.fragmentation_score)
                 continue
-            operations.append(IOOperation(current_start, current_end - current_start, current_kind, "writeback"))
+            operations.append(
+                IOOperation(
+                    current_start,
+                    current_end - current_start,
+                    current_kind,
+                    "writeback",
+                    current_directory_entry_count,
+                    current_fragmentation_score,
+                )
+            )
             current_start = dirty_start
             current_end = dirty_end
             current_kind = dirty_write.op_kind
+            current_directory_entry_count = dirty_write.directory_entry_count
+            current_fragmentation_score = dirty_write.fragmentation_score
 
-        operations.append(IOOperation(current_start, current_end - current_start, current_kind, "writeback"))
+        operations.append(
+            IOOperation(
+                current_start,
+                current_end - current_start,
+                current_kind,
+                "writeback",
+                current_directory_entry_count,
+                current_fragmentation_score,
+            )
+        )
         return operations
 
     def _writeback_loop(self) -> None:
