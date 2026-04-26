@@ -51,13 +51,25 @@ Windows options:
 - open `http://127.0.0.1:8080/` in Explorer as a network location
 - upload/download with `curl.exe`
 
-Example:
+Windows `curl.exe` example:
 
 ```powershell
-curl.exe -X MKCOL http://127.0.0.1:8080/demo/
-curl.exe -T "C:\path\to\file.bin" http://127.0.0.1:8080/demo/file.bin
-curl.exe http://127.0.0.1:8080/demo/file.bin --output "C:\path\to\copy.bin"
+$demoName = "demo-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
+$uploadPath = Join-Path $env:TEMP "clatterdrive-upload.bin"
+$downloadPath = Join-Path $env:TEMP "clatterdrive-download.bin"
+
+"hello from clatterdrive" | Set-Content -Path $uploadPath -Encoding ascii
+
+curl.exe -X MKCOL "http://127.0.0.1:8080/$demoName/"
+curl.exe -T $uploadPath "http://127.0.0.1:8080/$demoName/file.bin"
+curl.exe "http://127.0.0.1:8080/$demoName/file.bin" --output $downloadPath
 ```
+
+Notes:
+
+- `MKCOL` only works for a directory that does not already exist. If you reuse a name like `demo/`, `405 Method Not Allowed` is expected.
+- The `C:\path\to\...` strings were placeholders; replace them with real paths, or use the temp-file example above as-is.
+- `curl.exe --output` will fail if the parent directory does not exist.
 
 If live audio is enabled, directory creation and listing, uploads, downloads, overwrites, deletes, fragmented reads, and wake-from-standby activity all feed the audio model.
 
