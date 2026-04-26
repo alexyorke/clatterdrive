@@ -59,7 +59,7 @@ curl.exe -T "C:\path\to\file.bin" http://127.0.0.1:8080/demo/file.bin
 curl.exe http://127.0.0.1:8080/demo/file.bin --output "C:\path\to\copy.bin"
 ```
 
-If live audio is enabled, browsing directories, listing files, uploads, downloads, overwrites, and wake-from-standby activity all feed the audio model.
+If live audio is enabled, directory creation and listing, uploads, downloads, overwrites, deletes, fragmented reads, and wake-from-standby activity all feed the audio model.
 
 ## Useful Environment Variables
 
@@ -67,7 +67,9 @@ If live audio is enabled, browsing directories, listing files, uploads, download
 - `FAKE_HDD_PORT`: use a different port
 - `FAKE_HDD_BACKING_DIR`: use a different backing directory
 - `FAKE_HDD_AUDIO=off`: disable live audio
-- `FAKE_HDD_AUDIO_TEE_PATH`: also record live output to a WAV
+- `FAKE_HDD_AUDIO_TEE_PATH`: record rendered output to a WAV, even when live audio is off
+- `FAKE_HDD_EVENT_TRACE_PATH`: export a structured storage-event JSON trace on shutdown
+- `FAKE_HDD_TRACE_EVENTS=on`: print compact event debug lines to stderr
 - `FAKE_HDD_COLD_START=off`: start already ready
 - `FAKE_HDD_ASYNC_POWER_ON=off`: disable background startup sequencing
 - `FAKE_HDD_DRIVE_PROFILE`: choose a drive preset
@@ -118,13 +120,14 @@ uv run python -m tools.docker_webdav_audio_smoke
 ```
 
 This writes temporary artifacts under `.runtime/docker-e2e/`, uploads and downloads through WebDAV, then verifies both the event trace and tee WAV are nonempty.
+It also exercises large transfer, many-small-file, fragmented, and large-directory-listing workloads.
 
 ## Repo Layout
 
 - [clatterdrive](clatterdrive): packaged application code
-- [tools](tools): repo-local generators, profilers, trace exporters, and audits
+- [tools](tools): repo-local generators, profilers, trace exporters, audits, and fitting utilities
 - [samples](samples): checked-in demo WAVs
-- [docs](docs): GitHub Pages demo assets
+- [docs](docs): GitHub Pages demo assets plus the internal MH tuning lab
 - [tests](tests): test suite
 
 Key files:
