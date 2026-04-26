@@ -179,8 +179,17 @@ def family_prototypes(params: dict[str, float]) -> dict[str, FamilyPrototype]:
 
 
 def load_reference_bundle() -> ReferenceBundle:
-    samples, sample_rate = load_wav(LOCAL_REFS / "hdd-sample-best-window.wav")
-    events = json.loads((LOCAL_REFS / "hdd-sample-best-window-events.json").read_text(encoding="utf-8"))
+    wav_path = LOCAL_REFS / "hdd-sample-best-window.wav"
+    events_path = LOCAL_REFS / "hdd-sample-best-window-events.json"
+    missing = [path for path in (wav_path, events_path) if not path.exists()]
+    if missing:
+        missing_text = ", ".join(str(path.relative_to(ROOT)) for path in missing)
+        raise FileNotFoundError(
+            "Missing local MH reference bundle: "
+            f"{missing_text}. Populate .runtime/local_refs with the local calibration assets before running this tool."
+        )
+    samples, sample_rate = load_wav(wav_path)
+    events = json.loads(events_path.read_text(encoding="utf-8"))
     if sample_rate != SAMPLE_RATE:
         raise ValueError(f"expected {SAMPLE_RATE} Hz reference, got {sample_rate}")
     features = extract_reference_event_features(samples, events)

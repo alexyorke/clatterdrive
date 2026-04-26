@@ -240,6 +240,17 @@ uv run python -m tools.trace_audio_scenarios
 uv run python -m tools.audit_audio_stack
 ```
 
+Internal calibration tooling:
+
+```powershell
+uv run python -m tools.fit_mh_reference
+```
+
+Notes:
+
+- `tools.fit_mh_reference` is internal calibration tooling for the MH thrash lab, not part of the normal runtime path.
+- It requires a local reference bundle under `.runtime/local_refs/` that is intentionally not tracked in git.
+
 ## Limits
 
 - This is not a real block device or kernel filesystem.
