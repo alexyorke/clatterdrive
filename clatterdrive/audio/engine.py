@@ -42,6 +42,17 @@ HDDAudioEvent = StorageEvent
 HDDAudioEventBus = StorageEventBus
 
 
+def _parse_audio_device(value: str | None) -> int | str | None:
+    if value is None:
+        return None
+    candidate = value.strip()
+    if not candidate:
+        return None
+    if candidate.isdigit():
+        return int(candidate)
+    return candidate
+
+
 class _WaveTeeRecorder:
     """Incrementally records the rendered output stream to a mono WAV file."""
 
@@ -519,17 +530,33 @@ class HDDAudioEngine:
             self._start_headless_render_loop()
             return
         self.output_enabled = True
-        stream = sd.OutputStream(
-            samplerate=self.fs,
-            channels=1,
-            callback=self._audio_callback,
-            blocksize=self.chunk_size,
-        )
+        stream_kwargs: dict[str, Any] = {
+            "samplerate": self.fs,
+            "channels": 1,
+            "callback": self._audio_callback,
+            "blocksize": self.chunk_size,
+        }
+        device = _parse_audio_device(self.env.get("FAKE_HDD_AUDIO_DEVICE"))
+        if device is not None:
+            stream_kwargs["device"] = device
         try:
+            stream = sd.OutputStream(**stream_kwargs)
             stream.start()
-        except Exception:
-            stream.close()
-            raise
+        except Exception as exc:
+            stream = locals().get("stream")
+            if stream is not None:
+                stream.close()
+            pulse_server = self.env.get("PULSE_SERVER")
+            detail = ""
+            if device is not None:
+                detail = f" (device={device!r})"
+            elif pulse_server:
+                detail = f" (PULSE_SERVER={pulse_server!r})"
+            raise RuntimeError(
+                "live audio output could not be opened"
+                f"{detail}; use FAKE_HDD_AUDIO=off for headless runs or set "
+                "FAKE_HDD_AUDIO_DEVICE/PULSE_SERVER for container-host audio bridging"
+            ) from exc
         self.stream = stream
         self.time_origin = self.clock.now()
         self.render_frame_cursor = 0

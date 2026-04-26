@@ -67,6 +67,7 @@ If live audio is enabled, directory creation and listing, uploads, downloads, ov
 - `FAKE_HDD_PORT`: use a different port
 - `FAKE_HDD_BACKING_DIR`: use a different backing directory
 - `FAKE_HDD_AUDIO=off`: disable live audio
+- `FAKE_HDD_AUDIO_DEVICE`: pick an explicit output device index/name for PortAudio
 - `FAKE_HDD_AUDIO_TEE_PATH`: record rendered output to a WAV, even when live audio is off
 - `FAKE_HDD_EVENT_TRACE_PATH`: export a structured storage-event JSON trace on shutdown
 - `FAKE_HDD_TRACE_EVENTS=on`: print compact event debug lines to stderr
@@ -112,6 +113,24 @@ Or:
 docker build -t clatterdrive .
 docker run --rm -p 8080:8080 -e FAKE_HDD_AUDIO=off -v "${PWD}/backing_storage:/data" clatterdrive
 ```
+
+Audible container output needs an explicit host-audio bridge; Docker does not expose your speakers automatically. The supported path is a host PulseAudio/PipeWire server that the container can reach via `PULSE_SERVER`.
+
+Example:
+
+```powershell
+$env:FAKE_HDD_AUDIO = "live"
+$env:PULSE_SERVER = "host.docker.internal"
+docker compose up --build
+```
+
+If your host audio server requires a specific PortAudio device, also set:
+
+```powershell
+$env:FAKE_HDD_AUDIO_DEVICE = "0"
+```
+
+If you do not already have a PulseAudio/PipeWire network endpoint on the host, use the native host run instead of Docker for audible playback.
 
 Headless Docker smoke test for WebDAV plus rendered audio artifacts:
 

@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 from _pytest.monkeypatch import MonkeyPatch
 
+import clatterdrive.audio.engine as audio_engine_module
 from clatterdrive.audio import HDDAudioEngine, HDDAudioEvent
 from clatterdrive.audio.core import AudioDiagnosticTrace, render_chunk as render_audio_chunk
 from tools.generate_audio_samples import startup_only_duration
@@ -148,6 +149,37 @@ def test_audio_engine_can_disable_live_output_via_env(monkeypatch: MonkeyPatch) 
         engine.emit_telemetry(7200.0, seek_trigger=True, seek_dist=240, op_kind="data")
         chunk = engine.render_chunk(1024)
         assert float(np.max(np.abs(chunk))) > 0.001
+    finally:
+        engine.stop()
+
+
+def test_audio_engine_passes_explicit_device_to_sounddevice(monkeypatch: MonkeyPatch) -> None:
+    events: list[tuple[str, object]] = []
+
+    class FakeStream:
+        def __init__(self, **kwargs: object) -> None:
+            events.append(("init", kwargs.get("device")))
+
+        def start(self) -> None:
+            events.append(("start", None))
+
+        def stop(self) -> None:
+            events.append(("stop", None))
+
+        def close(self) -> None:
+            events.append(("close", None))
+
+    class FakeSD:
+        OutputStream = FakeStream
+
+    monkeypatch.setattr(audio_engine_module, "sd", FakeSD())
+    monkeypatch.setenv("FAKE_HDD_AUDIO", "live")
+    monkeypatch.setenv("FAKE_HDD_AUDIO_DEVICE", "7")
+    engine = HDDAudioEngine(seed=0)
+    engine.start()
+    try:
+        assert engine.output_enabled is True
+        assert events[:2] == [("init", 7), ("start", None)]
     finally:
         engine.stop()
 
