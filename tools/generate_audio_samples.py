@@ -4,6 +4,7 @@ import random
 import shutil
 import wave
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -12,6 +13,7 @@ import numpy.typing as npt
 from clatterdrive.audio import HDDAudioEngine, HDDAudioEvent
 from clatterdrive.hdd import HDDLatencyModel, StartupTracePoint
 from clatterdrive.profiles import AcousticProfile, DriveProfile
+from clatterdrive.runtime.deps import NoOpSleeper, RuntimeDeps
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +22,14 @@ DOCS_AUDIO_DIR = ROOT / "docs" / "audio"
 FloatArray = npt.NDArray[np.float64]
 ScenarioUpdater = Callable[[HDDAudioEngine, float, set[str]], None]
 PowerOnTrace = tuple[tuple[StartupTracePoint, ...], float]
+
+
+@dataclass
+class ScriptClock:
+    current_time: float = 0.0
+
+    def now(self) -> float:
+        return self.current_time
 
 
 def _load_power_on_trace(drive_profile: str | DriveProfile | None = None) -> PowerOnTrace:
@@ -84,11 +94,13 @@ def render_scenario(
     normalize_peak: float | None = None,
     force_silence_prefix_s: float = 0.0,
 ) -> Path:
+    clock = ScriptClock()
     engine = HDDAudioEngine(
         sample_rate=44100,
         seed=seed,
         drive_profile=drive_profile,
         acoustic_profile=acoustic_profile,
+        deps=RuntimeDeps(clock=clock, sleeper=NoOpSleeper()),
     )
     total_frames = int(duration_s * engine.fs)
     rendered: list[FloatArray] = []
@@ -98,6 +110,7 @@ def render_scenario(
         frames = min(engine.chunk_size, total_frames)
         chunk_index = len(rendered)
         current_time = (chunk_index * engine.chunk_size) / engine.fs
+        clock.current_time = current_time
         update_func(engine, current_time, emitted_flags)
         rendered.append(render_chunk(engine, frames))
         total_frames -= frames
