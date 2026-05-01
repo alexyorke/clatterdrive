@@ -257,5 +257,5 @@ Notes:
 - This is not a real block device or kernel filesystem.
 - Out-of-band edits to the backing tree are only partially reconciled.
 - WebDAV locks are in-memory and exist to satisfy clients like the Windows WebClient; they are not persisted across restart.
-- The project is trying to sound cool and feel plausible, not to be a reference-grade HDD/acoustics model.
-- The audio model is explicitly labeled by tier: physical state covers runtime variables such as spindle phase/RPM and actuator position/velocity; plausible model covers shapes such as motor lag, seek profiles, servo control, and modal resonators; artistic calibration covers coupling weights, gain curves, and output shaping chosen for sound.
+- The project is physically structured and benchmark-gated, but it is not yet a reference-grade HDD/acoustics model without measured drive constants and transfer functions.
+- The audio model is explicitly labeled by tier: physical state covers runtime variables such as spindle phase/RPM and actuator position/velocity; physical model covers normalized mechanics, source routing, modal radiation, and gain staging; artistic calibration is kept as an audit tier for any future nonphysical exception.

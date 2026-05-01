@@ -875,7 +875,7 @@ def _render_segment_internal(
             enclosure_signal=enclosure_signal,
             desk_signal=desk_signal,
         )
-        final_filter = physics.final_filter_step(
+        final_filter = physics.output_gain_stage_step(
             mixed=acoustic_mix.mixed,
             highpass_prev_input=state.output_highpass_prev_input,
             highpass_state=state.output_highpass_state,

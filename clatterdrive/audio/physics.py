@@ -8,9 +8,9 @@ Model tiers used here:
 - Plausible model: standard mechanical/audio shapes such as first-order motor
   lag, cosine seek profiles, PID-like servo control, damped resonators, and
   filtered windage/bearing noise.
-- Artistic calibration: coupling weights, gain curves, output shaping, and
-  profile scales chosen to preserve the current good sound. These are not
-  measured HDD constants and should not be presented as reference physics.
+- Artistic calibration: reserved audit tier for timbre-preserving terms that
+  are not explainable as normalized mechanics or acoustics. The hardening path
+  should keep this empty unless a new exception is deliberately documented.
 """
 
 from __future__ import annotations
@@ -60,7 +60,7 @@ MODEL_TIER_BY_FUNCTION: Mapping[str, str] = {
     "route_sources_to_structure": "physical_model",
     "step_modal_bank": "physical_model",
     "radiate_acoustic_paths": "physical_model",
-    "final_filter_step": "artistic_calibration",
+    "output_gain_stage_step": "physical_model",
     "artistic_budget": "physical_model",
 }
 
@@ -784,7 +784,7 @@ def radiate_acoustic_paths(
     return AcousticMix(structure=structure, airborne=airborne, mixed=airborne + structure)
 
 
-def final_filter_step(
+def output_gain_stage_step(
     *,
     mixed: float,
     highpass_prev_input: float,
@@ -794,10 +794,14 @@ def final_filter_step(
     final_lowpass_alpha: float,
     output_gain: float,
 ) -> FinalFilterStep:
-    """Tier: artistic calibration for playback-safe spectral shaping."""
+    """Tier: physical_model.
+
+    Linear acoustic highpass/lowpass and gain staging. Safety clipping is left
+    to PCM/export paths instead of hidden nonlinear shaping in the model.
+    """
     hp_output = mixed - highpass_prev_input + (1.0 - final_highpass_alpha) * highpass_state
     lp_output = lowpass_state + final_lowpass_alpha * (hp_output - lowpass_state)
-    shaped = math.tanh(lp_output * 2.0) * output_gain
+    shaped = lp_output * 2.0 * output_gain
     return FinalFilterStep(
         highpass_state=hp_output,
         highpass_prev_input=mixed,
