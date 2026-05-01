@@ -210,6 +210,7 @@ Key files:
 - [clatterdrive/app.py](clatterdrive/app.py): server startup and wiring
 - [clatterdrive/webdav/provider.py](clatterdrive/webdav/provider.py): WebDAV interception layer
 - [clatterdrive/hdd/latency.py](clatterdrive/hdd/latency.py): HDD timing and power-state model
+- [clatterdrive/hardware_priors.py](clatterdrive/hardware_priors.py): source-backed hardware priors and bounded calibration helpers
 - [clatterdrive/audio/core.py](clatterdrive/audio/core.py): audio plant and render logic
 - [clatterdrive/audio/physics.py](clatterdrive/audio/physics.py): labeled physical-state, plausible-model, and artistic-calibration audio primitives
 - [clatterdrive/audio/engine.py](clatterdrive/audio/engine.py): runtime audio shell
@@ -245,12 +246,14 @@ Internal calibration tooling:
 
 ```powershell
 uv run python -m tools.fit_mh_reference
+uv run python -m tools.calibrate_ironwolf_physics
 ```
 
 Notes:
 
 - `tools.fit_mh_reference` is internal calibration tooling for the MH thrash lab, not part of the normal runtime path.
 - It requires a local reference bundle under `.runtime/local_refs/` that is intentionally not tracked in git.
+- `tools.calibrate_ironwolf_physics` fits the Seagate IronWolf Pro 16TB source-backed hardware prior and writes its report under `.runtime/`.
 
 ## Limits
 

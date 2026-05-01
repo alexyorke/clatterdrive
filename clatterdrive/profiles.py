@@ -13,7 +13,8 @@ class DriveProfile:
     timings describe the simulated drive. Plausible model inputs: seek, spin,
     transfer, and command timing terms drive latency and motion. Artistic
     calibration inputs: harmonic weights, frequency scales, and audio gains tune
-    rendered sound and are not measured hardware constants.
+    rendered sound and are not measured hardware constants. Profiles may also
+    reference a source-backed hardware prior for derived physical constants.
     """
 
     name: str
@@ -59,6 +60,9 @@ class DriveProfile:
     bearing_gain: float
     boundary_excitation_gain: float
     helium: bool = False
+    hardware_prior: str | None = None
+    spindle_inertia_scale: float = 1.0
+    windage_drag_share_at_nominal: float = 0.04
 
 
 @dataclass(frozen=True)
@@ -301,6 +305,61 @@ DRIVE_PROFILES: dict[str, DriveProfile] = {
         bearing_gain=1.12,
         boundary_excitation_gain=1.34,
         helium=True,
+    ),
+    "seagate_ironwolf_pro_16tb": DriveProfile(
+        name="seagate_ironwolf_pro_16tb",
+        description="Seagate IronWolf Pro 16TB ST16000NT001/ST16000NTZ01 7200 RPM NAS drive.",
+        default_acoustic_profile="mounted_in_case",
+        rpm=7200,
+        platters=8,
+        avg_seek_ms=8.2,
+        track_to_track_ms=0.22,
+        settle_ms=0.32,
+        head_switch_ms=0.30,
+        transfer_rate_outer_mbps=285.0,
+        transfer_rate_inner_mbps=150.0,
+        ncq_depth=32,
+        read_ahead_kb=1024,
+        write_cache_mb=512,
+        dirty_expire_ms=260.0,
+        standby_after_s=900.0,
+        unload_after_s=120.0,
+        low_rpm_after_s=600.0,
+        spinup_ms=25000.0,
+        standby_to_ready_ms=25000.0,
+        power_on_to_ready_ms=25000.0,
+        unload_to_ready_ms=950.0,
+        low_rpm_to_ready_ms=4800.0,
+        low_rpm_rpm=6300,
+        spin_down_ms=20000.0,
+        ready_poll_ms=30.0,
+        identify_poll_ms=0.30,
+        test_unit_ready_ms=0.16,
+        command_overhead_ms=0.08,
+        command_overheads_by_kind=(
+            ("metadata", 0.08),
+            ("journal", 0.13),
+            ("data", 0.08),
+            ("writeback", 0.10),
+            ("flush", 0.20),
+            ("background", 0.10),
+        ),
+        queue_depth_penalty_ms=0.055,
+        spindle_harmonics=(1, 2, 3, 4, 5),
+        spindle_harmonic_weights=(1.0, 0.46, 0.25, 0.15, 0.07),
+        platter_frequency_scale=1.02,
+        cover_frequency_scale=1.01,
+        actuator_frequency_scale=1.05,
+        platter_gain_scale=1.08,
+        cover_gain_scale=1.05,
+        actuator_gain_scale=1.06,
+        windage_gain=0.96,
+        bearing_gain=1.02,
+        boundary_excitation_gain=1.10,
+        helium=True,
+        hardware_prior="seagate_ironwolf_pro_16tb",
+        spindle_inertia_scale=1.1666945025797724,
+        windage_drag_share_at_nominal=0.3397498862622795,
     ),
     "external_usb_enclosure": DriveProfile(
         name="external_usb_enclosure",

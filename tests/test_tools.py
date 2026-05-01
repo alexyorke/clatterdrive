@@ -9,6 +9,7 @@ from _pytest.monkeypatch import MonkeyPatch
 
 from tools import generate_audio_samples
 from tools import audio_physics_benchmark
+from tools import calibrate_ironwolf_physics
 from tools import profile_core
 from tools import profile_fragmentation
 import smoke
@@ -58,6 +59,19 @@ def test_audio_physics_benchmark_reports_required_metrics() -> None:
     metadata = audio_physics_benchmark.metadata_storm_metrics()
     assert metadata["correlation"] >= 0.999
     assert metadata["rms_delta"] <= 0.010
+
+
+def test_ironwolf_calibration_report_builder_can_skip_expensive_benchmark() -> None:
+    report = calibrate_ironwolf_physics.build_report(
+        seed=5,
+        samples=12,
+        coordinate_passes=1,
+        include_benchmark=False,
+    )
+
+    assert report["prior"]["model_ids"] == ["ST16000NT001", "ST16000NTZ01"]
+    assert report["fit"]["violations"] == []
+    assert report["benchmarks"] == {}
 
 
 def test_trace_audio_scenario_writes_json_and_svg(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:

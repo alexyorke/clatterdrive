@@ -224,6 +224,7 @@ def exact_rotor_step(
     time_constant_s: float,
     dt: float,
     *,
+    inertia: float = 1.0,
     windage_drag_share_at_nominal: float = 0.04,
 ) -> float:
     """Tier: physical_model.
@@ -242,6 +243,7 @@ def exact_rotor_step(
             omega=next_omega,
             target_omega=target_omega,
             time_constant_s=time_constant_s,
+            inertia=inertia,
             windage_drag_share_at_nominal=windage_drag_share_at_nominal,
         )
         next_omega += balance.angular_accel * step_dt
@@ -258,11 +260,13 @@ def step_spindle_motor(
     spinup_ms: float,
     spin_down_ms: float,
     dt: float,
+    inertia: float = 1.0,
+    windage_drag_share_at_nominal: float = 0.04,
 ) -> SpindleStep:
     """Tier: physical state plus plausible model.
 
-    Evolves spindle omega/phase and motor drive. The lag constants are calibrated
-    model terms, not measured torque/inertia parameters.
+    Evolves spindle omega/phase and motor drive. Profiles can pass source-backed
+    inertia and windage-drag terms; existing profiles retain legacy defaults.
     """
     omega_before = spindle_omega
     drive_target = 0.0
@@ -272,23 +276,24 @@ def step_spindle_motor(
     drive_alpha = 1.0 - math.exp(-dt / drive_tau)
     next_motor_drive = motor_drive + (drive_target - motor_drive) * drive_alpha
     tau_s = max(spinup_ms / 1000.0, 0.35) if target_omega >= omega_before else max(spin_down_ms / 1000.0, 0.28)
-    windage_drag_share = 0.04
     torque_balance = rotor_torque_balance(
         omega=omega_before,
         target_omega=target_omega,
         time_constant_s=tau_s,
-        windage_drag_share_at_nominal=windage_drag_share,
+        inertia=inertia,
+        windage_drag_share_at_nominal=windage_drag_share_at_nominal,
     )
     next_omega = exact_rotor_step(
         omega_before,
         target_omega,
         tau_s,
         dt,
-        windage_drag_share_at_nominal=windage_drag_share,
+        inertia=inertia,
+        windage_drag_share_at_nominal=windage_drag_share_at_nominal,
     )
     phase_increment = 0.5 * (omega_before + next_omega) * dt
     rpm_norm = clamp(next_omega / max(nominal_omega, EPS), 0.0, 1.35)
-    motor_reaction = (next_omega - omega_before) / max(dt, EPS)
+    motor_reaction = inertia * (next_omega - omega_before) / max(dt, EPS)
     return SpindleStep(
         motor_drive=next_motor_drive,
         spindle_omega=next_omega,

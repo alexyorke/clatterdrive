@@ -11,6 +11,7 @@ PURE_MODULES = (
     "clatterdrive/audio/core.py",
     "clatterdrive/audio/physics.py",
     "clatterdrive/fs/core.py",
+    "clatterdrive/hardware_priors.py",
     "clatterdrive/hdd/core.py",
     "clatterdrive/scheduler_core.py",
 )

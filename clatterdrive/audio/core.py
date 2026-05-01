@@ -637,6 +637,8 @@ def _render_segment_internal(
             spinup_ms=drive_profile.spinup_ms,
             spin_down_ms=drive_profile.spin_down_ms,
             dt=dt,
+            inertia=drive_profile.spindle_inertia_scale,
+            windage_drag_share_at_nominal=drive_profile.windage_drag_share_at_nominal,
         )
         plant.motor_drive = spindle_step.motor_drive
         plant.spindle_omega = spindle_step.spindle_omega
