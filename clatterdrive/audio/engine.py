@@ -22,6 +22,7 @@ from .core import (
     ScheduledEvent,
     apply_event as apply_audio_event,
     build_mode_bank,
+    concatenate_diagnostic_traces,
     initialize_render_state,
     reinitialize_mode_state,
     render_diagnostic_chunk as render_audio_diagnostic_chunk,
@@ -204,19 +205,7 @@ class HDDAudioSynthesizer:
         scheduled_events: Sequence[ScheduledEvent] = (),
     ) -> AudioDiagnosticTrace:
         if frames <= 0:
-            empty = np.zeros(0, dtype=np.float64)
-            return AudioDiagnosticTrace(
-                time_s=empty,
-                target_rpm=empty,
-                actual_rpm=empty,
-                actuator_pos=empty,
-                actuator_torque=empty,
-                structure_base_velocity=empty,
-                structure_cover_velocity=empty,
-                structure_enclosure_velocity=empty,
-                structure_desk_velocity=empty,
-                output=empty,
-            )
+            return concatenate_diagnostic_traces(())
 
         frame_origin = self.state.sample_clock
         bearing_noise = self._noise_block(frame_origin, frames, salt=17)
@@ -419,32 +408,7 @@ class HDDAudioEngine:
                 self.tee_recorder.write_chunk(np.concatenate([trace.output for trace in diagnostics]))
             self.last_render_at = self.clock.now()
 
-        if not diagnostics:
-            empty = np.zeros(0, dtype=np.float64)
-            return AudioDiagnosticTrace(
-                time_s=empty,
-                target_rpm=empty,
-                actual_rpm=empty,
-                actuator_pos=empty,
-                actuator_torque=empty,
-                structure_base_velocity=empty,
-                structure_cover_velocity=empty,
-                structure_enclosure_velocity=empty,
-                structure_desk_velocity=empty,
-                output=empty,
-            )
-        return AudioDiagnosticTrace(
-            time_s=np.concatenate([trace.time_s for trace in diagnostics]),
-            target_rpm=np.concatenate([trace.target_rpm for trace in diagnostics]),
-            actual_rpm=np.concatenate([trace.actual_rpm for trace in diagnostics]),
-            actuator_pos=np.concatenate([trace.actuator_pos for trace in diagnostics]),
-            actuator_torque=np.concatenate([trace.actuator_torque for trace in diagnostics]),
-            structure_base_velocity=np.concatenate([trace.structure_base_velocity for trace in diagnostics]),
-            structure_cover_velocity=np.concatenate([trace.structure_cover_velocity for trace in diagnostics]),
-            structure_enclosure_velocity=np.concatenate([trace.structure_enclosure_velocity for trace in diagnostics]),
-            structure_desk_velocity=np.concatenate([trace.structure_desk_velocity for trace in diagnostics]),
-            output=np.concatenate([trace.output for trace in diagnostics]),
-        )
+        return concatenate_diagnostic_traces(diagnostics)
 
     def export_diagnostics_json(
         self,
@@ -456,17 +420,13 @@ class HDDAudioEngine:
         diagnostics = self.render_diagnostics(total_frames, chunk_size=chunk_size)
         payload = {
             "sample_rate": self.fs,
-            "time_s": diagnostics.time_s.tolist(),
-            "target_rpm": diagnostics.target_rpm.tolist(),
-            "actual_rpm": diagnostics.actual_rpm.tolist(),
-            "actuator_pos": diagnostics.actuator_pos.tolist(),
-            "actuator_torque": diagnostics.actuator_torque.tolist(),
-            "structure_base_velocity": diagnostics.structure_base_velocity.tolist(),
-            "structure_cover_velocity": diagnostics.structure_cover_velocity.tolist(),
-            "structure_enclosure_velocity": diagnostics.structure_enclosure_velocity.tolist(),
-            "structure_desk_velocity": diagnostics.structure_desk_velocity.tolist(),
-            "output": diagnostics.output.tolist(),
         }
+        payload.update(
+            {
+                field_name: getattr(diagnostics, field_name).tolist()
+                for field_name in diagnostics.__dataclass_fields__
+            }
+        )
         output_path = Path(path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(json.dumps(payload), encoding="utf-8")

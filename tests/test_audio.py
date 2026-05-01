@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import time
 import wave
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
@@ -12,7 +13,16 @@ from _pytest.monkeypatch import MonkeyPatch
 import clatterdrive.audio.engine as audio_engine_module
 from clatterdrive.audio import HDDAudioEngine, HDDAudioEvent
 from clatterdrive.audio.core import AudioDiagnosticTrace, render_chunk as render_audio_chunk
-from tools.generate_audio_samples import startup_only_duration
+from clatterdrive.runtime.deps import NoOpSleeper, RuntimeDeps
+from tools.generate_audio_samples import (
+    ScriptClock,
+    normalize_demo_audio,
+    render_chunk,
+    startup_only_duration,
+    update_idle_to_standby_wake,
+    update_metadata_storm,
+    update_spinup_idle,
+)
 from tools.reference_audio import compute_audio_features
 from tests.helpers import _audio_event, _wav_metrics
 
@@ -45,6 +55,49 @@ def _dominant_freq(values: np.ndarray, sample_rate: int, lo: float, hi: float) -
     mask = (freqs >= lo) & (freqs <= hi)
     peak_index = np.argmax(spectrum[mask]) + np.where(mask)[0][0]
     return float(freqs[peak_index])
+
+
+def _read_sample_wav(name: str) -> tuple[np.ndarray, int]:
+    with wave.open(str(Path("samples") / f"{name}.wav"), "rb") as wav_file:
+        samples = np.frombuffer(wav_file.readframes(wav_file.getnframes()), dtype=np.int16).astype(np.float64) / 32767.0
+        return samples, wav_file.getframerate()
+
+
+def _relative_feature_delta(candidate: float, golden: float) -> float:
+    return abs(candidate - golden) / max(abs(golden), 1e-9)
+
+
+def _render_readme_demo_array(
+    *,
+    duration_frames: int,
+    sample_rate: int,
+    update_func: Callable[[HDDAudioEngine, float, set[str]], None],
+    seed: int,
+    acoustic_profile: str,
+    force_silence_prefix_s: float = 0.0,
+) -> np.ndarray:
+    clock = ScriptClock()
+    engine = HDDAudioEngine(
+        sample_rate=sample_rate,
+        seed=seed,
+        acoustic_profile=acoustic_profile,
+        deps=RuntimeDeps(clock=clock, sleeper=NoOpSleeper()),
+    )
+    rendered: list[np.ndarray] = []
+    emitted_flags: set[str] = set()
+    remaining = duration_frames
+    while remaining > 0:
+        frames = min(engine.chunk_size, remaining)
+        current_time = (len(rendered) * engine.chunk_size) / engine.fs
+        clock.current_time = current_time
+        update_func(engine, current_time, emitted_flags)
+        rendered.append(render_chunk(engine, frames))
+        remaining -= frames
+    samples = normalize_demo_audio(np.concatenate(rendered), target_peak=0.92)
+    if force_silence_prefix_s > 0.0:
+        silence_frames = min(len(samples), int(force_silence_prefix_s * engine.fs))
+        samples[:silence_frames] = 0.0
+    return samples
 
 
 def _structure_metrics(profile: str) -> tuple[float, float, float, float, float]:
@@ -397,6 +450,57 @@ def test_audio_engine_metadata_storm_is_more_transient_than_sequential_stream() 
     assert metadata_mid_ratio > sequential_mid_ratio * 3.0
 
 
+def test_audio_engine_metadata_storm_matches_checked_in_golden() -> None:
+    golden, sample_rate = _read_sample_wav("metadata-storm")
+    rendered = _render_readme_demo_array(
+        duration_frames=len(golden),
+        sample_rate=sample_rate,
+        update_func=update_metadata_storm,
+        seed=23,
+        acoustic_profile="bare_drive_lab",
+    )
+
+    delta = rendered - golden
+    correlation = float(np.corrcoef(rendered, golden)[0, 1])
+
+    assert correlation >= 0.999
+    assert _rms(delta) <= 0.010
+
+
+def test_audio_engine_demo_samples_stay_feature_close_to_golden() -> None:
+    scenario_specs = (
+        ("spinup-idle-park", update_spinup_idle, 7, "drive_on_desk", 0.85, 0.60),
+        ("idle-standby-wake", update_idle_to_standby_wake, 19, "drive_on_desk", 0.0, 0.40),
+    )
+    for name, update_func, seed, acoustic_profile, silence_prefix_s, centroid_tolerance in scenario_specs:
+        golden, sample_rate = _read_sample_wav(name)
+        rendered = _render_readme_demo_array(
+            duration_frames=len(golden),
+            sample_rate=sample_rate,
+            update_func=update_func,
+            seed=seed,
+            acoustic_profile=acoustic_profile,
+            force_silence_prefix_s=silence_prefix_s,
+        )
+        rendered_features = compute_audio_features(rendered, sample_rate, "desktop_7200_internal")
+        golden_features = compute_audio_features(golden, sample_rate, "desktop_7200_internal")
+
+        assert _relative_feature_delta(_rms(rendered), _rms(golden)) <= 0.08
+        assert _relative_feature_delta(
+            float(rendered_features["transient_density"]),
+            float(golden_features["transient_density"]),
+        ) <= 0.25
+        assert _relative_feature_delta(
+            float(rendered_features["spectral_centroid_hz"]),
+            float(golden_features["spectral_centroid_hz"]),
+        ) <= centroid_tolerance
+        assert _relative_feature_delta(
+            float(rendered_features["low_band_ratio"]),
+            float(golden_features["low_band_ratio"]),
+        ) <= 0.30
+        assert abs(float(rendered_features["first_audible_s"]) - float(golden_features["first_audible_s"])) <= 0.05
+
+
 def test_audio_engine_park_contact_is_sharper_than_a_normal_seek() -> None:
     def transient_metrics(event: HDDAudioEvent) -> tuple[float, float]:
         engine = HDDAudioEngine(seed=0, acoustic_profile="drive_on_desk")
@@ -517,7 +621,86 @@ def test_audio_engine_can_export_offline_diagnostics_json(tmp_path: Path) -> Non
     assert len(payload["structure_cover_velocity"]) == 2048
     assert len(payload["structure_enclosure_velocity"]) == 2048
     assert len(payload["output"]) == 2048
+    assert len(payload["source_base_force"]) == 2048
+    assert len(payload["acoustic_airborne"]) == 2048
+    assert len(payload["wedge_force"]) == 2048
     assert float(np.max(np.abs(diagnostics.output))) > 0.001
+
+
+def test_audio_diagnostics_expose_physical_source_channels() -> None:
+    engine = HDDAudioEngine(seed=0, acoustic_profile="drive_on_desk")
+    diagnostics = engine.synthesizer.render_diagnostic_chunk(
+        4096,
+        scheduled_events=[
+            (
+                _audio_event(
+                    rpm=7200.0,
+                    target_rpm=7200.0,
+                    queue_depth=2,
+                    op_kind="metadata",
+                    servo_mode="seek",
+                    track_delta=0.24,
+                    motion_duration_ms=2.4,
+                    settle_duration_ms=1.6,
+                ),
+                0,
+            )
+        ],
+    )
+
+    for field_name in (
+        "source_base_force",
+        "source_cover_force",
+        "source_actuator_force",
+        "source_enclosure_force",
+        "source_desk_force",
+        "acoustic_airborne",
+        "acoustic_structure",
+        "windage",
+        "bearing",
+        "spindle_tone",
+        "wedge_force",
+        "contact_force",
+    ):
+        assert len(getattr(diagnostics, field_name)) == 4096
+
+    assert float(np.max(np.abs(diagnostics.source_base_force))) > 0.001
+    assert float(np.max(np.abs(diagnostics.source_actuator_force))) > 0.001
+    assert float(np.max(np.abs(diagnostics.acoustic_structure))) > 0.001
+    assert float(np.max(np.abs(diagnostics.acoustic_airborne))) > 1e-5
+    assert float(np.max(np.abs(diagnostics.windage))) > 1e-6
+    assert float(np.max(np.abs(diagnostics.bearing))) > 1e-6
+    assert float(np.max(np.abs(diagnostics.spindle_tone))) > 1e-5
+    assert float(np.max(np.abs(diagnostics.wedge_force))) > 0.001
+
+    park_engine = HDDAudioEngine(seed=0, acoustic_profile="drive_on_desk")
+    park_engine.synthesizer.apply_event(
+        _audio_event(
+            rpm=7200.0,
+            target_rpm=7200.0,
+            queue_depth=1,
+            op_kind="data",
+            power_state="active",
+            heads_loaded=True,
+            servo_mode="idle",
+        )
+    )
+    park_diagnostics = park_engine.synthesizer.render_diagnostic_chunk(
+        4096,
+        scheduled_events=[
+            (
+                _audio_event(
+                    rpm=7200.0,
+                    target_rpm=7200.0,
+                    queue_depth=1,
+                    op_kind="metadata",
+                    servo_mode="park",
+                ),
+                0,
+            )
+        ],
+    )
+    assert float(np.max(np.abs(park_diagnostics.contact_force))) > 0.001
 
 
 def test_audio_engine_render_is_chunk_size_invariant_for_same_event_stream() -> None:

@@ -1,20 +1,22 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field, replace
+from collections.abc import Sequence
+from dataclasses import dataclass, field, fields, replace
 
 import numpy as np
 import numpy.typing as npt
 
 from .commands import AudioCommand, command_from_event
+from . import physics
 from ..profiles import AcousticProfile, DriveProfile
 from ..storage_events import StorageEvent
 
 
 FloatArray = npt.NDArray[np.float64]
 ScheduledEvent = tuple[StorageEvent, int]
-TAU = 2.0 * math.pi
-EPS = 1e-9
+TAU = physics.TAU
+EPS = physics.EPS
 
 
 @dataclass(frozen=True)
@@ -142,6 +144,18 @@ class AudioDiagnosticTrace:
     actual_rpm: FloatArray
     actuator_pos: FloatArray
     actuator_torque: FloatArray
+    source_base_force: FloatArray
+    source_cover_force: FloatArray
+    source_actuator_force: FloatArray
+    source_enclosure_force: FloatArray
+    source_desk_force: FloatArray
+    acoustic_airborne: FloatArray
+    acoustic_structure: FloatArray
+    windage: FloatArray
+    bearing: FloatArray
+    spindle_tone: FloatArray
+    wedge_force: FloatArray
+    contact_force: FloatArray
     structure_base_velocity: FloatArray
     structure_cover_velocity: FloatArray
     structure_enclosure_velocity: FloatArray
@@ -157,12 +171,11 @@ class RenderBlockResult:
 
 
 def _clamp(value: float, lo: float, hi: float) -> float:
-    return min(max(value, lo), hi)
+    return physics.clamp(value, lo, hi)
 
 
 def _one_pole_alpha(cutoff_hz: float, sample_rate: int) -> float:
-    cutoff = max(float(cutoff_hz), 1.0)
-    return 1.0 - math.exp(-TAU * cutoff / sample_rate)
+    return physics.one_pole_alpha(cutoff_hz, sample_rate)
 
 
 def _configure_modes(
@@ -347,17 +360,17 @@ def reinitialize_mode_state(
 
 def _empty_trace() -> AudioDiagnosticTrace:
     empty = np.zeros(0, dtype=np.float64)
+    return AudioDiagnosticTrace(**{trace_field.name: empty for trace_field in fields(AudioDiagnosticTrace)})
+
+
+def concatenate_diagnostic_traces(traces: Sequence[AudioDiagnosticTrace]) -> AudioDiagnosticTrace:
+    if not traces:
+        return _empty_trace()
     return AudioDiagnosticTrace(
-        time_s=empty,
-        target_rpm=empty,
-        actual_rpm=empty,
-        actuator_pos=empty,
-        actuator_torque=empty,
-        structure_base_velocity=empty,
-        structure_cover_velocity=empty,
-        structure_enclosure_velocity=empty,
-        structure_desk_velocity=empty,
-        output=empty,
+        **{
+            trace_field.name: np.concatenate([getattr(trace, trace_field.name) for trace in traces])
+            for trace_field in fields(AudioDiagnosticTrace)
+        }
     )
 
 
@@ -527,19 +540,12 @@ def apply_event(
 
 
 def _sample_seek_reference(supervisor: SupervisorState) -> tuple[float, float]:
-    if supervisor.seek_duration_s <= 0.0:
-        return supervisor.target_track, 0.0
-    progress = _clamp(supervisor.seek_elapsed_s / max(supervisor.seek_duration_s, EPS), 0.0, 1.0)
-    eased = 0.5 - 0.5 * math.cos(math.pi * progress)
-    desired_pos = supervisor.seek_origin + (supervisor.target_track - supervisor.seek_origin) * eased
-    desired_vel = (
-        (supervisor.target_track - supervisor.seek_origin)
-        * 0.5
-        * math.pi
-        * math.sin(math.pi * progress)
-        / max(supervisor.seek_duration_s, EPS)
+    return physics.seek_reference(
+        supervisor.seek_origin,
+        supervisor.target_track,
+        supervisor.seek_elapsed_s,
+        supervisor.seek_duration_s,
     )
-    return desired_pos, desired_vel
 
 
 def _step_modal_bank(
@@ -548,13 +554,7 @@ def _step_modal_bank(
     velocity: FloatArray,
     force: float,
 ) -> tuple[FloatArray, FloatArray, float]:
-    if bank.size == 0:
-        return displacement, velocity, 0.0
-    kicked_velocity = velocity + bank.input_gain * force
-    new_displacement = bank.coeff_xx * displacement + bank.coeff_xv * kicked_velocity
-    new_velocity = bank.coeff_vx * displacement + bank.coeff_vv * kicked_velocity
-    signal = float(np.dot(new_velocity, bank.output_gain))
-    return new_displacement, new_velocity, signal
+    return physics.step_modal_bank(bank, displacement, velocity, force)
 
 
 def _step_reaction_mode(
@@ -567,9 +567,15 @@ def _step_reaction_mode(
     slow_tau_s: float,
     slow_input_scale: float,
 ) -> tuple[float, float, float]:
-    fast_state = (fast_state + excitation) * math.exp(-dt / max(fast_tau_s, 1e-5))
-    slow_state = (slow_state + excitation * slow_input_scale) * math.exp(-dt / max(slow_tau_s, 1e-5))
-    return fast_state, slow_state, fast_state - slow_state
+    return physics.step_reaction_mode(
+        fast_state,
+        slow_state,
+        excitation=excitation,
+        dt=dt,
+        fast_tau_s=fast_tau_s,
+        slow_tau_s=slow_tau_s,
+        slow_input_scale=slow_input_scale,
+    )
 
 
 def _render_segment_internal(
@@ -596,6 +602,18 @@ def _render_segment_internal(
             actual_rpm=np.zeros(frames, dtype=np.float64),
             actuator_pos=np.zeros(frames, dtype=np.float64),
             actuator_torque=np.zeros(frames, dtype=np.float64),
+            source_base_force=np.zeros(frames, dtype=np.float64),
+            source_cover_force=np.zeros(frames, dtype=np.float64),
+            source_actuator_force=np.zeros(frames, dtype=np.float64),
+            source_enclosure_force=np.zeros(frames, dtype=np.float64),
+            source_desk_force=np.zeros(frames, dtype=np.float64),
+            acoustic_airborne=np.zeros(frames, dtype=np.float64),
+            acoustic_structure=np.zeros(frames, dtype=np.float64),
+            windage=np.zeros(frames, dtype=np.float64),
+            bearing=np.zeros(frames, dtype=np.float64),
+            spindle_tone=np.zeros(frames, dtype=np.float64),
+            wedge_force=np.zeros(frames, dtype=np.float64),
+            contact_force=np.zeros(frames, dtype=np.float64),
             structure_base_velocity=np.zeros(frames, dtype=np.float64),
             structure_cover_velocity=np.zeros(frames, dtype=np.float64),
             structure_enclosure_velocity=np.zeros(frames, dtype=np.float64),
@@ -609,24 +627,22 @@ def _render_segment_internal(
     harmonic_phases = np.linspace(0.15, 1.4, len(mode_bank.spindle_harmonics), dtype=np.float64)
 
     for index in range(frames):
-        omega_before = plant.spindle_omega
         target_omega = supervisor.target_rpm * TAU / 60.0
-        drive_target = 0.0
-        if target_omega > EPS:
-            drive_target = _clamp((target_omega - omega_before) / target_omega, 0.0, 1.0)
-        drive_tau = 0.22 if supervisor.power_state == "starting" else 0.08
-        drive_alpha = 1.0 - math.exp(-dt / drive_tau)
-        plant.motor_drive += (drive_target - plant.motor_drive) * drive_alpha
-        if target_omega >= omega_before:
-            tau_s = max(drive_profile.spinup_ms / 1000.0, 0.35)
-        else:
-            tau_s = max(drive_profile.spin_down_ms / 1000.0, 0.28)
-        alpha = 1.0 - math.exp(-dt / tau_s)
-        plant.spindle_omega = omega_before + (target_omega - omega_before) * alpha
-        phase_increment = 0.5 * (omega_before + plant.spindle_omega) * dt
-        plant.spindle_phase = (plant.spindle_phase + phase_increment) % TAU
-        rpm_norm = _clamp(plant.spindle_omega / max(drive_profile.rpm * TAU / 60.0, EPS), 0.0, 1.35)
-        motor_reaction = (plant.spindle_omega - omega_before) / max(dt, EPS)
+        spindle_step = physics.step_spindle_motor(
+            plant.spindle_omega,
+            plant.motor_drive,
+            target_omega=target_omega,
+            nominal_omega=drive_profile.rpm * TAU / 60.0,
+            power_state=supervisor.power_state,
+            spinup_ms=drive_profile.spinup_ms,
+            spin_down_ms=drive_profile.spin_down_ms,
+            dt=dt,
+        )
+        plant.motor_drive = spindle_step.motor_drive
+        plant.spindle_omega = spindle_step.spindle_omega
+        plant.spindle_phase = (plant.spindle_phase + spindle_step.phase_increment) % TAU
+        rpm_norm = spindle_step.rpm_norm
+        motor_reaction = spindle_step.motor_reaction
         startup_active = _startup_active(plant, supervisor, target_omega)
         if startup_active and target_omega > 0.0 and plant.spindle_omega >= target_omega * 0.992:
             supervisor.power_state = "active"
@@ -686,26 +702,19 @@ def _render_segment_internal(
                 plant.servo_wedge_timer_s += servo_interval
                 error = desired_pos - plant.actuator_pos
                 velocity_error = desired_vel - plant.actuator_vel
-                mode_gain = 1.35 if supervisor.servo_mode == "seek" else 0.84 if supervisor.servo_mode == "track" else 1.08
-                kp = 18.0 * mode_gain
-                kd = 2.8 * mode_gain
-                ki = 7.5 if supervisor.servo_mode in {"seek", "settle"} else 2.6
-                plant.servo_integrator = _clamp(
-                    plant.servo_integrator + error * servo_interval,
-                    -0.08,
-                    0.08,
+                servo_step = physics.voice_coil_servo_step(
+                    error=error,
+                    velocity_error=velocity_error,
+                    integrator=plant.servo_integrator,
+                    servo_interval=servo_interval,
+                    servo_mode=supervisor.servo_mode,
+                    queue_depth=supervisor.queue_depth,
+                    retry_activity=supervisor.retry_activity,
+                    fragmentation_activity=supervisor.fragmentation_activity,
+                    directory_activity=supervisor.directory_activity,
                 )
-                torque_command = (
-                    kp * error
-                    + kd * velocity_error
-                    + ki * plant.servo_integrator
-                )
-                torque_command *= 1.0 + 0.03 * max(supervisor.queue_depth - 1, 0)
-                torque_command += 0.18 * supervisor.retry_activity
-                torque_command += 0.11 * supervisor.fragmentation_activity
-                torque_command += 0.07 * supervisor.directory_activity
-                torque_command = _clamp(torque_command, -8.0, 8.0)
-                torque_delta = torque_command - plant.actuator_torque
+                plant.servo_integrator = servo_step.integrator
+                torque_delta = servo_step.torque_command - plant.actuator_torque
                 plant.actuator_torque += 0.62 * torque_delta
                 impulse_scale = 0.10 if supervisor.servo_mode == "track" else 0.56 if supervisor.servo_mode == "seek" else 0.30
                 supervisor.wedge_impulse += abs(torque_delta) * impulse_scale
@@ -727,51 +736,55 @@ def _render_segment_internal(
             else:
                 plant.boundary_timer_s = 0.0
 
-        actuator_accel = 190.0 * plant.actuator_torque - 90.0 * plant.actuator_vel
-        plant.actuator_vel += actuator_accel * dt
-        plant.actuator_pos = _clamp(plant.actuator_pos + plant.actuator_vel * dt, 0.0, 1.0)
-
-        windage_low_alpha = 0.005 if startup_active else 0.020
-        windage_high_alpha = 0.024 if startup_active else 0.130
-        plant.windage_low_state += windage_low_alpha * (float(windage_noise_raw[index]) - plant.windage_low_state)
-        plant.windage_high_state += windage_high_alpha * (plant.windage_low_state - plant.windage_high_state)
-        windage_scale = (
-            rpm_norm * (0.002 + 0.050 * rpm_norm**3.8)
-            if startup_active
-            else (0.010 * rpm_norm + 0.18 * rpm_norm * rpm_norm)
+        actuator_step = physics.step_actuator_mechanics(
+            plant.actuator_pos,
+            plant.actuator_vel,
+            plant.actuator_torque,
+            dt,
         )
-        windage = (
-            (plant.windage_low_state - plant.windage_high_state)
-            * windage_scale
-            * drive_profile.windage_gain
+        plant.actuator_vel = actuator_step.velocity
+        plant.actuator_pos = actuator_step.position
+
+        windage_step = physics.step_windage_noise(
+            plant.windage_low_state,
+            plant.windage_high_state,
+            float(windage_noise_raw[index]),
+            rpm_norm=rpm_norm,
+            startup_active=startup_active,
+            windage_gain=drive_profile.windage_gain,
+        )
+        plant.windage_low_state = windage_step.primary_state
+        plant.windage_high_state = windage_step.secondary_state
+        windage = windage_step.signal
+
+        bearing_step = physics.step_bearing_noise(
+            plant.bearing_state,
+            float(bearing_noise_raw[index]),
+            rpm_norm=rpm_norm,
+            startup_active=startup_active,
+            bearing_gain=drive_profile.bearing_gain,
+        )
+        plant.bearing_state = bearing_step.primary_state
+        bearing = bearing_step.signal
+
+        spindle_tone = physics.spindle_harmonic_tone(
+            spindle_phase=plant.spindle_phase,
+            harmonics=mode_bank.spindle_harmonics,
+            weights=mode_bank.spindle_weights,
+            phase_offsets=harmonic_phases,
+            rpm_norm=rpm_norm,
+            startup_active=startup_active,
+            platter_gain=mode_bank.platter_gain,
         )
 
-        bearing_alpha = 0.010 if startup_active else 0.060
-        plant.bearing_state += bearing_alpha * (float(bearing_noise_raw[index]) - plant.bearing_state)
-        bearing_scale = (
-            rpm_norm * (0.002 + 0.012 * rpm_norm**2.0)
-            if startup_active
-            else (0.006 * rpm_norm + 0.034 * rpm_norm**1.25)
+        startup_ramp = physics.startup_ramp(supervisor.startup_elapsed_s, startup_active)
+        startup_drive_force = physics.startup_drive_force(plant.motor_drive, rpm_norm, startup_ramp)
+        torque_structure = physics.structural_torque_force(
+            startup_active=startup_active,
+            startup_ramp_value=startup_ramp,
+            motor_reaction=motor_reaction,
+            startup_drive_force_value=startup_drive_force,
         )
-        bearing = plant.bearing_state * bearing_scale * drive_profile.bearing_gain
-
-        harmonic = 0.0
-        for harmonic_index, harmonic_weight, phase_offset in zip(
-            mode_bank.spindle_harmonics,
-            mode_bank.spindle_weights,
-            harmonic_phases,
-            strict=True,
-        ):
-            startup_weight = rpm_norm ** (0.55 * max(harmonic_index - 1, 0)) if startup_active else 1.0
-            harmonic += harmonic_weight * startup_weight * math.sin(plant.spindle_phase * harmonic_index + float(phase_offset))
-        spindle_tone = harmonic * ((0.005 + 0.018 * rpm_norm * rpm_norm) if startup_active else (0.012 + 0.040 * rpm_norm * rpm_norm)) * mode_bank.platter_gain
-
-        startup_ramp = 1.0 - math.exp(-supervisor.startup_elapsed_s / 0.38) if startup_active else 1.0
-        startup_drive_force = plant.motor_drive * (0.18 + 0.82 * rpm_norm) * startup_ramp
-        if startup_active:
-            torque_structure = startup_ramp * 0.00012 * motor_reaction + 0.085 * startup_drive_force
-        else:
-            torque_structure = 0.0008 * motor_reaction
         mount_damping = max(acoustic_profile.mount_damping_scale, 0.35)
         wedge_excitation = 0.0 if startup_active else supervisor.wedge_impulse
         contact_excitation = 0.0 if startup_active else supervisor.contact_impulse
@@ -804,115 +817,79 @@ def _render_segment_internal(
                 slow_input_scale=0.72,
             )
 
-        if startup_active:
-            base_force = (
-                1.55 * torque_structure
-                + 0.14 * spindle_tone * startup_ramp
-                + 0.06 * bearing
-                + 0.03 * windage
-            )
-            cover_force = (
-                0.44 * torque_structure
-                + 0.08 * spindle_tone * startup_ramp
-                + 0.03 * windage
-                + 0.02 * bearing
-            )
-            actuator_force = 0.0
-            enclosure_force = (
-                acoustic_profile.enclosure_coupling * (0.52 * base_force + 0.22 * cover_force)
-                + acoustic_profile.internal_air_coupling * (0.04 * windage + 0.04 * spindle_tone)
-            )
-            desk_force = acoustic_profile.desk_coupling * (0.94 * base_force + 0.20 * cover_force)
-        else:
-            base_force = (
-                0.58 * torque_structure
-                + 0.56 * wedge_force
-                + 0.42 * contact_force
-                + 0.16 * bearing
-            )
-            cover_force = (
-                0.24 * torque_structure
-                + 0.34 * wedge_force
-                + 0.20 * contact_force
-                + 0.14 * windage
-            )
-            actuator_force = (
-                0.24 * wedge_force
-                + 0.18 * abs(plant.actuator_vel)
-                + 0.10 * contact_force
-                + 0.06 * supervisor.transfer_activity
-                + 0.045 * supervisor.directory_activity
-                + 0.055 * supervisor.fragmentation_activity
-            )
-            enclosure_force = (
-                acoustic_profile.enclosure_coupling * (0.30 * base_force + 0.20 * cover_force)
-                + acoustic_profile.internal_air_coupling * (0.14 * windage + 0.08 * spindle_tone)
-            )
-            desk_force = acoustic_profile.desk_coupling * (
-                0.44 * base_force
-                + 0.18 * cover_force
-                + 0.58 * wedge_force
-                + 0.26 * contact_force
-            )
+        source_forces = physics.source_forces(
+            startup_active=startup_active,
+            torque_structure=torque_structure,
+            spindle_tone=spindle_tone,
+            bearing=bearing,
+            windage=windage,
+            wedge_force=wedge_force,
+            contact_force=contact_force,
+            actuator_vel=plant.actuator_vel,
+            transfer_activity=supervisor.transfer_activity,
+            directory_activity=supervisor.directory_activity,
+            fragmentation_activity=supervisor.fragmentation_activity,
+            startup_ramp_value=startup_ramp,
+            acoustic_profile=acoustic_profile,
+        )
 
         plant.base_disp, plant.base_vel, base_signal = _step_modal_bank(
             mode_bank.base,
             plant.base_disp,
             plant.base_vel,
-            base_force,
+            source_forces.base,
         )
         plant.cover_disp, plant.cover_vel, cover_signal = _step_modal_bank(
             mode_bank.cover,
             plant.cover_disp,
             plant.cover_vel,
-            cover_force,
+            source_forces.cover,
         )
         plant.actuator_disp, plant.actuator_vel_modes, actuator_signal = _step_modal_bank(
             mode_bank.actuator,
             plant.actuator_disp,
             plant.actuator_vel_modes,
-            actuator_force,
+            source_forces.actuator,
         )
         plant.enclosure_disp, plant.enclosure_vel, enclosure_signal = _step_modal_bank(
             mode_bank.enclosure,
             plant.enclosure_disp,
             plant.enclosure_vel,
-            enclosure_force,
+            source_forces.enclosure,
         )
         plant.desk_disp, plant.desk_vel, desk_signal = _step_modal_bank(
             mode_bank.desk,
             plant.desk_disp,
             plant.desk_vel,
-            desk_force,
+            source_forces.desk,
         )
 
-        if startup_active:
-            startup_airborne_gate = rpm_norm**2.0
-            structure = (
-                mode_bank.structure_gain
-                * (1.72 * base_signal + 0.78 * cover_signal + 1.02 * enclosure_signal + 1.42 * desk_signal)
-            )
-            airborne = (
-                mode_bank.direct_gain * startup_airborne_gate * (0.16 * spindle_tone + 0.05 * windage + 0.03 * bearing)
-                + 0.07 * mode_bank.cover_gain * cover_signal
-            )
-        else:
-            structure = (
-                mode_bank.structure_gain
-                * (base_signal + cover_signal + enclosure_signal + desk_signal)
-            )
-            airborne = (
-                mode_bank.direct_gain * (0.18 * spindle_tone + 0.22 * windage + 0.12 * bearing)
-                + 0.12 * mode_bank.cover_gain * cover_signal
-                + 0.22 * mode_bank.actuator_gain * actuator_signal
-            )
-        mixed = airborne + structure
-        hp_output = mixed - state.output_highpass_prev_input + (1.0 - mode_bank.final_highpass_alpha) * state.output_highpass_state
-        state.output_highpass_prev_input = mixed
-        state.output_highpass_state = hp_output
-        lp_output = state.output_lowpass_state + mode_bank.final_lowpass_alpha * (hp_output - state.output_lowpass_state)
-        state.output_lowpass_state = lp_output
-        shaped = math.tanh(lp_output * 2.0) * acoustic_profile.output_gain
+        acoustic_mix = physics.mix_acoustic_output(
+            startup_active=startup_active,
+            rpm_norm=rpm_norm,
+            mode_bank=mode_bank,
+            spindle_tone=spindle_tone,
+            windage=windage,
+            bearing=bearing,
+            base_signal=base_signal,
+            cover_signal=cover_signal,
+            actuator_signal=actuator_signal,
+            enclosure_signal=enclosure_signal,
+            desk_signal=desk_signal,
+        )
+        final_filter = physics.final_filter_step(
+            mixed=acoustic_mix.mixed,
+            highpass_prev_input=state.output_highpass_prev_input,
+            highpass_state=state.output_highpass_state,
+            lowpass_state=state.output_lowpass_state,
+            final_highpass_alpha=mode_bank.final_highpass_alpha,
+            final_lowpass_alpha=mode_bank.final_lowpass_alpha,
+            output_gain=acoustic_profile.output_gain,
+        )
+        state.output_highpass_prev_input = final_filter.highpass_prev_input
+        state.output_highpass_state = final_filter.highpass_state
+        state.output_lowpass_state = final_filter.lowpass_state
+        shaped = final_filter.output
         samples[index] = shaped
 
         if with_diagnostics:
@@ -920,6 +897,18 @@ def _render_segment_internal(
             diagnostics.actual_rpm[index] = plant.spindle_omega * 60.0 / TAU
             diagnostics.actuator_pos[index] = plant.actuator_pos
             diagnostics.actuator_torque[index] = plant.actuator_torque
+            diagnostics.source_base_force[index] = source_forces.base
+            diagnostics.source_cover_force[index] = source_forces.cover
+            diagnostics.source_actuator_force[index] = source_forces.actuator
+            diagnostics.source_enclosure_force[index] = source_forces.enclosure
+            diagnostics.source_desk_force[index] = source_forces.desk
+            diagnostics.acoustic_airborne[index] = acoustic_mix.airborne
+            diagnostics.acoustic_structure[index] = acoustic_mix.structure
+            diagnostics.windage[index] = windage
+            diagnostics.bearing[index] = bearing
+            diagnostics.spindle_tone[index] = spindle_tone
+            diagnostics.wedge_force[index] = wedge_force
+            diagnostics.contact_force[index] = contact_force
             diagnostics.structure_base_velocity[index] = base_signal
             diagnostics.structure_cover_velocity[index] = cover_signal
             diagnostics.structure_enclosure_velocity[index] = enclosure_signal
@@ -997,32 +986,7 @@ def _render_block(
             traces.append(segment.diagnostics)
 
     samples = np.concatenate(chunks) if chunks else np.zeros(0, dtype=np.float64)
-    if not with_diagnostics or not traces:
-        diagnostics = _empty_trace() if not with_diagnostics else AudioDiagnosticTrace(
-            time_s=np.concatenate([trace.time_s for trace in traces]) if traces else np.zeros(0, dtype=np.float64),
-            target_rpm=np.concatenate([trace.target_rpm for trace in traces]) if traces else np.zeros(0, dtype=np.float64),
-            actual_rpm=np.concatenate([trace.actual_rpm for trace in traces]) if traces else np.zeros(0, dtype=np.float64),
-            actuator_pos=np.concatenate([trace.actuator_pos for trace in traces]) if traces else np.zeros(0, dtype=np.float64),
-            actuator_torque=np.concatenate([trace.actuator_torque for trace in traces]) if traces else np.zeros(0, dtype=np.float64),
-            structure_base_velocity=np.concatenate([trace.structure_base_velocity for trace in traces]) if traces else np.zeros(0, dtype=np.float64),
-            structure_cover_velocity=np.concatenate([trace.structure_cover_velocity for trace in traces]) if traces else np.zeros(0, dtype=np.float64),
-            structure_enclosure_velocity=np.concatenate([trace.structure_enclosure_velocity for trace in traces]) if traces else np.zeros(0, dtype=np.float64),
-            structure_desk_velocity=np.concatenate([trace.structure_desk_velocity for trace in traces]) if traces else np.zeros(0, dtype=np.float64),
-            output=np.concatenate([trace.output for trace in traces]) if traces else np.zeros(0, dtype=np.float64),
-        )
-    else:
-        diagnostics = AudioDiagnosticTrace(
-            time_s=np.concatenate([trace.time_s for trace in traces]),
-            target_rpm=np.concatenate([trace.target_rpm for trace in traces]),
-            actual_rpm=np.concatenate([trace.actual_rpm for trace in traces]),
-            actuator_pos=np.concatenate([trace.actuator_pos for trace in traces]),
-            actuator_torque=np.concatenate([trace.actuator_torque for trace in traces]),
-            structure_base_velocity=np.concatenate([trace.structure_base_velocity for trace in traces]),
-            structure_cover_velocity=np.concatenate([trace.structure_cover_velocity for trace in traces]),
-            structure_enclosure_velocity=np.concatenate([trace.structure_enclosure_velocity for trace in traces]),
-            structure_desk_velocity=np.concatenate([trace.structure_desk_velocity for trace in traces]),
-            output=np.concatenate([trace.output for trace in traces]),
-        )
+    diagnostics = concatenate_diagnostic_traces(traces) if with_diagnostics else _empty_trace()
     return RenderBlockResult(state=working_state, samples=samples, diagnostics=diagnostics)
 
 
