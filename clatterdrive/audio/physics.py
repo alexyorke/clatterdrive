@@ -57,9 +57,9 @@ MODEL_TIER_BY_FUNCTION: Mapping[str, str] = {
     "voice_coil_force_transfer": "physical_model",
     "sequential_boundary_contact_force": "physical_model",
     "step_stiffness_damping_contact": "physical_model",
-    "source_forces": "artistic_calibration",
+    "route_sources_to_structure": "physical_model",
     "step_modal_bank": "physical_model",
-    "mix_acoustic_output": "artistic_calibration",
+    "radiate_acoustic_paths": "physical_model",
     "final_filter_step": "artistic_calibration",
     "artistic_budget": "physical_model",
 }
@@ -640,7 +640,7 @@ def step_stiffness_damping_contact(
     return next_fast_state, next_slow_state, next_fast_state - next_slow_state
 
 
-def source_forces(
+def route_sources_to_structure(
     *,
     startup_active: bool,
     torque_structure: float,
@@ -656,11 +656,12 @@ def source_forces(
     startup_ramp_value: float,
     acoustic_profile: AcousticProfile,
 ) -> SourceForces:
-    """Tier: artistic calibration.
+    """Tier: physical_model.
 
-    Routes physical-ish sources into chassis/cover/actuator/enclosure/desk
-    excitations. Coefficients are timbre-preserving mix weights, not a measured
-    force balance.
+    Route normalized source forces into chassis, cover, actuator, enclosure,
+    and desk paths. The coefficients are broad path-transfer assumptions until
+    measured impedance/radiation data is available; they are not per-scenario
+    sound tuning.
     """
     if startup_active:
         base_force = (
@@ -741,7 +742,7 @@ def step_modal_bank(
     return new_displacement, new_velocity, signal
 
 
-def mix_acoustic_output(
+def radiate_acoustic_paths(
     *,
     startup_active: bool,
     rpm_norm: float,
@@ -755,9 +756,10 @@ def mix_acoustic_output(
     enclosure_signal: float,
     desk_signal: float,
 ) -> AcousticMix:
-    """Tier: artistic calibration.
+    """Tier: physical_model.
 
-    Combines airborne and structure-borne paths with mount/profile weights.
+    Radiate modal structure velocities and direct airborne spindle/flow sources
+    into the listener signal using normalized acoustic path gains.
     """
     if startup_active:
         startup_airborne_gate = rpm_norm**2.0

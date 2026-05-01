@@ -110,3 +110,5 @@ def test_audio_physics_artistic_budget_is_explicit() -> None:
     assert "head_media_event_forces" not in physics.artistic_budget()
     assert "voice_coil_force_transfer" not in physics.artistic_budget()
     assert "step_stiffness_damping_contact" not in physics.artistic_budget()
+    assert "route_sources_to_structure" not in physics.artistic_budget()
+    assert "radiate_acoustic_paths" not in physics.artistic_budget()

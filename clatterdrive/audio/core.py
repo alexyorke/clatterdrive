@@ -815,7 +815,7 @@ def _render_segment_internal(
                 slow_input_scale=0.72,
             )
 
-        source_forces = physics.source_forces(
+        source_forces = physics.route_sources_to_structure(
             startup_active=startup_active,
             torque_structure=torque_structure,
             spindle_tone=spindle_tone,
@@ -862,7 +862,7 @@ def _render_segment_internal(
             source_forces.desk,
         )
 
-        acoustic_mix = physics.mix_acoustic_output(
+        acoustic_mix = physics.radiate_acoustic_paths(
             startup_active=startup_active,
             rpm_norm=rpm_norm,
             mode_bank=mode_bank,
