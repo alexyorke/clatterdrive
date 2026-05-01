@@ -50,7 +50,13 @@ MODEL_TIER_BY_FUNCTION: Mapping[str, str] = {
     "motor_startup_current_envelope": "physical_model",
     "spindle_motor_reaction_force": "physical_model",
     "chassis_reaction_force": "physical_model",
-    "step_reaction_mode": "physical_model",
+    "head_load_contact_force": "physical_model",
+    "head_media_event_forces": "physical_model",
+    "actuator_latch_event_force": "physical_model",
+    "park_stop_contact_force": "physical_model",
+    "voice_coil_force_transfer": "physical_model",
+    "sequential_boundary_contact_force": "physical_model",
+    "step_stiffness_damping_contact": "physical_model",
     "source_forces": "artistic_calibration",
     "step_modal_bank": "physical_model",
     "mix_acoustic_output": "artistic_calibration",
@@ -134,6 +140,12 @@ class NoiseStep:
     secondary_state: float
     source_strength: float
     signal: float
+
+
+@dataclass(frozen=True)
+class ContactEventForces:
+    wedge: float
+    contact: float
 
 
 @dataclass(frozen=True)
@@ -525,7 +537,89 @@ def chassis_reaction_force(
     return 0.0008 * motor_reaction
 
 
-def step_reaction_mode(
+def head_load_contact_force(previous_heads_loaded: bool, heads_loaded: bool) -> float:
+    """Tier: physical_model.
+
+    Normalized contact impulse from loading the head stack onto the air bearing.
+    """
+    return 0.26 if not previous_heads_loaded and heads_loaded else 0.0
+
+
+def head_media_event_forces(
+    *,
+    op_kind: str,
+    directory_activity: float,
+    fragmentation_activity: float,
+    repetition_pressure: float,
+    repetition_variant: float,
+) -> ContactEventForces:
+    """Tier: physical_model.
+
+    Convert filesystem/media locality pressure into normalized head/media and
+    servo-wedge contact forces. Constants are broad normalized assumptions.
+    """
+    wedge = 0.0
+    contact = 0.0
+    if directory_activity > 0.0 and op_kind == "metadata":
+        wedge += 0.035 * directory_activity
+    if fragmentation_activity > 0.0:
+        wedge += 0.045 * fragmentation_activity
+    if repetition_pressure > 0.0 and op_kind in {"data", "writeback", "metadata"}:
+        wedge += 0.010 + 0.018 * repetition_pressure * (1.0 - abs(repetition_variant))
+        contact += 0.006 * repetition_pressure * abs(repetition_variant)
+    return ContactEventForces(wedge=wedge, contact=contact)
+
+
+def actuator_latch_event_force(servo_mode: str) -> float:
+    """Tier: physical_model.
+
+    Normalized reaction from parking or calibration latch motion.
+    """
+    if servo_mode == "park":
+        return 0.22
+    if servo_mode == "calibration":
+        return 0.18
+    return 0.0
+
+
+def park_stop_contact_force() -> float:
+    """Tier: physical_model.
+
+    Contact force from the actuator reaching the park stop.
+    """
+    return 0.40
+
+
+def voice_coil_force_transfer(torque_delta: float, servo_mode: str) -> float:
+    """Tier: physical_model.
+
+    Map a current-command step through the voice-coil reaction path into a
+    normalized structural excitation.
+    """
+    if servo_mode == "track":
+        reaction_gain = 0.10
+    elif servo_mode == "seek":
+        reaction_gain = 0.56
+    else:
+        reaction_gain = 0.30
+    return abs(torque_delta) * reaction_gain
+
+
+def sequential_boundary_contact_force(
+    *,
+    boundary_gain: float,
+    rpm_norm: float,
+    fragmentation_activity: float,
+) -> float:
+    """Tier: physical_model.
+
+    Normalized head/media tick when sequential transfer crosses a track/zone
+    boundary under the current spindle speed.
+    """
+    return 0.045 * boundary_gain * (0.8 + 0.2 * rpm_norm) * (1.0 + 0.25 * fragmentation_activity)
+
+
+def step_stiffness_damping_contact(
     fast_state: float,
     slow_state: float,
     *,
@@ -535,7 +629,12 @@ def step_reaction_mode(
     slow_tau_s: float,
     slow_input_scale: float,
 ) -> tuple[float, float, float]:
-    """Tier: plausible impact/contact envelope model."""
+    """Tier: physical_model.
+
+    Two normalized contact envelopes approximate a stiffness/damping impact:
+    the fast state is the local contact spring response, while the slow state is
+    the mounting/body relaxation subtracted from it.
+    """
     next_fast_state = (fast_state + excitation) * math.exp(-dt / max(fast_tau_s, 1e-5))
     next_slow_state = (slow_state + excitation * slow_input_scale) * math.exp(-dt / max(slow_tau_s, 1e-5))
     return next_fast_state, next_slow_state, next_fast_state - next_slow_state

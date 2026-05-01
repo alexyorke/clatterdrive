@@ -453,7 +453,7 @@ def _apply_command(
     supervisor.heads_loaded = bool(command.heads_loaded)
     supervisor.load_state = "loaded" if supervisor.heads_loaded else "parked"
     if not previous_heads_loaded and supervisor.heads_loaded:
-        supervisor.contact_impulse += 0.26
+        supervisor.contact_impulse += physics.head_load_contact_force(previous_heads_loaded, supervisor.heads_loaded)
         supervisor.load_state = "loading"
     if command.is_spinup:
         supervisor.power_state = "starting"
@@ -470,15 +470,15 @@ def _apply_command(
 
     servo_mode = command.servo_mode or "idle"
     supervisor.servo_mode = servo_mode
-    if supervisor.directory_activity > 0.0 and command.op_kind == "metadata":
-        supervisor.wedge_impulse += 0.035 * supervisor.directory_activity
-    if supervisor.fragmentation_activity > 0.0:
-        supervisor.wedge_impulse += 0.045 * supervisor.fragmentation_activity
-    if supervisor.repetition_pressure > 0.0 and command.op_kind in {"data", "writeback", "metadata"}:
-        supervisor.wedge_impulse += 0.010 + 0.018 * supervisor.repetition_pressure * (
-            1.0 - abs(supervisor.repetition_variant)
-        )
-        supervisor.contact_impulse += 0.006 * supervisor.repetition_pressure * abs(supervisor.repetition_variant)
+    media_event_forces = physics.head_media_event_forces(
+        op_kind=command.op_kind,
+        directory_activity=supervisor.directory_activity,
+        fragmentation_activity=supervisor.fragmentation_activity,
+        repetition_pressure=supervisor.repetition_pressure,
+        repetition_variant=supervisor.repetition_variant,
+    )
+    supervisor.wedge_impulse += media_event_forces.wedge
+    supervisor.contact_impulse += media_event_forces.contact
 
     if servo_mode == "park":
         supervisor.seek_origin = plant.actuator_pos
@@ -486,7 +486,7 @@ def _apply_command(
         supervisor.seek_duration_s = max(command.motion_duration_s, 0.024)
         supervisor.seek_elapsed_s = 0.0
         supervisor.settle_remaining_s = max(command.settle_duration_s, 0.010)
-        supervisor.wedge_impulse += 0.22
+        supervisor.wedge_impulse += physics.actuator_latch_event_force(servo_mode)
         supervisor.load_state = "parking"
         supervisor.heads_loaded = False
     elif servo_mode == "calibration":
@@ -496,7 +496,7 @@ def _apply_command(
         supervisor.seek_duration_s = max(command.motion_duration_s, 0.014)
         supervisor.seek_elapsed_s = 0.0
         supervisor.settle_remaining_s = max(command.settle_duration_s, 0.006)
-        supervisor.wedge_impulse += 0.18
+        supervisor.wedge_impulse += physics.actuator_latch_event_force(servo_mode)
     elif servo_mode in {"seek", "track"}:
         delta = command.track_delta
         if abs(delta) < 0.015 and servo_mode == "seek":
@@ -567,7 +567,7 @@ def _step_reaction_mode(
     slow_tau_s: float,
     slow_input_scale: float,
 ) -> tuple[float, float, float]:
-    return physics.step_reaction_mode(
+    return physics.step_stiffness_damping_contact(
         fast_state,
         slow_state,
         excitation=excitation,
@@ -679,7 +679,7 @@ def _render_segment_internal(
                     if supervisor.load_state == "parking":
                         supervisor.servo_mode = "idle"
                         supervisor.load_state = "parked"
-                        supervisor.contact_impulse += 0.40
+                        supervisor.contact_impulse += physics.park_stop_contact_force()
                     elif supervisor.is_sequential and supervisor.transfer_activity > 0.2:
                         supervisor.servo_mode = "track"
                     else:
@@ -716,8 +716,7 @@ def _render_segment_internal(
                 plant.servo_integrator = servo_step.integrator
                 torque_delta = servo_step.torque_command - plant.actuator_torque
                 plant.actuator_torque += 0.62 * torque_delta
-                impulse_scale = 0.10 if supervisor.servo_mode == "track" else 0.56 if supervisor.servo_mode == "seek" else 0.30
-                supervisor.wedge_impulse += abs(torque_delta) * impulse_scale
+                supervisor.wedge_impulse += physics.voice_coil_force_transfer(torque_delta, supervisor.servo_mode)
             else:
                 plant.actuator_torque *= 0.9992
 
@@ -727,11 +726,10 @@ def _render_segment_internal(
                     duration_scale = 0.82 if supervisor.transfer_remaining_s > 0.0 else 1.18
                     interval = duration_scale * max(0.004, 0.010 / max(supervisor.transfer_activity, 0.25))
                     plant.boundary_timer_s += interval
-                    supervisor.wedge_impulse += (
-                        0.045
-                        * acoustic_profile.sequential_boundary_gain
-                        * (0.8 + 0.2 * rpm_norm)
-                        * (1.0 + 0.25 * supervisor.fragmentation_activity)
+                    supervisor.wedge_impulse += physics.sequential_boundary_contact_force(
+                        boundary_gain=acoustic_profile.sequential_boundary_gain,
+                        rpm_norm=rpm_norm,
+                        fragmentation_activity=supervisor.fragmentation_activity,
                     )
             else:
                 plant.boundary_timer_s = 0.0

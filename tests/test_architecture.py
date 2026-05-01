@@ -107,3 +107,6 @@ def test_audio_physics_artistic_budget_is_explicit() -> None:
     assert "motor_startup_current_envelope" not in physics.artistic_budget()
     assert "spindle_motor_reaction_force" not in physics.artistic_budget()
     assert "chassis_reaction_force" not in physics.artistic_budget()
+    assert "head_media_event_forces" not in physics.artistic_budget()
+    assert "voice_coil_force_transfer" not in physics.artistic_budget()
+    assert "step_stiffness_damping_contact" not in physics.artistic_budget()
