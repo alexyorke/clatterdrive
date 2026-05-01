@@ -3,6 +3,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from clatterdrive.audio import physics
+
 
 PURE_MODULES = (
     "clatterdrive/audio/commands.py",
@@ -82,3 +84,22 @@ def test_audio_physics_honesty_tiers_are_documented() -> None:
 
     assert "not measured hardware constants" in normalized_profiles_text
     assert "not a measured CAD/acoustics transfer function" in normalized_profiles_text
+
+
+def test_audio_physics_artistic_budget_is_explicit() -> None:
+    tree = ast.parse(_module_path("clatterdrive/audio/physics.py").read_text(encoding="utf-8"))
+    public_functions = {
+        node.name
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and not node.name.startswith("_")
+    }
+
+    assert set(physics.MODEL_TIER_BY_FUNCTION) == public_functions
+    assert set(physics.MODEL_TIER_BY_FUNCTION.values()) <= set(physics.MODEL_TIERS)
+    assert physics.artistic_budget() == tuple(
+        name
+        for name, tier in physics.MODEL_TIER_BY_FUNCTION.items()
+        if tier == "artistic_calibration"
+    )
+    assert "step_windage_noise" not in physics.artistic_budget()
+    assert "step_bearing_noise" not in physics.artistic_budget()

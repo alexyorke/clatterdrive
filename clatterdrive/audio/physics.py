@@ -16,6 +16,7 @@ Model tiers used here:
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -28,14 +29,60 @@ from ..profiles import AcousticProfile
 FloatArray = npt.NDArray[np.float64]
 TAU = 2.0 * math.pi
 EPS = 1e-9
+MODEL_TIERS = ("physical_state", "physical_model", "artistic_calibration")
+
+
+MODEL_TIER_BY_FUNCTION: Mapping[str, str] = {
+    "clamp": "physical_model",
+    "one_pole_alpha": "physical_model",
+    "rotor_torque_balance": "physical_model",
+    "exact_rotor_step": "physical_model",
+    "step_spindle_motor": "physical_model",
+    "seek_reference": "physical_model",
+    "voice_coil_servo_step": "physical_model",
+    "voice_coil_servo_gains": "physical_model",
+    "step_actuator_mechanics": "physical_model",
+    "spindle_airflow_source": "physical_model",
+    "step_windage_noise": "physical_model",
+    "bearing_vibration_source": "physical_model",
+    "step_bearing_noise": "physical_model",
+    "spindle_harmonic_tone": "artistic_calibration",
+    "startup_ramp": "artistic_calibration",
+    "startup_drive_force": "artistic_calibration",
+    "structural_torque_force": "artistic_calibration",
+    "step_reaction_mode": "physical_model",
+    "source_forces": "artistic_calibration",
+    "step_modal_bank": "physical_model",
+    "mix_acoustic_output": "artistic_calibration",
+    "final_filter_step": "artistic_calibration",
+    "artistic_budget": "physical_model",
+}
+
+
+def artistic_budget() -> tuple[str, ...]:
+    """Return the remaining intentionally artistic model functions."""
+    return tuple(
+        function_name
+        for function_name, tier in MODEL_TIER_BY_FUNCTION.items()
+        if tier == "artistic_calibration"
+    )
 
 
 @dataclass(frozen=True)
 class TorqueBalance:
     motor_torque: float
+    viscous_drag_torque: float
+    windage_drag_torque: float
     drag_torque: float
     net_torque: float
     angular_accel: float
+
+
+@dataclass(frozen=True)
+class RotorDragModel:
+    inertia: float
+    viscous_drag: float
+    windage_drag: float
 
 
 @dataclass(frozen=True)
@@ -85,6 +132,7 @@ class ActuatorStep:
 class NoiseStep:
     primary_state: float
     secondary_state: float
+    source_strength: float
     signal: float
 
 
@@ -127,23 +175,65 @@ def rotor_torque_balance(
     target_omega: float,
     time_constant_s: float,
     inertia: float = 1.0,
+    windage_drag_share_at_nominal: float = 0.04,
 ) -> TorqueBalance:
-    damping = max(inertia, EPS) / max(time_constant_s, EPS)
-    motor_torque = damping * target_omega
-    drag_torque = damping * omega
+    """Tier: physical_model.
+
+    Balance motor torque against viscous bearing drag plus quadratic air drag.
+    Motor torque is the torque needed to hold `target_omega` against both drag
+    terms plus the transient acceleration implied by the time constant.
+    """
+    viscous_drag = max(inertia, EPS) / max(time_constant_s, EPS)
+    windage_drag = (
+        windage_drag_share_at_nominal
+        * viscous_drag
+        / max(abs(target_omega), EPS)
+        if abs(target_omega) > EPS
+        else 0.0
+    )
+    motor_torque = viscous_drag * target_omega + windage_drag * target_omega * abs(target_omega)
+    viscous_drag_torque = viscous_drag * omega
+    windage_drag_torque = windage_drag * omega * abs(omega)
+    drag_torque = viscous_drag_torque + windage_drag_torque
     net_torque = motor_torque - drag_torque
     return TorqueBalance(
         motor_torque=motor_torque,
+        viscous_drag_torque=viscous_drag_torque,
+        windage_drag_torque=windage_drag_torque,
         drag_torque=drag_torque,
         net_torque=net_torque,
         angular_accel=net_torque / max(inertia, EPS),
     )
 
 
-def exact_linear_rotor_step(omega: float, target_omega: float, time_constant_s: float, dt: float) -> float:
-    """Exact update for I*domega/dt = motor_torque - c*omega."""
-    decay = math.exp(-dt / max(time_constant_s, EPS))
-    return target_omega + (omega - target_omega) * decay
+def exact_rotor_step(
+    omega: float,
+    target_omega: float,
+    time_constant_s: float,
+    dt: float,
+    *,
+    windage_drag_share_at_nominal: float = 0.04,
+) -> float:
+    """Tier: physical_model.
+
+    Semi-implicit rotor step for I*domega/dt = motor - c*omega - q*omega*abs(omega).
+    Small substeps keep the quadratic windage term stable without depending on
+    render chunk size.
+    """
+    if dt <= 0.0:
+        return omega
+    substeps = max(1, math.ceil(dt / 0.0005))
+    step_dt = dt / substeps
+    next_omega = omega
+    for _ in range(substeps):
+        balance = rotor_torque_balance(
+            omega=next_omega,
+            target_omega=target_omega,
+            time_constant_s=time_constant_s,
+            windage_drag_share_at_nominal=windage_drag_share_at_nominal,
+        )
+        next_omega += balance.angular_accel * step_dt
+    return next_omega
 
 
 def step_spindle_motor(
@@ -170,12 +260,20 @@ def step_spindle_motor(
     drive_alpha = 1.0 - math.exp(-dt / drive_tau)
     next_motor_drive = motor_drive + (drive_target - motor_drive) * drive_alpha
     tau_s = max(spinup_ms / 1000.0, 0.35) if target_omega >= omega_before else max(spin_down_ms / 1000.0, 0.28)
+    windage_drag_share = 0.04
     torque_balance = rotor_torque_balance(
         omega=omega_before,
         target_omega=target_omega,
         time_constant_s=tau_s,
+        windage_drag_share_at_nominal=windage_drag_share,
     )
-    next_omega = exact_linear_rotor_step(omega_before, target_omega, tau_s, dt)
+    next_omega = exact_rotor_step(
+        omega_before,
+        target_omega,
+        tau_s,
+        dt,
+        windage_drag_share_at_nominal=windage_drag_share,
+    )
     phase_increment = 0.5 * (omega_before + next_omega) * dt
     rpm_norm = clamp(next_omega / max(nominal_omega, EPS), 0.0, 1.35)
     motor_reaction = (next_omega - omega_before) / max(dt, EPS)
@@ -289,18 +387,39 @@ def step_windage_noise(
     startup_active: bool,
     windage_gain: float,
 ) -> NoiseStep:
-    """Tier: plausible source, artistic level curve."""
+    """Tier: physical_model.
+
+    Filtered airflow noise. Source strength is expressed as spindle surface
+    speed plus dynamic pressure/turbulence terms; `windage_gain` is the one
+    profile-level calibration scalar retained for this source.
+    """
     windage_low_alpha = 0.005 if startup_active else 0.020
     windage_high_alpha = 0.024 if startup_active else 0.130
     next_low_state = low_state + windage_low_alpha * (raw_sample - low_state)
     next_high_state = high_state + windage_high_alpha * (next_low_state - high_state)
-    windage_scale = (
-        rpm_norm * (0.002 + 0.050 * rpm_norm**3.8)
-        if startup_active
-        else (0.010 * rpm_norm + 0.18 * rpm_norm * rpm_norm)
+    source_strength = spindle_airflow_source(rpm_norm, startup_active=startup_active)
+    signal = (next_low_state - next_high_state) * source_strength * windage_gain
+    return NoiseStep(
+        primary_state=next_low_state,
+        secondary_state=next_high_state,
+        source_strength=source_strength,
+        signal=signal,
     )
-    signal = (next_low_state - next_high_state) * windage_scale * windage_gain
-    return NoiseStep(primary_state=next_low_state, secondary_state=next_high_state, signal=signal)
+
+
+def spindle_airflow_source(rpm_norm: float, *, startup_active: bool) -> float:
+    """Tier: physical_model.
+
+    HDD windage roughly follows spindle surface speed and turbulent/dynamic
+    pressure. Startup keeps the turbulent term gated until there is enough air
+    speed for audible broadband flow.
+    """
+    speed_ratio = max(rpm_norm, 0.0)
+    dynamic_pressure = speed_ratio * speed_ratio
+    turbulent_pressure = dynamic_pressure * speed_ratio * speed_ratio
+    if startup_active:
+        return 0.002 * speed_ratio + 0.050 * turbulent_pressure * speed_ratio**0.8
+    return 0.010 * speed_ratio + 0.18 * dynamic_pressure
 
 
 def step_bearing_noise(
@@ -311,16 +430,30 @@ def step_bearing_noise(
     startup_active: bool,
     bearing_gain: float,
 ) -> NoiseStep:
-    """Tier: plausible source, artistic level curve."""
+    """Tier: physical_model.
+
+    Bearing vibration follows shaft speed with a mild load-dependent nonlinear
+    term. `bearing_gain` is the retained profile-level calibration scalar.
+    """
     bearing_alpha = 0.010 if startup_active else 0.060
     next_state = state + bearing_alpha * (raw_sample - state)
-    bearing_scale = (
-        rpm_norm * (0.002 + 0.012 * rpm_norm**2.0)
-        if startup_active
-        else (0.006 * rpm_norm + 0.034 * rpm_norm**1.25)
+    source_strength = bearing_vibration_source(rpm_norm, startup_active=startup_active)
+    signal = next_state * source_strength * bearing_gain
+    return NoiseStep(
+        primary_state=next_state,
+        secondary_state=0.0,
+        source_strength=source_strength,
+        signal=signal,
     )
-    signal = next_state * bearing_scale * bearing_gain
-    return NoiseStep(primary_state=next_state, secondary_state=0.0, signal=signal)
+
+
+def bearing_vibration_source(rpm_norm: float, *, startup_active: bool) -> float:
+    """Tier: physical_model."""
+    speed_ratio = max(rpm_norm, 0.0)
+    load_nonlinearity = speed_ratio**1.25
+    if startup_active:
+        return 0.002 * speed_ratio + 0.012 * speed_ratio**3.0
+    return 0.006 * speed_ratio + 0.034 * load_nonlinearity
 
 
 def spindle_harmonic_tone(
