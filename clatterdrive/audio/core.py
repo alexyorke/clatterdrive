@@ -767,7 +767,7 @@ def _render_segment_internal(
         plant.bearing_state = bearing_step.primary_state
         bearing = bearing_step.signal
 
-        spindle_tone = physics.spindle_harmonic_tone(
+        spindle_tone = physics.spindle_rotor_excitation(
             spindle_phase=plant.spindle_phase,
             harmonics=mode_bank.spindle_harmonics,
             weights=mode_bank.spindle_weights,

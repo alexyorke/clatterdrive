@@ -8,6 +8,7 @@ import pytest
 from _pytest.monkeypatch import MonkeyPatch
 
 from tools import generate_audio_samples
+from tools import audio_physics_benchmark
 from tools import profile_core
 from tools import profile_fragmentation
 import smoke
@@ -51,6 +52,12 @@ def test_generate_extended_scenario_samples_writes_outputs(tmp_path: Path, monke
     outputs = generate_audio_samples.generate_extended_scenario_samples()
     assert len(outputs) == 3
     assert all(output.exists() for output in outputs)
+
+
+def test_audio_physics_benchmark_reports_required_metrics() -> None:
+    metadata = audio_physics_benchmark.metadata_storm_metrics()
+    assert metadata["correlation"] >= 0.999
+    assert metadata["rms_delta"] <= 0.010
 
 
 def test_trace_audio_scenario_writes_json_and_svg(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:

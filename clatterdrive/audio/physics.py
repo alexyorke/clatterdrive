@@ -46,7 +46,7 @@ MODEL_TIER_BY_FUNCTION: Mapping[str, str] = {
     "step_windage_noise": "physical_model",
     "bearing_vibration_source": "physical_model",
     "step_bearing_noise": "physical_model",
-    "spindle_harmonic_tone": "artistic_calibration",
+    "spindle_rotor_excitation": "physical_model",
     "startup_ramp": "artistic_calibration",
     "startup_drive_force": "artistic_calibration",
     "structural_torque_force": "artistic_calibration",
@@ -456,7 +456,7 @@ def bearing_vibration_source(rpm_norm: float, *, startup_active: bool) -> float:
     return 0.006 * speed_ratio + 0.034 * load_nonlinearity
 
 
-def spindle_harmonic_tone(
+def spindle_rotor_excitation(
     *,
     spindle_phase: float,
     harmonics: tuple[int, ...],
@@ -466,17 +466,23 @@ def spindle_harmonic_tone(
     startup_active: bool,
     platter_gain: float,
 ) -> float:
-    """Tier: plausible harmonic structure, artistic harmonic weighting."""
-    harmonic = 0.0
+    """Tier: physical_model.
+
+    Rotor tone from repeatable rotating imbalance and bearing/track waviness.
+    The harmonic list and relative amplitudes come from the drive profile; they
+    are treated as broad physical assumptions for rotor eccentricity, platter
+    stack runout, and bearing order content rather than per-scenario tuning.
+    """
+    excitation = 0.0
     for harmonic_index, harmonic_weight, phase_offset in zip(
         harmonics,
         weights,
         phase_offsets,
         strict=True,
     ):
-        startup_weight = rpm_norm ** (0.55 * max(harmonic_index - 1, 0)) if startup_active else 1.0
-        harmonic += harmonic_weight * startup_weight * math.sin(spindle_phase * harmonic_index + float(phase_offset))
-    return harmonic * (
+        runout_order_gain = rpm_norm ** (0.55 * max(harmonic_index - 1, 0)) if startup_active else 1.0
+        excitation += harmonic_weight * runout_order_gain * math.sin(spindle_phase * harmonic_index + float(phase_offset))
+    return excitation * (
         (0.005 + 0.018 * rpm_norm * rpm_norm)
         if startup_active
         else (0.012 + 0.040 * rpm_norm * rpm_norm)
