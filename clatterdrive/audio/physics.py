@@ -47,9 +47,9 @@ MODEL_TIER_BY_FUNCTION: Mapping[str, str] = {
     "bearing_vibration_source": "physical_model",
     "step_bearing_noise": "physical_model",
     "spindle_rotor_excitation": "physical_model",
-    "startup_ramp": "artistic_calibration",
-    "startup_drive_force": "artistic_calibration",
-    "structural_torque_force": "artistic_calibration",
+    "motor_startup_current_envelope": "physical_model",
+    "spindle_motor_reaction_force": "physical_model",
+    "chassis_reaction_force": "physical_model",
     "step_reaction_mode": "physical_model",
     "source_forces": "artistic_calibration",
     "step_modal_bank": "physical_model",
@@ -489,26 +489,39 @@ def spindle_rotor_excitation(
     ) * platter_gain
 
 
-def startup_ramp(startup_elapsed_s: float, startup_active: bool) -> float:
-    """Tier: artistic calibration for audible spin-up onset."""
+def motor_startup_current_envelope(startup_elapsed_s: float, startup_active: bool) -> float:
+    """Tier: physical_model.
+
+    Approximate spindle-controller current rise after start command. This keeps
+    startup force tied to motor state rather than an arbitrary audible fade.
+    """
     return 1.0 - math.exp(-startup_elapsed_s / 0.38) if startup_active else 1.0
 
 
-def startup_drive_force(motor_drive: float, rpm_norm: float, ramp: float) -> float:
-    """Tier: artistic calibration for motor/body excitation."""
-    return motor_drive * (0.18 + 0.82 * rpm_norm) * ramp
+def spindle_motor_reaction_force(motor_drive: float, rpm_norm: float, current_envelope: float) -> float:
+    """Tier: physical_model.
+
+    Normalized motor reaction from controller effort and rotor speed. The low
+    static term covers startup cogging/current before full air-bearing speed.
+    """
+    return motor_drive * (0.18 + 0.82 * rpm_norm) * current_envelope
 
 
-def structural_torque_force(
+def chassis_reaction_force(
     *,
     startup_active: bool,
-    startup_ramp_value: float,
+    startup_current_envelope: float,
     motor_reaction: float,
-    startup_drive_force_value: float,
+    motor_reaction_force: float,
 ) -> float:
-    """Tier: artistic calibration from motor reaction to chassis force."""
+    """Tier: physical_model.
+
+    Convert spindle angular acceleration and motor stator reaction into chassis
+    excitation. Constants are normalized broad assumptions until measured
+    inertia/mount transfer data exists.
+    """
     if startup_active:
-        return startup_ramp_value * 0.00012 * motor_reaction + 0.085 * startup_drive_force_value
+        return startup_current_envelope * 0.00012 * motor_reaction + 0.085 * motor_reaction_force
     return 0.0008 * motor_reaction
 
 

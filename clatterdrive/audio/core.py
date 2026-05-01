@@ -777,13 +777,13 @@ def _render_segment_internal(
             platter_gain=mode_bank.platter_gain,
         )
 
-        startup_ramp = physics.startup_ramp(supervisor.startup_elapsed_s, startup_active)
-        startup_drive_force = physics.startup_drive_force(plant.motor_drive, rpm_norm, startup_ramp)
-        torque_structure = physics.structural_torque_force(
+        startup_ramp = physics.motor_startup_current_envelope(supervisor.startup_elapsed_s, startup_active)
+        startup_drive_force = physics.spindle_motor_reaction_force(plant.motor_drive, rpm_norm, startup_ramp)
+        torque_structure = physics.chassis_reaction_force(
             startup_active=startup_active,
-            startup_ramp_value=startup_ramp,
+            startup_current_envelope=startup_ramp,
             motor_reaction=motor_reaction,
-            startup_drive_force_value=startup_drive_force,
+            motor_reaction_force=startup_drive_force,
         )
         mount_damping = max(acoustic_profile.mount_damping_scale, 0.35)
         wedge_excitation = 0.0 if startup_active else supervisor.wedge_impulse

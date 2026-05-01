@@ -104,3 +104,6 @@ def test_audio_physics_artistic_budget_is_explicit() -> None:
     assert "step_windage_noise" not in physics.artistic_budget()
     assert "step_bearing_noise" not in physics.artistic_budget()
     assert "spindle_rotor_excitation" not in physics.artistic_budget()
+    assert "motor_startup_current_envelope" not in physics.artistic_budget()
+    assert "spindle_motor_reaction_force" not in physics.artistic_budget()
+    assert "chassis_reaction_force" not in physics.artistic_budget()
