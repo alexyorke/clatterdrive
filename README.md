@@ -211,6 +211,7 @@ Key files:
 - [clatterdrive/webdav/provider.py](clatterdrive/webdav/provider.py): WebDAV interception layer
 - [clatterdrive/hdd/latency.py](clatterdrive/hdd/latency.py): HDD timing and power-state model
 - [clatterdrive/audio/core.py](clatterdrive/audio/core.py): audio plant and render logic
+- [clatterdrive/audio/physics.py](clatterdrive/audio/physics.py): labeled physical-state, plausible-model, and artistic-calibration audio primitives
 - [clatterdrive/audio/engine.py](clatterdrive/audio/engine.py): runtime audio shell
 
 ## Development
@@ -257,3 +258,4 @@ Notes:
 - Out-of-band edits to the backing tree are only partially reconciled.
 - WebDAV locks are in-memory and exist to satisfy clients like the Windows WebClient; they are not persisted across restart.
 - The project is trying to sound cool and feel plausible, not to be a reference-grade HDD/acoustics model.
+- The audio model is explicitly labeled by tier: physical state covers runtime variables such as spindle phase/RPM and actuator position/velocity; plausible model covers shapes such as motor lag, seek profiles, servo control, and modal resonators; artistic calibration covers coupling weights, gain curves, and output shaping chosen for sound.

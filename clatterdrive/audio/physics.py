@@ -1,3 +1,18 @@
+"""Physics-inspired HDD audio primitives with explicit honesty labels.
+
+Model tiers used here:
+
+- Physical state: time-integrated runtime state such as spindle phase/omega,
+  actuator position/velocity, and filter/modal states. These are state variables,
+  though many use normalized units instead of SI units.
+- Plausible model: standard mechanical/audio shapes such as first-order motor
+  lag, cosine seek profiles, PID-like servo control, damped resonators, and
+  filtered windage/bearing noise.
+- Artistic calibration: coupling weights, gain curves, output shaping, and
+  profile scales chosen to preserve the current good sound. These are not
+  measured HDD constants and should not be presented as reference physics.
+"""
+
 from __future__ import annotations
 
 import math
@@ -87,6 +102,11 @@ def step_spindle_motor(
     spin_down_ms: float,
     dt: float,
 ) -> SpindleStep:
+    """Tier: physical state plus plausible model.
+
+    Evolves spindle omega/phase and motor drive. The lag constants are calibrated
+    model terms, not measured torque/inertia parameters.
+    """
     omega_before = spindle_omega
     drive_target = 0.0
     if target_omega > EPS:
@@ -118,6 +138,11 @@ def seek_reference(
     seek_elapsed_s: float,
     seek_duration_s: float,
 ) -> tuple[float, float]:
+    """Tier: plausible model.
+
+    Smooth normalized actuator trajectory; no attempt to model exact firmware
+    seek planning or voice-coil current limits.
+    """
     if seek_duration_s <= 0.0:
         return target_track, 0.0
     progress = clamp(seek_elapsed_s / max(seek_duration_s, EPS), 0.0, 1.0)
@@ -145,6 +170,11 @@ def voice_coil_servo_step(
     fragmentation_activity: float,
     directory_activity: float,
 ) -> ServoStep:
+    """Tier: plausible model with artistic event-pressure terms.
+
+    PID-like control is mechanical structure. Queue/retry/metadata nudges are
+    sound-design calibration so busy storage activity stays audible.
+    """
     mode_gain = 1.35 if servo_mode == "seek" else 0.84 if servo_mode == "track" else 1.08
     kp = 18.0 * mode_gain
     kd = 2.8 * mode_gain
@@ -173,6 +203,11 @@ def step_actuator_mechanics(
     actuator_torque: float,
     dt: float,
 ) -> ActuatorStep:
+    """Tier: plausible model.
+
+    Integrates normalized actuator position/velocity with calibrated damping.
+    Values are stable audio units, not SI displacement/current.
+    """
     actuator_accel = 190.0 * actuator_torque - 90.0 * actuator_vel
     next_vel = actuator_vel + actuator_accel * dt
     next_pos = clamp(actuator_pos + next_vel * dt, 0.0, 1.0)
@@ -188,6 +223,7 @@ def step_windage_noise(
     startup_active: bool,
     windage_gain: float,
 ) -> NoiseStep:
+    """Tier: plausible source, artistic level curve."""
     windage_low_alpha = 0.005 if startup_active else 0.020
     windage_high_alpha = 0.024 if startup_active else 0.130
     next_low_state = low_state + windage_low_alpha * (raw_sample - low_state)
@@ -209,6 +245,7 @@ def step_bearing_noise(
     startup_active: bool,
     bearing_gain: float,
 ) -> NoiseStep:
+    """Tier: plausible source, artistic level curve."""
     bearing_alpha = 0.010 if startup_active else 0.060
     next_state = state + bearing_alpha * (raw_sample - state)
     bearing_scale = (
@@ -230,6 +267,7 @@ def spindle_harmonic_tone(
     startup_active: bool,
     platter_gain: float,
 ) -> float:
+    """Tier: plausible harmonic structure, artistic harmonic weighting."""
     harmonic = 0.0
     for harmonic_index, harmonic_weight, phase_offset in zip(
         harmonics,
@@ -247,10 +285,12 @@ def spindle_harmonic_tone(
 
 
 def startup_ramp(startup_elapsed_s: float, startup_active: bool) -> float:
+    """Tier: artistic calibration for audible spin-up onset."""
     return 1.0 - math.exp(-startup_elapsed_s / 0.38) if startup_active else 1.0
 
 
 def startup_drive_force(motor_drive: float, rpm_norm: float, ramp: float) -> float:
+    """Tier: artistic calibration for motor/body excitation."""
     return motor_drive * (0.18 + 0.82 * rpm_norm) * ramp
 
 
@@ -261,6 +301,7 @@ def structural_torque_force(
     motor_reaction: float,
     startup_drive_force_value: float,
 ) -> float:
+    """Tier: artistic calibration from motor reaction to chassis force."""
     if startup_active:
         return startup_ramp_value * 0.00012 * motor_reaction + 0.085 * startup_drive_force_value
     return 0.0008 * motor_reaction
@@ -276,6 +317,7 @@ def step_reaction_mode(
     slow_tau_s: float,
     slow_input_scale: float,
 ) -> tuple[float, float, float]:
+    """Tier: plausible impact/contact envelope model."""
     next_fast_state = (fast_state + excitation) * math.exp(-dt / max(fast_tau_s, 1e-5))
     next_slow_state = (slow_state + excitation * slow_input_scale) * math.exp(-dt / max(slow_tau_s, 1e-5))
     return next_fast_state, next_slow_state, next_fast_state - next_slow_state
@@ -297,6 +339,12 @@ def source_forces(
     startup_ramp_value: float,
     acoustic_profile: AcousticProfile,
 ) -> SourceForces:
+    """Tier: artistic calibration.
+
+    Routes physical-ish sources into chassis/cover/actuator/enclosure/desk
+    excitations. Coefficients are timbre-preserving mix weights, not a measured
+    force balance.
+    """
     if startup_active:
         base_force = (
             1.55 * torque_structure
@@ -362,6 +410,11 @@ def step_modal_bank(
     velocity: FloatArray,
     force: float,
 ) -> tuple[FloatArray, FloatArray, float]:
+    """Tier: plausible model.
+
+    Discrete damped modal bank. Frequencies/damping are plausible; gains are
+    calibrated for sound.
+    """
     if bank.size == 0:
         return displacement, velocity, 0.0
     kicked_velocity = velocity + bank.input_gain * force
@@ -385,6 +438,10 @@ def mix_acoustic_output(
     enclosure_signal: float,
     desk_signal: float,
 ) -> AcousticMix:
+    """Tier: artistic calibration.
+
+    Combines airborne and structure-borne paths with mount/profile weights.
+    """
     if startup_active:
         startup_airborne_gate = rpm_norm**2.0
         structure = (
@@ -418,6 +475,7 @@ def final_filter_step(
     final_lowpass_alpha: float,
     output_gain: float,
 ) -> FinalFilterStep:
+    """Tier: artistic calibration for playback-safe spectral shaping."""
     hp_output = mixed - highpass_prev_input + (1.0 - final_highpass_alpha) * highpass_state
     lp_output = lowpass_state + final_lowpass_alpha * (hp_output - lowpass_state)
     shaped = math.tanh(lp_output * 2.0) * output_gain

@@ -68,3 +68,17 @@ def test_pure_modules_do_not_call_forbidden_side_effect_apis() -> None:
             if path is None:
                 continue
             assert path not in FORBIDDEN_CALLS, f"{module_name} calls forbidden side-effect API {path!r}"
+
+
+def test_audio_physics_honesty_tiers_are_documented() -> None:
+    physics_text = _module_path("clatterdrive/audio/physics.py").read_text(encoding="utf-8")
+    profiles_text = _module_path("clatterdrive/profiles.py").read_text(encoding="utf-8")
+    normalized_profiles_text = " ".join(profiles_text.split())
+    readme_text = _module_path("README.md").read_text(encoding="utf-8")
+
+    for label in ("Physical state", "Plausible model", "Artistic calibration"):
+        assert label in physics_text
+        assert label.lower().replace(" ", "-") in readme_text
+
+    assert "not measured hardware constants" in normalized_profiles_text
+    assert "not a measured CAD/acoustics transfer function" in normalized_profiles_text

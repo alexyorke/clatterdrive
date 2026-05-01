@@ -7,6 +7,15 @@ from .runtime.deps import EnvReader, OSEnvReader
 
 @dataclass(frozen=True)
 class DriveProfile:
+    """Drive timing plus audio calibration.
+
+    Physical state inputs: `rpm`, `platters`, block/cache sizes, and power/seek
+    timings describe the simulated drive. Plausible model inputs: seek, spin,
+    transfer, and command timing terms drive latency and motion. Artistic
+    calibration inputs: harmonic weights, frequency scales, and audio gains tune
+    rendered sound and are not measured hardware constants.
+    """
+
     name: str
     description: str
     default_acoustic_profile: str
@@ -54,6 +63,14 @@ class DriveProfile:
 
 @dataclass(frozen=True)
 class AcousticProfile:
+    """Mount/acoustic sound-design profile.
+
+    These fields are artistic calibration around a plausible structure-borne and
+    airborne acoustic model: coupling, resonance, damping, radiation, filtering,
+    and output gains describe how the installation should sound, not a measured
+    CAD/acoustics transfer function.
+    """
+
     name: str
     description: str
     output_gain: float
