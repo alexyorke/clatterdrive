@@ -6,6 +6,7 @@ import wave
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from _pytest.monkeypatch import MonkeyPatch
@@ -65,6 +66,34 @@ def _read_sample_wav(name: str) -> tuple[np.ndarray, int]:
 
 def _relative_feature_delta(candidate: float, golden: float) -> float:
     return abs(candidate - golden) / max(abs(golden), 1e-9)
+
+
+def _resample_series(values: np.ndarray, length: int) -> np.ndarray:
+    if len(values) == 0:
+        return np.zeros(length, dtype=np.float64)
+    if len(values) == length:
+        return values.astype(np.float64, copy=True)
+    source = np.linspace(0.0, 1.0, len(values), dtype=np.float64)
+    target = np.linspace(0.0, 1.0, length, dtype=np.float64)
+    return np.interp(target, source, values).astype(np.float64)
+
+
+def _resample_matrix(values: np.ndarray, frames: int) -> np.ndarray:
+    if values.size == 0:
+        return np.zeros((0, frames), dtype=np.float64)
+    return np.vstack([_resample_series(row, frames) for row in values]).astype(np.float64)
+
+
+def _aligned_feature_curve(features: dict[str, Any], key: str, frames: int) -> np.ndarray:
+    values = np.asarray(features[key], dtype=np.float64)
+    onset = int(features["onset_index"])
+    return _resample_series(values[onset:], frames)
+
+
+def _aligned_feature_log_mel(features: dict[str, Any], frames: int) -> np.ndarray:
+    values = np.asarray(features["log_mel"], dtype=np.float64)
+    onset = int(features["onset_index"])
+    return _resample_matrix(values[:, onset:], frames)
 
 
 def _render_readme_demo_array(
@@ -821,3 +850,65 @@ def test_audio_engine_startup_only_matches_reference_summary_band() -> None:
     assert ref_band["spectral_centroid_hz_min"] * 0.35 <= float(features["spectral_centroid_hz"]) <= ref_band["spectral_centroid_hz_max"]
     assert float(features["low_band_ratio"]) >= ref_band["low_band_ratio_min"]
     assert float(features["bubbly_modulation_ratio"]) <= ref_band["bubbly_modulation_ratio_max"]
+
+
+def test_audio_engine_startup_reference_distance_does_not_regress() -> None:
+    summary_path = Path("docs/reference-calibration/startup_reference_summary.json")
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["references_used"] > 0
+
+    startup_chunk, _diagnostics = _render_startup_only()
+    features = compute_audio_features(startup_chunk, 22050, "desktop_7200_internal")
+    median = summary["median_reference_curves"]
+    baseline = summary["distance"]
+    curve_frames = len(median["envelope"])
+    mel_frames = len(median["log_mel"][0])
+
+    distances = {
+        "envelope_error": float(
+            np.mean(
+                np.abs(
+                    _aligned_feature_curve(features, "envelope_curve", curve_frames)
+                    - np.asarray(median["envelope"], dtype=np.float64)
+                )
+            )
+        ),
+        "centroid_error": float(
+            np.mean(
+                np.abs(
+                    _aligned_feature_curve(features, "centroid_curve", curve_frames)
+                    - np.asarray(median["centroid_hz"], dtype=np.float64)
+                )
+            )
+        ),
+        "low_ratio_error": float(
+            np.mean(
+                np.abs(
+                    _aligned_feature_curve(features, "low_ratio_curve", curve_frames)
+                    - np.asarray(median["low_ratio"], dtype=np.float64)
+                )
+            )
+        ),
+        "fundamental_error": float(
+            np.mean(
+                np.abs(
+                    _aligned_feature_curve(features, "fundamental_curve", curve_frames)
+                    - np.asarray(median["fundamental_hz"], dtype=np.float64)
+                )
+            )
+        ),
+        "log_mel_distance": float(
+            np.mean(
+                np.abs(
+                    _aligned_feature_log_mel(features, mel_frames)
+                    - np.asarray(median["log_mel"], dtype=np.float64)
+                )
+            )
+        ),
+    }
+
+    assert distances["log_mel_distance"] <= float(baseline["log_mel_distance"]) * 1.02
+    assert distances["envelope_error"] <= float(baseline["envelope_error"]) * 1.02
+    assert distances["centroid_error"] <= float(baseline["centroid_error"]) * 1.02
+    assert distances["low_ratio_error"] <= float(baseline["low_ratio_error"]) * 1.02
+    assert distances["fundamental_error"] <= float(baseline["fundamental_error"]) * 1.08

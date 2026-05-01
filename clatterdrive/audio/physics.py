@@ -31,18 +31,48 @@ EPS = 1e-9
 
 
 @dataclass(frozen=True)
+class TorqueBalance:
+    motor_torque: float
+    drag_torque: float
+    net_torque: float
+    angular_accel: float
+
+
+@dataclass(frozen=True)
 class SpindleStep:
     motor_drive: float
     spindle_omega: float
     phase_increment: float
     rpm_norm: float
     motor_reaction: float
+    torque_balance: TorqueBalance
+
+
+@dataclass(frozen=True)
+class ServoGains:
+    kp: float
+    kd: float
+    ki: float
 
 
 @dataclass(frozen=True)
 class ServoStep:
     integrator: float
     torque_command: float
+
+
+@dataclass(frozen=True)
+class NormalizedMassDamper:
+    mass: float
+    force_constant: float
+    viscous_damping: float
+
+
+VOICE_COIL_PLANT = NormalizedMassDamper(
+    mass=1.0,
+    force_constant=190.0,
+    viscous_damping=90.0,
+)
 
 
 @dataclass(frozen=True)
@@ -91,6 +121,31 @@ def one_pole_alpha(cutoff_hz: float, sample_rate: int) -> float:
     return 1.0 - math.exp(-TAU * cutoff / sample_rate)
 
 
+def rotor_torque_balance(
+    *,
+    omega: float,
+    target_omega: float,
+    time_constant_s: float,
+    inertia: float = 1.0,
+) -> TorqueBalance:
+    damping = max(inertia, EPS) / max(time_constant_s, EPS)
+    motor_torque = damping * target_omega
+    drag_torque = damping * omega
+    net_torque = motor_torque - drag_torque
+    return TorqueBalance(
+        motor_torque=motor_torque,
+        drag_torque=drag_torque,
+        net_torque=net_torque,
+        angular_accel=net_torque / max(inertia, EPS),
+    )
+
+
+def exact_linear_rotor_step(omega: float, target_omega: float, time_constant_s: float, dt: float) -> float:
+    """Exact update for I*domega/dt = motor_torque - c*omega."""
+    decay = math.exp(-dt / max(time_constant_s, EPS))
+    return target_omega + (omega - target_omega) * decay
+
+
 def step_spindle_motor(
     spindle_omega: float,
     motor_drive: float,
@@ -114,12 +169,13 @@ def step_spindle_motor(
     drive_tau = 0.22 if power_state == "starting" else 0.08
     drive_alpha = 1.0 - math.exp(-dt / drive_tau)
     next_motor_drive = motor_drive + (drive_target - motor_drive) * drive_alpha
-    if target_omega >= omega_before:
-        tau_s = max(spinup_ms / 1000.0, 0.35)
-    else:
-        tau_s = max(spin_down_ms / 1000.0, 0.28)
-    alpha = 1.0 - math.exp(-dt / tau_s)
-    next_omega = omega_before + (target_omega - omega_before) * alpha
+    tau_s = max(spinup_ms / 1000.0, 0.35) if target_omega >= omega_before else max(spin_down_ms / 1000.0, 0.28)
+    torque_balance = rotor_torque_balance(
+        omega=omega_before,
+        target_omega=target_omega,
+        time_constant_s=tau_s,
+    )
+    next_omega = exact_linear_rotor_step(omega_before, target_omega, tau_s, dt)
     phase_increment = 0.5 * (omega_before + next_omega) * dt
     rpm_norm = clamp(next_omega / max(nominal_omega, EPS), 0.0, 1.35)
     motor_reaction = (next_omega - omega_before) / max(dt, EPS)
@@ -129,6 +185,7 @@ def step_spindle_motor(
         phase_increment=phase_increment,
         rpm_norm=rpm_norm,
         motor_reaction=motor_reaction,
+        torque_balance=torque_balance,
     )
 
 
@@ -175,19 +232,16 @@ def voice_coil_servo_step(
     PID-like control is mechanical structure. Queue/retry/metadata nudges are
     sound-design calibration so busy storage activity stays audible.
     """
-    mode_gain = 1.35 if servo_mode == "seek" else 0.84 if servo_mode == "track" else 1.08
-    kp = 18.0 * mode_gain
-    kd = 2.8 * mode_gain
-    ki = 7.5 if servo_mode in {"seek", "settle"} else 2.6
+    gains = voice_coil_servo_gains(servo_mode)
     next_integrator = clamp(
         integrator + error * servo_interval,
         -0.08,
         0.08,
     )
     torque_command = (
-        kp * error
-        + kd * velocity_error
-        + ki * next_integrator
+        gains.kp * error
+        + gains.kd * velocity_error
+        + gains.ki * next_integrator
     )
     torque_command *= 1.0 + 0.03 * max(queue_depth - 1, 0)
     torque_command += 0.18 * retry_activity
@@ -197,18 +251,30 @@ def voice_coil_servo_step(
     return ServoStep(integrator=next_integrator, torque_command=torque_command)
 
 
+def voice_coil_servo_gains(servo_mode: str) -> ServoGains:
+    mode_gain = 1.35 if servo_mode == "seek" else 0.84 if servo_mode == "track" else 1.08
+    return ServoGains(
+        kp=18.0 * mode_gain,
+        kd=2.8 * mode_gain,
+        ki=7.5 if servo_mode in {"seek", "settle"} else 2.6,
+    )
+
+
 def step_actuator_mechanics(
     actuator_pos: float,
     actuator_vel: float,
     actuator_torque: float,
     dt: float,
+    plant: NormalizedMassDamper = VOICE_COIL_PLANT,
 ) -> ActuatorStep:
     """Tier: plausible model.
 
     Integrates normalized actuator position/velocity with calibrated damping.
     Values are stable audio units, not SI displacement/current.
     """
-    actuator_accel = 190.0 * actuator_torque - 90.0 * actuator_vel
+    actuator_force = plant.force_constant * actuator_torque
+    damping_force = plant.viscous_damping * actuator_vel
+    actuator_accel = (actuator_force - damping_force) / max(plant.mass, EPS)
     next_vel = actuator_vel + actuator_accel * dt
     next_pos = clamp(actuator_pos + next_vel * dt, 0.0, 1.0)
     return ActuatorStep(position=next_pos, velocity=next_vel)
