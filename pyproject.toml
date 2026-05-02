@@ -22,6 +22,7 @@ clatterdrive = "clatterdrive.__main__:main"
 [dependency-groups]
 dev = [
     "mypy",
+    "pyinstaller",
     "pytest",
     "pytest-timeout",
     "pytest-xdist",

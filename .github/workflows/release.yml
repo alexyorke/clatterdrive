@@ -1,0 +1,62 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  windows-release:
+    name: Windows release zip
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Bootstrap Python and .NET tooling
+        run: scripts/bootstrap.ps1
+
+      - name: Build package
+        env:
+          WINDOWS_SIGNING_THUMBPRINT: ${{ secrets.WINDOWS_SIGNING_THUMBPRINT }}
+          WINDOWS_SIGNING_TIMESTAMP_URL: ${{ secrets.WINDOWS_SIGNING_TIMESTAMP_URL }}
+        run: scripts/package-windows.ps1
+
+      - name: Signing status
+        env:
+          WINDOWS_SIGNING_THUMBPRINT: ${{ secrets.WINDOWS_SIGNING_THUMBPRINT }}
+        run: |
+          if ($env:WINDOWS_SIGNING_THUMBPRINT) {
+            Write-Host "Signing thumbprint configured; scripts/package-windows.ps1 signs binaries before zipping when signtool is available."
+          } else {
+            Write-Host "No signing secrets configured; release zip is unsigned."
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ClatterDrive-windows-x64
+          path: .runtime/package/ClatterDrive-windows-x64.zip
+
+      - name: Create draft GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create $env:GITHUB_REF_NAME .runtime/package/ClatterDrive-windows-x64.zip --draft --title "ClatterDrive $env:GITHUB_REF_NAME" --notes "Draft Windows release build."

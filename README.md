@@ -38,9 +38,35 @@ uv run python -m clatterdrive
 uv run clatterdrive
 ```
 
+The explicit backend commands are:
+
+```powershell
+uv run clatterdrive serve
+uv run clatterdrive profiles --json
+uv run clatterdrive doctor --json
+```
+
 Default URL:
 
 - `http://127.0.0.1:8080`
+
+## Windows App
+
+The Windows-first desktop path is a native WPF launcher plus a packaged Python backend. It is not Tkinter, Electron, or a browser shell.
+
+Local developer build:
+
+```powershell
+scripts\build-windows.ps1
+```
+
+Release zip:
+
+```powershell
+scripts\package-windows.ps1
+```
+
+The packaged launcher lets a non-developer choose the backing folder, port, drive/acoustic profile, audio mode/device, start/stop the backend, open the WebDAV URL, copy the `net use` command, copy the unmount command, and inspect logs.
 
 ## Using It
 
@@ -137,6 +163,7 @@ Current drive presets:
 - `archive_5900_internal`
 - `enterprise_7200_bare`
 - `wd_ultrastar_hc550`
+- `seagate_ironwolf_pro_16tb`
 - `external_usb_enclosure`
 
 Current acoustic presets:
@@ -217,17 +244,49 @@ Key files:
 
 ## Development
 
-Smoke test:
+One-command local PR gate:
 
 ```powershell
-uv run python smoke.py
+scripts\ci.ps1
 ```
 
-Tests:
+Backend-only quick gate:
 
 ```powershell
-uv run python -m pytest -q
+scripts\ci.ps1 -PythonOnly -SkipE2E
 ```
+
+Optional desktop and mapped-drive E2E additions:
+
+```powershell
+scripts\ci.ps1 -IncludeUiE2E -IncludeMappedDrive
+```
+
+Individual checks:
+
+```powershell
+scripts\bootstrap.ps1
+scripts\lint.ps1
+scripts\test.ps1
+scripts\test-e2e.ps1
+scripts\test-ui.ps1
+```
+
+Release-package E2E:
+
+```powershell
+scripts\test-release.ps1 -IncludeUiE2E -IncludeMappedDrive
+```
+
+Double-click/Command Prompt wrappers are available beside each PowerShell script, for example:
+
+```cmd
+scripts\ci.cmd
+```
+
+CI runs the same scripts on GitHub Actions. The normal PR workflows cover Linux/Windows Python lint/type/unit tests, backend E2E, WPF launcher build/tests, PyInstaller packaging, packaged smoke, and Docker smoke.
+
+The nightly/release desktop workflow is for checks that need real Windows desktop and WebClient behavior: extracted-package launcher FlaUI, bundled-backend start/stop, `net use`, mapped-drive write/read/delete, and clean shutdown. That runner can be a small Windows 11 VM or a physical Windows machine. Windows Docker containers are fine for backend/headless smoke, but they are not an accurate replacement for WPF UI automation or WebClient mapped-drive behavior because they do not provide the same interactive desktop and shell integration.
 
 Regenerate the public sample clips:
 

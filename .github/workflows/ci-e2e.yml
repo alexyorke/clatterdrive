@@ -1,0 +1,31 @@
+name: Backend E2E
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  windows-webdav:
+    name: Windows WebDAV source E2E
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Bootstrap Python tooling
+        run: scripts/bootstrap.ps1 -PythonOnly
+
+      - name: WebDAV, tee WAV, event trace, and shutdown smoke
+        run: scripts/test-e2e.ps1

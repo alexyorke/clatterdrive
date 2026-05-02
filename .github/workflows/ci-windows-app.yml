@@ -1,0 +1,48 @@
+name: Windows App CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  windows-app:
+    name: WPF launcher and package
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Bootstrap Python and .NET tooling
+        run: scripts/bootstrap.ps1
+
+      - name: Launcher unit tests
+        run: scripts/test-ui.ps1
+
+      - name: Build packaged backend and launcher
+        run: scripts/build-windows.ps1
+
+      - name: Packaged backend smoke
+        run: scripts/test-e2e.ps1 -Packaged -FromZip
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: clatterdrive-windows-dist
+          path: .runtime/dist
+          if-no-files-found: ignore

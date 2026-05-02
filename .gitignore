@@ -1,6 +1,8 @@
 __pycache__/
 *.py[cod]
 *$py.class
+*.egg-info/
+*.spec
 .env
 .venv
 env/
@@ -12,3 +14,6 @@ backing_storage/
 .runtime/
 .vscode/
 .idea/
+bin/
+obj/
+TestResults/

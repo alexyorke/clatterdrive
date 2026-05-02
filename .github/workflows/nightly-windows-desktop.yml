@@ -1,0 +1,49 @@
+name: Nightly Windows Desktop E2E
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 10 * * *"
+
+jobs:
+  windows-desktop:
+    name: Native launcher and mapped drive
+    runs-on: [self-hosted, Windows, X64, clatterdrive-e2e]
+
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Bootstrap Python and .NET tooling
+        run: scripts/bootstrap.ps1
+
+      - name: Build release package
+        run: scripts/package-windows.ps1
+
+      - name: Extracted package, native launcher, and mapped-drive E2E
+        run: scripts/test-release.ps1 -IncludeUiE2E -IncludeMappedDrive
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nightly-windows-artifacts
+          path: |
+            .runtime/package/ClatterDrive-windows-x64.zip
+            .runtime/**/*.log
+            TestResults/**
+          if-no-files-found: ignore

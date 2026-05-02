@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import json
 import os
 import signal
+import threading
 from typing import Any
 
 from cheroot import wsgi
 from wsgidav.wsgidav_app import WsgiDAVApp
 
 from .audio.engine import get_runtime_engine
+from .config import ClatterDriveConfig, config_from_env
 from .storage_events import CompositeStorageEventSink, DebugStorageEventSink, StorageEventRecorder, StorageEventSink
 from .webdav.provider import HDDProvider
 
@@ -16,6 +19,23 @@ class NoAuthWsgiDAVApp(WsgiDAVApp):
     def __call__(self, environ: dict[str, Any], start_response: Any) -> Any:
         environ["wsgidav.auth.user_name"] = "anonymous"
         return super().__call__(environ, start_response)
+
+
+class LocalControlApp:
+    def __init__(self, inner: Any, shutdown_callback: Any) -> None:
+        self.inner = inner
+        self.shutdown_callback = shutdown_callback
+
+    def __call__(self, environ: dict[str, Any], start_response: Any) -> Any:
+        if environ.get("REQUEST_METHOD") == "POST" and environ.get("PATH_INFO") == "/.clatterdrive/shutdown":
+            remote_addr = str(environ.get("REMOTE_ADDR", ""))
+            if remote_addr not in {"127.0.0.1", "::1", "localhost"}:
+                start_response("403 Forbidden", [("Content-Type", "text/plain")])
+                return [b"local shutdown only"]
+            start_response("204 No Content", [])
+            threading.Thread(target=self.shutdown_callback, daemon=True).start()
+            return [b""]
+        return self.inner(environ, start_response)
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -49,7 +69,9 @@ def _restore_shutdown_handlers(previous_handlers: dict[int, Any]) -> None:
             continue
 
 
-def start_server() -> None:
+def start_server(config: ClatterDriveConfig | None = None, *, json_status: bool = False) -> None:
+    resolved_config = config_from_env() if config is None else config
+    resolved_config.apply_to_environ()
     audio = get_runtime_engine()
     provider: HDDProvider | None = None
     server: wsgi.Server | None = None
@@ -57,31 +79,31 @@ def start_server() -> None:
     event_trace_path: str | None = None
     audio_started = False
     previous_signal_handlers = _install_shutdown_handlers()
-    drive_profile = os.environ.get("FAKE_HDD_DRIVE_PROFILE")
-    acoustic_profile = os.environ.get("FAKE_HDD_ACOUSTIC_PROFILE")
+    drive_profile = resolved_config.drive_profile
+    acoustic_profile = resolved_config.acoustic_profile
     try:
         try:
             audio.configure_profiles(drive_profile=drive_profile, acoustic_profile=acoustic_profile)
             audio.start()
             audio_started = True
             if audio.output_enabled:
-                print("Procedural Audio Engine started.")
+                print("Procedural Audio Engine started.", flush=True)
             elif audio.tee_path:
-                print("Procedural Audio Engine recording tee output without live audio.")
+                print("Procedural Audio Engine recording tee output without live audio.", flush=True)
             else:
-                print("Procedural Audio Engine live output disabled or unavailable.")
+                print("Procedural Audio Engine live output disabled or unavailable.", flush=True)
         except Exception as exc:
             audio.stop()
-            print(f"Warning: Could not start audio engine: {exc}")
+            print(f"Warning: Could not start audio engine: {exc}", flush=True)
 
-        root_path = os.path.abspath(os.environ.get("FAKE_HDD_BACKING_DIR", "backing_storage"))
+        root_path = os.path.abspath(resolved_config.backing_dir)
         if not os.path.exists(root_path):
             os.makedirs(root_path)
 
         event_sinks: list[StorageEventSink] = [audio]
-        if _env_flag("FAKE_HDD_TRACE_EVENTS", False):
+        if resolved_config.trace_events:
             event_sinks.append(DebugStorageEventSink())
-        event_trace_path = os.environ.get("FAKE_HDD_EVENT_TRACE_PATH")
+        event_trace_path = resolved_config.event_trace_path
         if event_trace_path:
             event_recorder = StorageEventRecorder()
             event_sinks.append(event_recorder)
@@ -92,13 +114,13 @@ def start_server() -> None:
             event_sink=event_sink,
             drive_profile=drive_profile,
             acoustic_profile=acoustic_profile,
-            cold_start=_env_flag("FAKE_HDD_COLD_START", True),
-            async_power_on=_env_flag("FAKE_HDD_ASYNC_POWER_ON", True),
+            cold_start=resolved_config.cold_start,
+            async_power_on=resolved_config.async_power_on,
         )
-        port = int(os.environ.get("FAKE_HDD_PORT", "8080"))
-        host = os.environ.get("FAKE_HDD_HOST", "127.0.0.1")
+        port = resolved_config.port
+        host = resolved_config.host
 
-        config = {
+        wsgidav_config = {
             "provider_mapping": {"/": provider},
             "http_authenticator": {
                 "enabled": False,
@@ -114,21 +136,43 @@ def start_server() -> None:
             "verbose": 1,
         }
 
-        app = NoAuthWsgiDAVApp(config)
+        def request_shutdown() -> None:
+            if server is not None:
+                server.stop()
+
+        app = LocalControlApp(NoAuthWsgiDAVApp(wsgidav_config), request_shutdown)
         server = wsgi.Server((host, port), app)
-        print(f"Research-Enhanced HDD WebDAV server starting on http://{host}:{port}")
-        print("Simulated Stack: VFS -> Page Cache -> Block Layer (LOOK/Deadline) -> SATA/AHCI -> NCQ/RPO -> Physical HDD")
-        print("Hardware Model: Async Power-On -> Host Ready Polling -> Spin-Up -> Self-Test -> Head Load -> Servo Lock -> Ready")
-        print("Idle Model: Unload -> Low-RPM Idle -> Staged Spin-Down -> Standby")
-        print("Acoustic Model: Spindle Hum + Windage + VCM Modal Synthesis")
+        server.prepare()
+        print(f"Research-Enhanced HDD WebDAV server starting on http://{host}:{port}", flush=True)
+        print("Simulated Stack: VFS -> Page Cache -> Block Layer (LOOK/Deadline) -> SATA/AHCI -> NCQ/RPO -> Physical HDD", flush=True)
+        print("Hardware Model: Async Power-On -> Host Ready Polling -> Spin-Up -> Self-Test -> Head Load -> Servo Lock -> Ready", flush=True)
+        print("Idle Model: Unload -> Low-RPM Idle -> Staged Spin-Down -> Standby", flush=True)
+        print("Acoustic Model: Spindle Hum + Windage + VCM Modal Synthesis", flush=True)
         print(
-            f"Profiles: drive={provider.vhdd.drive_profile.name} | acoustic={provider.vhdd.acoustic_profile.name}"
+            f"Profiles: drive={provider.vhdd.drive_profile.name} | acoustic={provider.vhdd.acoustic_profile.name}",
+            flush=True,
         )
-        server.start()
+        if json_status:
+            print(
+                json.dumps(
+                    {
+                        "event": "ready",
+                        "url": f"http://{host}:{port}",
+                        "backing_dir": root_path,
+                        "drive_profile": provider.vhdd.drive_profile.name,
+                        "acoustic_profile": provider.vhdd.acoustic_profile.name,
+                        "audio_enabled": audio.output_enabled,
+                        "tee_path": audio.tee_path,
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
+        server.serve()
     except KeyboardInterrupt:
         pass
     except OSError as exc:
-        print(f"Server startup failed: {exc}")
+        print(f"Server startup failed: {exc}", flush=True)
     finally:
         if server is not None:
             server.stop()

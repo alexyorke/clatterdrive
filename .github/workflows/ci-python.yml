@@ -1,0 +1,60 @@
+name: Python CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  python:
+    name: Python ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Bootstrap Python tooling
+        run: scripts/bootstrap.ps1 -PythonOnly
+
+      - name: Lint and type check
+        run: scripts/lint.ps1
+
+      - name: Unit and benchmark tests
+        run: scripts/test.ps1
+
+  docker-smoke:
+    name: Docker smoke
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Bootstrap Python tooling
+        run: scripts/bootstrap.ps1 -PythonOnly
+        shell: pwsh
+
+      - name: Headless Docker WebDAV/audio smoke
+        run: uv run python -m tools.docker_webdav_audio_smoke
