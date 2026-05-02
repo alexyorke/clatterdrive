@@ -2,12 +2,65 @@ name: Nightly Windows Desktop E2E
 
 on:
   workflow_dispatch:
+    inputs:
+      lane:
+        description: "Which nightly lane to run"
+        required: true
+        default: "github-hosted-smoke"
+        type: choice
+        options:
+          - github-hosted-smoke
+          - self-hosted-desktop
   schedule:
     - cron: "17 10 * * *"
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
+  github-hosted-smoke:
+    name: GitHub-hosted packaged smoke
+    if: github.event_name == 'workflow_dispatch' && inputs.lane == 'github-hosted-smoke'
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Bootstrap Python and .NET tooling
+        run: scripts/bootstrap.ps1
+
+      - name: Extracted package smoke without desktop-only mapped drive
+        run: scripts/test-release.ps1 -SkipMappedDrive
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nightly-github-hosted-artifacts
+          path: |
+            .runtime/package/ClatterDrive-windows-x64.zip
+            .runtime/**/*.log
+            TestResults/**
+          if-no-files-found: ignore
+
   windows-desktop:
     name: Native launcher and mapped drive
+    if: github.event_name == 'schedule' || inputs.lane == 'self-hosted-desktop'
     runs-on: [self-hosted, Windows, X64, clatterdrive-e2e]
 
     defaults:
