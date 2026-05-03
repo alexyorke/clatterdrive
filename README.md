@@ -66,7 +66,19 @@ Release zip:
 scripts\package-windows.ps1
 ```
 
+MSI installer:
+
+```powershell
+scripts\build-installer.ps1
+```
+
 The packaged launcher lets a non-developer choose the backing folder, port, drive/acoustic profile, audio mode/device, start/stop the backend, open the WebDAV URL, copy the `net use` command, copy the unmount command, and inspect logs.
+
+Installer E2E intentionally refuses to run on an unmarked local host because it installs and uninstalls the app. Run it in GitHub Actions, or inside a disposable Windows VM with `CLATTERDRIVE_INSTALLER_E2E_VM=1`:
+
+```powershell
+scripts\test-installer.ps1 -IncludeUiE2E -IncludeMappedDrive
+```
 
 ## Using It
 

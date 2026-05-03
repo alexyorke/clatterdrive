@@ -1,7 +1,8 @@
 param(
     [switch]$IncludeMappedDrive,
     [switch]$SkipMappedDrive,
-    [switch]$IncludeUiE2E
+    [switch]$IncludeUiE2E,
+    [switch]$IncludeInstallerE2E
 )
 
 $ErrorActionPreference = "Stop"
@@ -18,4 +19,11 @@ if ($IncludeMappedDrive -or -not $SkipMappedDrive) {
 
 if ($IncludeUiE2E) {
     & (Join-Path $PSScriptRoot "test-ui.ps1") -Packaged -UseExistingPackage -IncludeUiE2E
+}
+
+if ($IncludeInstallerE2E) {
+    & (Join-Path $PSScriptRoot "test-installer.ps1") `
+        -UseExistingPackage `
+        -IncludeUiE2E:$IncludeUiE2E `
+        -IncludeMappedDrive:($IncludeMappedDrive -or -not $SkipMappedDrive)
 }

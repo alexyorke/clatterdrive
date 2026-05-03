@@ -41,12 +41,17 @@ jobs:
       - name: Extracted package, native launcher, and mapped-drive E2E
         run: scripts/test-release.ps1 -IncludeUiE2E -IncludeMappedDrive
 
+      - name: Installer install, native launcher, mapped-drive, and uninstall E2E
+        run: scripts/test-installer.ps1 -UseExistingPackage -IncludeUiE2E -IncludeMappedDrive
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: nightly-windows-artifacts
           path: |
             .runtime/package/ClatterDrive-windows-x64.zip
+            .runtime/installer/ClatterDrive-windows-x64.msi
+            .runtime/installer/logs/**
             .runtime/**/*.log
             TestResults/**
           if-no-files-found: ignore

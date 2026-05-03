@@ -44,6 +44,9 @@ jobs:
           WINDOWS_SIGNING_TIMESTAMP_URL: ${{ secrets.WINDOWS_SIGNING_TIMESTAMP_URL }}
         run: scripts/package-windows.ps1
 
+      - name: Build installer
+        run: scripts/build-installer.ps1 -UseExistingPackage
+
       - name: Signing status
         env:
           WINDOWS_SIGNING_THUMBPRINT: ${{ secrets.WINDOWS_SIGNING_THUMBPRINT }}
@@ -57,9 +60,11 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ClatterDrive-windows-x64
-          path: .runtime/package/ClatterDrive-windows-x64.zip
+          path: |
+            .runtime/package/ClatterDrive-windows-x64.zip
+            .runtime/installer/ClatterDrive-windows-x64.msi
 
       - name: Create draft GitHub Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create $env:GITHUB_REF_NAME .runtime/package/ClatterDrive-windows-x64.zip --draft --title "ClatterDrive $env:GITHUB_REF_NAME" --notes "Draft Windows release build."
+        run: gh release create $env:GITHUB_REF_NAME .runtime/package/ClatterDrive-windows-x64.zip .runtime/installer/ClatterDrive-windows-x64.msi --draft --title "ClatterDrive $env:GITHUB_REF_NAME" --notes "Draft Windows release build."

@@ -16,6 +16,7 @@ if (-not $PythonOnly) {
     if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {
         throw ".NET SDK is required for the Windows launcher."
     }
+    dotnet tool restore
     dotnet restore launcher\ClatterDrive.Launcher\ClatterDrive.Launcher.csproj
     dotnet restore launcher\ClatterDrive.Launcher.Tests\ClatterDrive.Launcher.Tests.csproj
 }

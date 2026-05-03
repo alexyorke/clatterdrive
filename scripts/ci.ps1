@@ -3,7 +3,8 @@ param(
     [switch]$SkipE2E,
     [switch]$SkipWindowsApp,
     [switch]$IncludeUiE2E,
-    [switch]$IncludeMappedDrive
+    [switch]$IncludeMappedDrive,
+    [switch]$IncludeInstallerE2E
 )
 
 $ErrorActionPreference = "Stop"
@@ -36,4 +37,8 @@ if ($runWindowsApp) {
     } else {
         & (Join-Path $PSScriptRoot "test-ui.ps1")
     }
+}
+
+if ($IncludeInstallerE2E) {
+    & (Join-Path $PSScriptRoot "test-installer.ps1") -IncludeUiE2E:$IncludeUiE2E -IncludeMappedDrive:$IncludeMappedDrive
 }

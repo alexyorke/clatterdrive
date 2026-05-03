@@ -43,9 +43,16 @@ jobs:
       - name: Packaged backend smoke
         run: scripts/test-e2e.ps1 -Packaged -FromZip
 
+      - name: Installer install, launcher, mapped-drive, and uninstall E2E
+        run: scripts/test-installer.ps1 -UseExistingPackage -IncludeUiE2E -IncludeMappedDrive
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: clatterdrive-windows-dist
-          path: .runtime/dist
+          path: |
+            .runtime/dist
+            .runtime/package/ClatterDrive-windows-x64.zip
+            .runtime/installer/ClatterDrive-windows-x64.msi
+            .runtime/installer/logs/**
           if-no-files-found: ignore
