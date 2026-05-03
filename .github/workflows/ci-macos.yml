@@ -1,0 +1,66 @@
+name: macOS App CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  macos-app:
+    name: SwiftUI launcher and package (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-latest
+          - arch: x64
+            runner: macos-15-intel
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.8"
+          enable-cache: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: System discovery
+        run: |
+          sw_vers
+          uname -m
+          xcodebuild -version
+          which mount_webdav
+          which hdiutil
+          which codesign
+
+      - name: Python, Swift, lint, and type checks
+        run: bash scripts/test-macos.sh
+
+      - name: Source WebDAV, tee WAV, event trace, and mount_webdav E2E
+        run: bash scripts/test-macos-e2e.sh --include-mount
+
+      - name: Packaged app and DMG E2E
+        env:
+          CLATTERDRIVE_MACOS_ARCH: ${{ matrix.arch }}
+        run: bash scripts/test-macos-e2e.sh --packaged --from-dmg --include-mount
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ClatterDrive-macos-${{ matrix.arch }}
+          path: |
+            .runtime/package/ClatterDrive-macos-${{ matrix.arch }}.dmg
+            .runtime/package/macos-${{ matrix.arch }}/ClatterDrive.app
+          if-no-files-found: ignore

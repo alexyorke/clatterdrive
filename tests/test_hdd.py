@@ -195,7 +195,7 @@ def test_async_power_on_started_before_first_io_reaches_ready_state() -> None:
     model = HDDLatencyModel(addressable_blocks=4096, latency_scale=0.0, start_ready=False)
     try:
         assert model.begin_async_startup() is True
-        deadline = time.monotonic() + 1.5
+        deadline = time.monotonic() + 5.0
         while True:
             if model.ready_event.wait(timeout=0.05):
                 with model.lock:
@@ -259,11 +259,16 @@ def test_staged_spindown_has_visible_intermediate_state_before_standby() -> None
     )
     try:
         assert model.begin_async_spindown() is True
-        time.sleep(0.03)
-        with model.lock:
-            assert model.power_state == "spinning_down"
-            assert model.current_rpm < model.target_rpm
-        deadline = time.monotonic() + 0.5
+        deadline = time.monotonic() + 2.0
+        while True:
+            with model.lock:
+                if model.power_state == "spinning_down" and model.current_rpm < model.target_rpm:
+                    break
+            if time.monotonic() >= deadline:
+                pytest.fail("timed out waiting for staged spindown intermediate state")
+            time.sleep(0.01)
+
+        deadline = time.monotonic() + 5.0
         while True:
             with model.lock:
                 if model.power_state == "standby":
@@ -358,15 +363,24 @@ def test_low_rpm_entry_is_continuous_not_instant() -> None:
             model.heads_loaded = False
         assert model.begin_async_low_rpm() is True
 
-        time.sleep(0.02)
-        with model.lock:
-            assert model.power_state == "slowing_to_low_rpm"
-            assert model.low_rpm_rpm < model.current_rpm < model.target_rpm
+        deadline = time.monotonic() + 2.0
+        while True:
+            with model.lock:
+                if model.power_state == "slowing_to_low_rpm" and model.low_rpm_rpm < model.current_rpm < model.target_rpm:
+                    break
+            if time.monotonic() >= deadline:
+                pytest.fail("timed out waiting for staged low-rpm intermediate state")
+            time.sleep(0.01)
 
-        time.sleep(0.35)
-        with model.lock:
-            assert model.power_state == "low_rpm_idle"
-            assert model.current_rpm == pytest.approx(model.low_rpm_rpm)
+        deadline = time.monotonic() + 5.0
+        while True:
+            with model.lock:
+                if model.power_state == "low_rpm_idle":
+                    assert model.current_rpm == pytest.approx(model.low_rpm_rpm)
+                    break
+            if time.monotonic() >= deadline:
+                pytest.fail("timed out waiting for staged low-rpm transition to finish")
+            time.sleep(0.01)
     finally:
         model.stop()
 

@@ -80,6 +80,38 @@ Installer E2E intentionally refuses to run on an unmarked local host because it 
 scripts\test-installer.ps1 -IncludeUiE2E -IncludeMappedDrive
 ```
 
+## macOS App
+
+The macOS desktop path is a native SwiftUI launcher plus a packaged Python backend. Build and package it on macOS, not from Windows or Linux:
+
+```bash
+bash scripts/build-macos.sh
+bash scripts/package-macos.sh
+```
+
+The release artifacts are architecture-specific DMGs:
+
+- `ClatterDrive-macos-arm64.dmg`
+- `ClatterDrive-macos-x64.dmg`
+
+Run macOS checks on a Mac or on GitHub-hosted macOS runners:
+
+```bash
+bash scripts/test-macos.sh
+bash scripts/test-macos-e2e.sh --include-mount
+bash scripts/test-macos-e2e.sh --packaged --from-dmg --include-mount
+```
+
+The macOS launcher copies `mount_webdav` and unmount commands instead of auto-mounting. Signing and notarization are conditional in release builds when Apple Developer ID secrets are configured; otherwise DMGs are unsigned internal builds.
+
+See [docs/macos-vm.md](docs/macos-vm.md) for the VM decision. Short version: use GitHub-hosted macOS first; a local macOS VM is only appropriate on Apple hardware.
+
+On an Apple Silicon Mac, the repeatable local VM path is:
+
+```bash
+bash scripts/test-macos-tart.sh
+```
+
 ## Using It
 
 The simulator serves `backing_storage/` by default. Use the WebDAV URL, not the backing directory directly, or you will bypass the latency/audio path.
@@ -150,7 +182,7 @@ cat ~/mnt/clatterdrive/local-file
 
 macOS note:
 
-- the WSL `davfs2` flow above was verified on this machine; the macOS commands use the standard built-in `mount_webdav` path but were not executed here because this host is Windows.
+- the macOS E2E script verifies the standard built-in `mount_webdav` path on GitHub-hosted macOS runners; this Windows host cannot execute it locally.
 
 If live audio is enabled, directory creation and listing, uploads, downloads, overwrites, deletes, fragmented reads, and wake-from-standby activity all feed the audio model.
 
@@ -284,6 +316,14 @@ scripts\test-e2e.ps1
 scripts\test-ui.ps1
 ```
 
+macOS checks:
+
+```bash
+bash scripts/bootstrap-macos.sh
+bash scripts/test-macos.sh
+bash scripts/test-macos-e2e.sh --include-mount
+```
+
 Release-package E2E:
 
 ```powershell
@@ -296,7 +336,7 @@ Double-click/Command Prompt wrappers are available beside each PowerShell script
 scripts\ci.cmd
 ```
 
-CI runs the same scripts on GitHub Actions. The normal PR workflows cover Linux/Windows Python lint/type/unit tests, backend E2E, WPF launcher build/tests, PyInstaller packaging, packaged smoke, and Docker smoke.
+CI runs the same scripts on GitHub Actions. The normal PR workflows cover Linux/Windows Python lint/type/unit tests, backend E2E, WPF launcher build/tests, PyInstaller packaging, packaged smoke, macOS SwiftUI launcher tests, macOS DMG packaging, `mount_webdav` E2E, and Docker smoke.
 
 The nightly/release desktop workflow is for checks that need real Windows desktop and WebClient behavior: extracted-package launcher FlaUI, bundled-backend start/stop, `net use`, mapped-drive write/read/delete, and clean shutdown. That runner can be a small Windows 11 VM or a physical Windows machine. Windows Docker containers are fine for backend/headless smoke, but they are not an accurate replacement for WPF UI automation or WebClient mapped-drive behavior because they do not provide the same interactive desktop and shell integration.
 

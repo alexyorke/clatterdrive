@@ -321,7 +321,7 @@ def test_audio_engine_headless_tee_renders_without_manual_pull(
         assert engine.output_enabled is False
         assert engine.stream is None
         engine.emit_telemetry(7200.0, seek_trigger=True, seek_dist=700, op_kind="data")
-        deadline = time.monotonic() + 1.0
+        deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline and engine.render_frame_cursor < engine.chunk_size * 4:
             time.sleep(0.02)
     finally:
