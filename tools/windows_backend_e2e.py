@@ -107,12 +107,17 @@ def _verify_wav(path: Path) -> None:
             raise AssertionError("tee WAV has no frames")
 
 
-def run_backend_e2e(backend_exe: Path | None = None) -> dict[str, object]:
-    with tempfile.TemporaryDirectory(prefix="clatterdrive-e2e-") as temp:
+def _workspace_paths(root: Path, *, space_paths: bool) -> tuple[Path, Path, Path]:
+    if space_paths:
+        return root / "backing folder", root / "audio tee.wav", root / "event trace.json"
+    return root / "backing", root / "audio.wav", root / "events.json"
+
+
+def run_backend_e2e(backend_exe: Path | None = None, *, space_paths: bool = False) -> dict[str, object]:
+    prefix = "clatterdrive e2e spaces " if space_paths else "clatterdrive-e2e-"
+    with tempfile.TemporaryDirectory(prefix=prefix) as temp:
         root = Path(temp)
-        backing_dir = root / "backing"
-        tee_path = root / "audio.wav"
-        trace_path = root / "events.json"
+        backing_dir, tee_path, trace_path = _workspace_paths(root, space_paths=space_paths)
         port = _free_port()
         process = _launch_backend(backend_exe, port, backing_dir, tee_path, trace_path)
         try:
@@ -134,6 +139,7 @@ def run_backend_e2e(backend_exe: Path | None = None) -> dict[str, object]:
             "ok": True,
             "port": port,
             "ready": ready,
+            "space_paths": space_paths,
             "tee_bytes": tee_path.stat().st_size,
             "trace_bytes": trace_path.stat().st_size,
         }
@@ -174,16 +180,15 @@ def _map_drive(unc: str) -> str:
     raise RuntimeError(f"no free drive letter found for mapped-drive E2E ({detail})")
 
 
-def run_mapped_drive_e2e(backend_exe: Path | None = None) -> dict[str, object]:
+def run_mapped_drive_e2e(backend_exe: Path | None = None, *, space_paths: bool = False) -> dict[str, object]:
     if platform.system() != "Windows":
         raise RuntimeError("mapped-drive E2E requires Windows")
     _assert_webclient_running()
     drive: str | None = None
-    with tempfile.TemporaryDirectory(prefix="clatterdrive-map-e2e-") as temp:
+    prefix = "clatterdrive map e2e spaces " if space_paths else "clatterdrive-map-e2e-"
+    with tempfile.TemporaryDirectory(prefix=prefix) as temp:
         root = Path(temp)
-        backing_dir = root / "backing"
-        tee_path = root / "audio.wav"
-        trace_path = root / "events.json"
+        backing_dir, tee_path, trace_path = _workspace_paths(root, space_paths=space_paths)
         port = _free_port()
         process = _launch_backend(backend_exe, port, backing_dir, tee_path, trace_path)
         mounted = False
@@ -215,6 +220,7 @@ def run_mapped_drive_e2e(backend_exe: Path | None = None) -> dict[str, object]:
             "mapped_drive": drive,
             "port": port,
             "ready": ready,
+            "space_paths": space_paths,
             "tee_bytes": tee_path.stat().st_size,
             "trace_bytes": trace_path.stat().st_size,
         }
@@ -224,8 +230,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run a packaged-or-source ClatterDrive backend E2E smoke test.")
     parser.add_argument("--backend-exe", type=Path, default=None)
     parser.add_argument("--mapped-drive", action="store_true", help="Use Windows WebClient and net use for a mapped-drive E2E.")
+    parser.add_argument("--space-paths", action="store_true", help="Use backing, tee, and trace paths containing spaces.")
     args = parser.parse_args()
-    result = run_mapped_drive_e2e(args.backend_exe) if args.mapped_drive else run_backend_e2e(args.backend_exe)
+    result = (
+        run_mapped_drive_e2e(args.backend_exe, space_paths=args.space_paths)
+        if args.mapped_drive
+        else run_backend_e2e(args.backend_exe, space_paths=args.space_paths)
+    )
     print(json.dumps(result, indent=2, sort_keys=True))
 
 
