@@ -50,6 +50,39 @@ def test_scheduler_core_merges_adjacent_requests_of_same_class() -> None:
     assert queue[0].deadline == first.deadline
 
 
+def test_scheduler_core_front_merges_adjacent_requests_like_mq_deadline() -> None:
+    first, sequence = build_request(
+        sequence=0,
+        lba=101,
+        size=4096,
+        is_write=False,
+        op_kind="data",
+        sync=False,
+        arrival_time=10.0,
+        read_deadline_s=0.025,
+        write_deadline_s=0.150,
+    )
+    previous, _ = build_request(
+        sequence=sequence,
+        lba=100,
+        size=4096,
+        is_write=False,
+        op_kind="data",
+        sync=False,
+        arrival_time=10.01,
+        read_deadline_s=0.025,
+        write_deadline_s=0.150,
+    )
+
+    queue, merged_into = merge_request((first,), previous, block_bytes=4096)
+
+    assert merged_into == first.id
+    assert len(queue) == 1
+    assert queue[0].lba == 100
+    assert queue[0].size == 8192
+    assert queue[0].deadline == first.deadline
+
+
 def test_scheduler_core_picks_expired_deadline_before_look_order() -> None:
     left, sequence = build_request(
         sequence=0,

@@ -89,14 +89,17 @@ def merge_request(
 ) -> tuple[tuple[SchedulerRequest, ...], str | None]:
     updated_queue = list(queue)
     for index, request in enumerate(updated_queue):
-        if (
-            request.is_write == incoming.is_write
-            and request.op_kind == incoming.op_kind
-            and request.sync == incoming.sync
-            and request.lba + size_in_blocks(request.size, block_bytes) == incoming.lba
-        ):
+        if request.is_write != incoming.is_write or request.op_kind != incoming.op_kind or request.sync != incoming.sync:
+            continue
+
+        request_blocks = size_in_blocks(request.size, block_bytes)
+        incoming_blocks = size_in_blocks(incoming.size, block_bytes)
+        back_merge = request.lba + request_blocks == incoming.lba
+        front_merge = incoming.lba + incoming_blocks == request.lba
+        if back_merge or front_merge:
             updated_queue[index] = replace(
                 request,
+                lba=incoming.lba if front_merge else request.lba,
                 size=request.size + incoming.size,
                 deadline=min(request.deadline, incoming.deadline),
                 extent_count=request.extent_count + incoming.extent_count,

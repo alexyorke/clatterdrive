@@ -56,6 +56,7 @@ class StartupTracePoint:
 class CacheState:
     spans: tuple[CacheSpan, ...] = ()
     last_read_end_lba: int = -1
+    read_ahead_window_blocks: int = 0
 
 
 @dataclass(frozen=True)
@@ -1015,15 +1016,22 @@ def cache_overlap_blocks(cache_state: CacheState, lba: int, blocks: int) -> int:
 
 
 def remember_read(config: HDDCoreConfig, cache_state: CacheState, lba: int, blocks: int, now: float) -> CacheState:
-    if lba <= cache_state.last_read_end_lba + 1:
-        cache_blocks = max(blocks * 4, config.read_ahead_blocks)
+    pruned = prune_cache(cache_state, now)
+    max_window = max(config.read_ahead_blocks * 4, blocks)
+    initial_window = max(blocks * 2, config.read_ahead_blocks // 2)
+    is_contiguous = lba <= cache_state.last_read_end_lba + 1
+
+    if is_contiguous:
+        previous_window = cache_state.read_ahead_window_blocks or initial_window
+        cache_blocks = min(max_window, max(blocks, previous_window * 2))
     else:
-        cache_blocks = max(blocks * 2, config.read_ahead_blocks // 2)
+        cache_blocks = max(blocks, min(blocks * 2, max(1, config.read_ahead_blocks // 8)))
     span = CacheSpan(lba, lba + cache_blocks - 1, now + 2.0)
     return replace(
-        prune_cache(cache_state, now),
-        spans=(*prune_cache(cache_state, now).spans, span),
+        pruned,
+        spans=(*pruned.spans, span),
         last_read_end_lba=lba + blocks - 1,
+        read_ahead_window_blocks=cache_blocks,
     )
 
 

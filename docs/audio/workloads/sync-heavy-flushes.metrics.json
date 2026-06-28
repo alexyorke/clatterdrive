@@ -1,0 +1,21 @@
+{
+  "name": "sync-heavy-flushes",
+  "title": "Sync Heavy Flushes",
+  "duration_s": 4.9085587606344045,
+  "event_count": 173,
+  "expanded_event_count": 567,
+  "metadata_event_count": 149,
+  "max_fragmentation_score": 1,
+  "max_directory_entry_count": 24,
+  "rms": 0.04998871437748929,
+  "rms_cap": 0.05,
+  "peak": 0.18292794579912716,
+  "peak_cap": 0.45,
+  "audio_lag": {
+    "event_count": 567,
+    "p95_lag_ms": 0.0,
+    "max_lag_ms": 0.0,
+    "pending_events": 0,
+    "dropped_events": 0
+  }
+}

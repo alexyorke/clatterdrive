@@ -10,6 +10,7 @@ from _pytest.monkeypatch import MonkeyPatch
 from tools import generate_audio_samples
 from tools import audio_physics_benchmark
 from tools import calibrate_ironwolf_physics
+from tools import capture_workload_audio
 from tools import profile_core
 from tools import profile_fragmentation
 import smoke
@@ -89,6 +90,32 @@ def test_trace_audio_scenario_writes_json_and_svg(tmp_path: Path, monkeypatch: M
     assert svg_path.exists()
     assert '"events"' in payload
     assert '"diagnostics"' in payload
+
+def test_capture_workload_audio_writes_listening_page_and_samples(tmp_path: Path) -> None:
+    output_dir = tmp_path / "audio"
+    runtime_dir = tmp_path / "runtime"
+
+    results = capture_workload_audio.capture_workload_audio(output_dir=output_dir, runtime_dir=runtime_dir)
+
+    assert (output_dir / "index.html").exists()
+    assert len(results) == 4
+    assert all(result.wav_path.exists() for result in results)
+    assert all(result.events_path.exists() for result in results)
+    assert all(result.metrics_path.exists() for result in results)
+    assert all(result.rms > 0.001 for result in results)
+    by_name = {result.name: result for result in results}
+    storm = by_name["small-file-metadata-storm"]
+    sequential = by_name["large-sequential-write"]
+    fragmented = by_name["fragmented-rewrite-churn"]
+    assert storm.metadata_event_count > sequential.metadata_event_count
+    assert storm.expanded_event_count > sequential.expanded_event_count
+    assert storm.duration_s > 3.0
+    assert fragmented.max_fragmentation_score > 1
+    assert all(result.rms <= capture_workload_audio.WORKLOAD_RMS_CAP + 0.005 for result in results)
+    assert all(result.peak <= capture_workload_audio.WORKLOAD_PEAK_CAP + 0.005 for result in results)
+    listening_page = (output_dir / "index.html").read_text(encoding="utf-8")
+    assert "../metadata-storm.wav" in listening_page
+    assert "small-file-metadata-storm.wav" in listening_page
 
 def test_smoke_main_boot_random_port_with_audio_disabled() -> None:
     smoke.run_main_boot_smoke(exercise_cli=False)

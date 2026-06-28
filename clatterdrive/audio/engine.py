@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import threading
 import wave
+from collections import deque
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,7 @@ from .core import (
     render_diagnostic_chunk as render_audio_diagnostic_chunk,
     render_chunk as render_audio_chunk,
 )
+from .workload import expand_workload_event
 from ..profiles import (
     AcousticProfile,
     DriveProfile,
@@ -268,6 +270,9 @@ class HDDAudioEngine:
         self._headless_stop_event = threading.Event()
         self._headless_render_thread: threading.Thread | None = None
         self.event_trace_sink = event_trace_sink
+        self._audio_lag_samples_ms: deque[float] = deque(maxlen=1024)
+        self._max_scheduled_events_per_chunk = max(256, max_pending_events * 4)
+        self._dropped_expanded_events = 0
         self.configure_tee(tee_path)
 
     def configure_tee(self, tee_path: str | None) -> None:
@@ -354,13 +359,45 @@ class HDDAudioEngine:
         if self.time_origin is None:
             self.time_origin = min(event.emitted_at for event in events)
 
-        scheduled = []
+        scheduled: list[ScheduledEvent] = []
         for event in events:
-            absolute_frame = round((event.emitted_at - self.time_origin) * self.fs)
-            frame_offset = max(0, absolute_frame - self.render_frame_cursor)
-            scheduled.append((event, frame_offset))
+            expanded_events = expand_workload_event(event, self.fs)
+            remaining_capacity = self._max_scheduled_events_per_chunk - len(scheduled)
+            if remaining_capacity <= 0:
+                self._dropped_expanded_events += len(expanded_events)
+                continue
+            if len(expanded_events) > remaining_capacity:
+                self._dropped_expanded_events += len(expanded_events) - remaining_capacity
+                expanded_events = expanded_events[:remaining_capacity]
+
+            for expanded_event, _relative_frame in expanded_events:
+                absolute_frame = round((expanded_event.emitted_at - self.time_origin) * self.fs)
+                frame_offset = max(0, absolute_frame - self.render_frame_cursor)
+                scheduled.append((expanded_event, frame_offset))
+                audio_cursor_time = self.time_origin + (self.render_frame_cursor / self.fs)
+                lag_ms = max(0.0, (audio_cursor_time - expanded_event.emitted_at) * 1000.0)
+                self._audio_lag_samples_ms.append(lag_ms)
         scheduled.sort(key=lambda item: item[1])
         return scheduled
+
+    def audio_lag_snapshot(self) -> dict[str, float | int]:
+        samples = sorted(self._audio_lag_samples_ms)
+        if not samples:
+            return {
+                "event_count": 0,
+                "p95_lag_ms": 0.0,
+                "max_lag_ms": 0.0,
+                "pending_events": self.events.pending_count(),
+                "dropped_events": self.events.dropped_count() + self._dropped_expanded_events,
+            }
+        p95_index = min(len(samples) - 1, round((len(samples) - 1) * 0.95))
+        return {
+            "event_count": len(samples),
+            "p95_lag_ms": float(samples[p95_index]),
+            "max_lag_ms": float(samples[-1]),
+            "pending_events": self.events.pending_count(),
+            "dropped_events": self.events.dropped_count() + self._dropped_expanded_events,
+        }
 
     def render_chunk(self, frames: int) -> FloatArray:
         with self.render_lock:

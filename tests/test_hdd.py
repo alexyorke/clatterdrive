@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 
 import numpy as np
 import pytest
 
-from clatterdrive.hdd import HDDLatencyModel
-from clatterdrive.hdd.core import CacheSpan
+from clatterdrive.hdd import HDDLatencyModel, VirtualHDD
+from clatterdrive.hdd.core import CacheSpan, CacheState, remember_read
 from clatterdrive.storage_events import StorageEvent
 
 def test_partial_read_cache_is_not_reported_as_full_hit() -> None:
@@ -28,6 +29,26 @@ def test_non_prefix_cache_overlap_is_not_treated_as_partial_hit() -> None:
     assert result["cache_hit"] is False
     assert result["partial_hit"] is False
     model.stop()
+
+
+def test_read_ahead_window_grows_for_sequential_reads_and_stays_small_for_random_reads() -> None:
+    model = HDDLatencyModel(addressable_blocks=100000, latency_scale=0.0)
+    try:
+        now = time.monotonic()
+        sequential = remember_read(model.core_config, CacheState(), 0, 1, now)
+        first_window = sequential.spans[-1].end_lba - sequential.spans[-1].start_lba + 1
+        sequential = remember_read(model.core_config, sequential, 1, 1, now + 0.001)
+        second_window = sequential.spans[-1].end_lba - sequential.spans[-1].start_lba + 1
+
+        randomish = remember_read(model.core_config, CacheState(), 0, 1, now)
+        randomish = remember_read(model.core_config, randomish, 5000, 1, now + 0.001)
+        random_window = randomish.spans[-1].end_lba - randomish.spans[-1].start_lba + 1
+
+        assert second_window > first_window
+        assert random_window < first_window
+    finally:
+        model.stop()
+
 
 def test_zone_table_does_not_extend_past_addressable_capacity() -> None:
     model = HDDLatencyModel(addressable_blocks=2048, latency_scale=0.0)
@@ -335,6 +356,36 @@ def test_background_scan_activity_can_delay_foreground_access() -> None:
         assert result.maintenance_wait_ms > 0.0
     finally:
         model.stop()
+
+
+def test_recursive_backing_tree_reconciliation_tracks_external_changes(tmp_path: Path) -> None:
+    backing = tmp_path / "backing"
+    deep = backing / "docs" / "deep"
+    deep.mkdir(parents=True)
+    alpha = deep / "alpha.bin"
+    beta = deep / "beta.bin"
+    alpha.write_bytes(b"a" * 4096)
+    beta.write_bytes(b"b" * 2048)
+
+    vhdd = VirtualHDD(str(backing), latency_scale=0.0)
+    try:
+        vhdd.ensure_tree_known("/docs")
+        assert vhdd.fs.files["/docs/deep/alpha.bin"].size == 4096
+        assert vhdd.fs.files["/docs/deep/beta.bin"].size == 2048
+
+        alpha.write_bytes(b"a" * 8192)
+        beta.unlink()
+        (deep / "gamma.bin").write_bytes(b"g" * 1024)
+
+        vhdd.ensure_tree_known("/docs")
+
+        assert vhdd.fs.files["/docs/deep/alpha.bin"].size == 8192
+        assert "/docs/deep/beta.bin" not in vhdd.fs.files
+        assert vhdd.fs.files["/docs/deep/gamma.bin"].size == 1024
+        vhdd.fs.assert_consistent()
+    finally:
+        vhdd.stop()
+
 
 def test_spindown_trace_is_monotone_and_continuous() -> None:
     model = HDDLatencyModel(addressable_blocks=4096, latency_scale=0.0, spin_down_ms=320.0)

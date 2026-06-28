@@ -200,13 +200,14 @@ class VirtualHDD:
         if not os.path.isdir(real_path):
             return
         self.fs.materialize_existing_directory(normalized)
+        self._mark_backing_observed(normalized)
         for entry in os.scandir(real_path):
             child_path = self.fs._normalize_path(f"{normalized}/{entry.name}")
             if entry.is_dir():
                 self.fs.materialize_existing_directory(child_path)
                 self._mark_backing_observed(child_path)
             elif entry.is_file():
-                self.fs.materialize_existing_file(child_path, entry.stat().st_size)
+                self.fs.reconcile_existing_file(child_path, entry.stat().st_size)
                 self._mark_backing_observed(child_path)
 
     def ensure_tree_known(self, path: str) -> None:
@@ -216,15 +217,33 @@ class VirtualHDD:
         if not os.path.isdir(real_path):
             return
 
+        seen_paths: set[str] = set()
         for current_root, dirnames, filenames in os.walk(real_path):
             rel_root = os.path.relpath(current_root, self.backing_dir)
             virtual_root = "/" if rel_root == "." else self.fs._normalize_path(rel_root.replace(os.sep, "/"))
             self.fs.materialize_existing_directory(virtual_root)
+            self._mark_backing_observed(virtual_root)
+            seen_paths.add(virtual_root)
             for dirname in dirnames:
-                self.fs.materialize_existing_directory(f"{virtual_root}/{dirname}")
+                child_path = self.fs._normalize_path(f"{virtual_root}/{dirname}")
+                self.fs.materialize_existing_directory(child_path)
+                self._mark_backing_observed(child_path)
+                seen_paths.add(child_path)
             for filename in filenames:
                 file_path = os.path.join(current_root, filename)
-                self.fs.materialize_existing_file(f"{virtual_root}/{filename}", os.path.getsize(file_path))
+                child_path = self.fs._normalize_path(f"{virtual_root}/{filename}")
+                self.fs.reconcile_existing_file(child_path, os.path.getsize(file_path))
+                self._mark_backing_observed(child_path)
+                seen_paths.add(child_path)
+
+        for observed_path in list(self.backing_observed_paths):
+            if not (observed_path == normalized or observed_path.startswith(f"{normalized}/")):
+                continue
+            if observed_path in seen_paths:
+                continue
+            self.fs.reconcile_missing_path(observed_path)
+            self._forget_backing_prefix(observed_path)
+            self._invalidate_lookup(observed_path)
 
     def _refresh_writeback_idle_state_locked(self) -> None:
         if self.writeback_queue or self.inflight_writebacks:

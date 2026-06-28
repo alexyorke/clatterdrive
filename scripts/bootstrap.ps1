@@ -10,7 +10,9 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
     throw "uv is required. Install uv first, then rerun scripts\bootstrap.ps1."
 }
 
-uv sync --locked --group dev
+. (Join-Path $PSScriptRoot "Use-RepoUv.ps1")
+Enable-RepoUvFallbacks
+Invoke-Uv sync --locked --group dev
 
 if (-not $PythonOnly) {
     if (-not (Get-Command dotnet -ErrorAction SilentlyContinue)) {

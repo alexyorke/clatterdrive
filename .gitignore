@@ -12,6 +12,9 @@ server.log
 server.err
 backing_storage/
 .runtime/
+.tmp_tests/
+.tmp_uv_cache/
+.tmp_uv_env/
 .vscode/
 .idea/
 bin/

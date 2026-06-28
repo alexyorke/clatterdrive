@@ -1,0 +1,21 @@
+{
+  "name": "fragmented-rewrite-churn",
+  "title": "Fragmented Rewrite Churn",
+  "duration_s": 3.0796762601543834,
+  "event_count": 93,
+  "expanded_event_count": 349,
+  "metadata_event_count": 78,
+  "max_fragmentation_score": 11,
+  "max_directory_entry_count": 20,
+  "rms": 0.049989486669682184,
+  "rms_cap": 0.05,
+  "peak": 0.18225653859065524,
+  "peak_cap": 0.45,
+  "audio_lag": {
+    "event_count": 349,
+    "p95_lag_ms": 0.0,
+    "max_lag_ms": 0.0,
+    "pending_events": 0,
+    "dropped_events": 0
+  }
+}

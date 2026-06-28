@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ClatterDrive Workload Audio Samples</title>
+  <style>
+    body { margin: 0; font-family: Segoe UI, system-ui, sans-serif; background: #f6f7f9; color: #17191c; }
+    main { max-width: 980px; margin: 0 auto; padding: 32px 20px 48px; }
+    h1 { font-size: 28px; margin: 0 0 8px; }
+    .intro { margin: 0 0 24px; color: #4d535b; }
+    .scenario { border: 1px solid #d8dde4; background: #fff; border-radius: 8px; padding: 18px; margin: 16px 0; }
+    h2 { font-size: 18px; margin: 0 0 6px; }
+    p { line-height: 1.45; }
+    audio { width: 100%; margin: 8px 0 12px; }
+    dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin: 0; }
+    dt { font-size: 12px; color: #68717c; }
+    dd { margin: 2px 0 0; font-weight: 650; }
+    .links { margin-bottom: 0; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>ClatterDrive Workload Audio Samples</h1>
+    <p class="intro">Captured from simulated file workloads. Physical storage events are expanded into proportional audio burstlets at render time. The reference player keeps the original metadata storm nearby for comparison.</p>
+      <section class="scenario">
+        <h2>Original Metadata Storm Reference</h2>
+        <p>The checked-in default storm motif that the workload captures are tuned around.</p>
+        <audio controls preload="metadata" src="../metadata-storm.wav"></audio>
+      </section>
+
+      <section class="scenario">
+        <h2>Large Sequential Write</h2>
+        <p>One contiguous multi-megabyte file: a short metadata preamble followed by smoother writeback.</p>
+        <audio controls preload="metadata" src="large-sequential-write.wav"></audio>
+        <dl>
+          <div><dt>Physical events</dt><dd>5</dd></div>
+          <div><dt>Audio burstlets</dt><dd>15</dd></div>
+          <div><dt>Metadata events</dt><dd>4</dd></div>
+          <div><dt>Max fragmentation</dt><dd>1</dd></div>
+          <div><dt>RMS</dt><dd>0.0500</dd></div>
+          <div><dt>p95 lag</dt><dd>0.0 ms</dd></div>
+        </dl>
+        <p class="links"><a href="large-sequential-write.events.json">event trace</a> | <a href="large-sequential-write.metrics.json">metrics</a></p>
+      </section>
+      <section class="scenario">
+        <h2>Small File Metadata Storm</h2>
+        <p>Many tiny creates in one directory: dense journal, dentry, inode, and bitmap burstlets.</p>
+        <audio controls preload="metadata" src="small-file-metadata-storm.wav"></audio>
+        <dl>
+          <div><dt>Physical events</dt><dd>149</dd></div>
+          <div><dt>Audio burstlets</dt><dd>429</dd></div>
+          <div><dt>Metadata events</dt><dd>137</dd></div>
+          <div><dt>Max fragmentation</dt><dd>1</dd></div>
+          <div><dt>RMS</dt><dd>0.0500</dd></div>
+          <div><dt>p95 lag</dt><dd>0.0 ms</dd></div>
+        </dl>
+        <p class="links"><a href="small-file-metadata-storm.events.json">event trace</a> | <a href="small-file-metadata-storm.metrics.json">metrics</a></p>
+      </section>
+      <section class="scenario">
+        <h2>Fragmented Rewrite Churn</h2>
+        <p>Delete holes, rewrite, and read back: seeks become more irregular as extent count rises.</p>
+        <audio controls preload="metadata" src="fragmented-rewrite-churn.wav"></audio>
+        <dl>
+          <div><dt>Physical events</dt><dd>93</dd></div>
+          <div><dt>Audio burstlets</dt><dd>349</dd></div>
+          <div><dt>Metadata events</dt><dd>78</dd></div>
+          <div><dt>Max fragmentation</dt><dd>11</dd></div>
+          <div><dt>RMS</dt><dd>0.0500</dd></div>
+          <div><dt>p95 lag</dt><dd>0.0 ms</dd></div>
+        </dl>
+        <p class="links"><a href="fragmented-rewrite-churn.events.json">event trace</a> | <a href="fragmented-rewrite-churn.metrics.json">metrics</a></p>
+      </section>
+      <section class="scenario">
+        <h2>Sync Heavy Flushes</h2>
+        <p>Small forced writes and metadata updates: tighter flush hits and repeated journal commits.</p>
+        <audio controls preload="metadata" src="sync-heavy-flushes.wav"></audio>
+        <dl>
+          <div><dt>Physical events</dt><dd>173</dd></div>
+          <div><dt>Audio burstlets</dt><dd>567</dd></div>
+          <div><dt>Metadata events</dt><dd>149</dd></div>
+          <div><dt>Max fragmentation</dt><dd>1</dd></div>
+          <div><dt>RMS</dt><dd>0.0500</dd></div>
+          <div><dt>p95 lag</dt><dd>0.0 ms</dd></div>
+        </dl>
+        <p class="links"><a href="sync-heavy-flushes.events.json">event trace</a> | <a href="sync-heavy-flushes.metrics.json">metrics</a></p>
+      </section>
+  </main>
+</body>
+</html>

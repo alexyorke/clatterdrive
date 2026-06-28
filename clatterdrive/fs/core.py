@@ -249,29 +249,41 @@ def allocate_blocks(
         return state, []
 
     next_state = clone_state(state)
+    return next_state, _allocate_blocks_in_place(next_state, count, start_at=start_at)
+
+
+def _allocate_blocks_in_place(
+    state: FileSystemState,
+    count: int,
+    *,
+    start_at: int | None = None,
+) -> list[BlockRun]:
+    if count <= 0:
+        return []
+
     allocated: list[BlockRun] = []
     found_count = 0
     current_extent_start = -1
     current_extent_len = 0
-    scan_start = next_state.data_start_block
+    scan_start = state.data_start_block
     if start_at is not None:
-        scan_start = min(max(int(start_at), next_state.data_start_block), next_state.total_blocks - 1)
+        scan_start = min(max(int(start_at), state.data_start_block), state.total_blocks - 1)
 
     scan_ranges = (
-        range(scan_start, next_state.total_blocks),
-        range(next_state.data_start_block, scan_start),
+        range(scan_start, state.total_blocks),
+        range(state.data_start_block, scan_start),
     )
     for scan_range in scan_ranges:
         for block in scan_range:
-            if next_state.bitmap[block] == 0:
+            if state.bitmap[block] == 0:
                 if current_extent_start == -1:
                     current_extent_start = block
                 current_extent_len += 1
-                next_state.bitmap[block] = 1
+                state.bitmap[block] = 1
                 found_count += 1
                 if found_count == count:
                     allocated.append((current_extent_start, current_extent_len))
-                    return next_state, allocated
+                    return allocated
             elif current_extent_start != -1:
                 allocated.append((current_extent_start, current_extent_len))
                 current_extent_start = -1
@@ -295,10 +307,14 @@ def preferred_append_block(inode: FileInode) -> int | None:
 
 def free_extents(state: FileSystemState, extents: list[Extent]) -> FileSystemState:
     next_state = clone_state(state)
+    _free_extents_in_place(next_state, extents)
+    return next_state
+
+
+def _free_extents_in_place(state: FileSystemState, extents: list[Extent]) -> None:
     for _, start, length in extents:
         for block in range(start, start + length):
-            next_state.bitmap[block] = 0
-    return next_state
+            state.bitmap[block] = 0
 
 
 def coalesce_extents(inode: FileInode) -> FileInode:
@@ -395,7 +411,7 @@ def allocate_missing_ranges(
     preferred_start = preferred_append_block(next_inode)
     for missing_start, missing_end in missing_logical_ranges(next_inode, start_block, end_block):
         blocks_needed = missing_end - missing_start + 1
-        next_state, runs = allocate_blocks(next_state, blocks_needed, start_at=preferred_start)
+        runs = _allocate_blocks_in_place(next_state, blocks_needed, start_at=preferred_start)
         for physical_start, length in runs:
             new_extents.append((missing_start, physical_start, length))
             missing_start += length
@@ -672,7 +688,7 @@ def delete(state: FileSystemState, path: str) -> tuple[FileSystemState, list[IOO
     ]
     operations.extend(bitmap_ops_for_extents(next_state, inode.extents))
 
-    next_state = free_extents(next_state, inode.extents)
+    _free_extents_in_place(next_state, inode.extents)
     next_state.dir_children[parent_entry.path].discard(basename(normalized))
     del next_state.files[normalized]
     return next_state, operations
@@ -732,7 +748,7 @@ def delete_directory(
 
     for file_path in file_paths:
         inode = next_state.files.pop(file_path)
-        next_state = free_extents(next_state, inode.extents)
+        _free_extents_in_place(next_state, inode.extents)
         next_state.dir_children[inode.parent_dir].discard(basename(file_path))
 
     for dir_path in [*child_dirs, normalized]:
@@ -864,7 +880,7 @@ def truncate(state: FileSystemState, path: str, size: int = 0) -> tuple[FileSyst
         inode.size = size
 
     if freed_extents:
-        next_state = free_extents(next_state, freed_extents)
+        _free_extents_in_place(next_state, freed_extents)
 
     next_state, journal = journal_op(next_state, 2 if freed_extents else 1, "truncate_intent")
     operations = [

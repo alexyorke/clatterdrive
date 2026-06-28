@@ -14,6 +14,7 @@ from _pytest.monkeypatch import MonkeyPatch
 import clatterdrive.audio.engine as audio_engine_module
 from clatterdrive.audio import HDDAudioEngine, HDDAudioEvent
 from clatterdrive.audio.core import AudioDiagnosticTrace, render_chunk as render_audio_chunk
+from clatterdrive.audio.workload import expand_workload_event
 from clatterdrive.runtime.deps import NoOpSleeper, RuntimeDeps
 from tools.generate_audio_samples import (
     ScriptClock,
@@ -348,6 +349,105 @@ def test_audio_engine_events_are_buffered_until_render() -> None:
     assert engine.synthesizer.rpm == 7200.0
     assert engine.synthesizer.actual_rpm > 7000.0
     assert float(np.max(np.abs(chunk))) > 0.004
+
+
+def test_workload_mapper_preserves_hand_authored_demo_events() -> None:
+    event = _audio_event(rpm=7200.0, target_rpm=7200.0, queue_depth=1, op_kind="metadata")
+
+    expanded = expand_workload_event(event, 44100)
+
+    assert expanded == [(event, 0)]
+
+
+def test_workload_mapper_expands_directory_metadata_storms() -> None:
+    event = _audio_event(
+        rpm=7200.0,
+        target_rpm=7200.0,
+        queue_depth=1,
+        op_kind="journal",
+        block_count=2,
+        size_bytes=8192,
+        directory_entry_count=96,
+        fragmentation_score=3,
+    )
+
+    expanded = expand_workload_event(event, 44100)
+    offsets = [offset for _event, offset in expanded]
+
+    assert len(expanded) >= 6
+    assert offsets == sorted(offsets)
+    assert expanded[0][0].op_kind == "journal"
+    assert any(item.op_kind == "metadata" for item, _offset in expanded[1:])
+    assert max(abs(item.track_delta) for item, _offset in expanded) > 0.03
+
+
+def test_workload_mapper_adds_transfer_ticks_for_large_fragmented_writeback() -> None:
+    event = _audio_event(
+        rpm=7200.0,
+        target_rpm=7200.0,
+        queue_depth=1,
+        op_kind="writeback",
+        is_sequential=False,
+        block_count=512,
+        size_bytes=512 * 4096,
+        transfer_ms=18.0,
+        extent_count=5,
+        fragmentation_score=5,
+    )
+
+    expanded = expand_workload_event(event, 44100)
+
+    assert len(expanded) > 1
+    assert expanded[0] == (event, 0)
+    assert any(item.servo_mode == "seek" for item, _offset in expanded[1:])
+    assert max(offset for _item, offset in expanded) > 0
+
+
+def test_audio_engine_reports_event_to_render_lag() -> None:
+    engine = HDDAudioEngine(seed=0)
+    engine.time_origin = 0.0
+    engine.render_frame_cursor = int(engine.fs * 0.100)
+    engine.publish_event(
+        HDDAudioEvent(
+            rpm=7200.0,
+            emitted_at=0.020,
+            target_rpm=7200.0,
+            op_kind="metadata",
+            block_count=1,
+            size_bytes=4096,
+        )
+    )
+
+    engine.render_chunk(1024)
+    lag = engine.audio_lag_snapshot()
+
+    assert lag["event_count"] >= 1
+    assert lag["max_lag_ms"] >= 70.0
+
+
+def test_audio_engine_caps_workload_expansion_for_bursty_chunks() -> None:
+    engine = HDDAudioEngine(seed=0, max_pending_events=80)
+    for index in range(80):
+        engine.publish_event(
+            HDDAudioEvent(
+                rpm=7200.0,
+                emitted_at=index * 0.0001,
+                target_rpm=7200.0,
+                queue_depth=1,
+                op_kind="journal",
+                block_count=512,
+                size_bytes=512 * 4096,
+                directory_entry_count=256,
+                fragmentation_score=8,
+            )
+        )
+
+    engine.render_chunk(1024)
+    lag = engine.audio_lag_snapshot()
+
+    assert lag["event_count"] == engine._max_scheduled_events_per_chunk
+    assert lag["dropped_events"] > 0
+    assert lag["pending_events"] == 0
 
 
 def test_audio_engine_event_bus_fifo_and_bounds_are_preserved() -> None:

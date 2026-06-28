@@ -127,6 +127,28 @@ def test_truncate_frees_tail_extents_and_clears_size() -> None:
     assert operations[0].source == "truncate_intent"
     assert operations[1].source == "inode_truncate"
 
+
+def test_filesystem_mutation_helpers_keep_state_consistent() -> None:
+    fs = FileSystemSimulator(total_gb=1)
+    fs.create_directory("/work")
+    fs.write("/work/data.bin", 0, 32 * 4096)
+    fs.write("/work/data.bin", 64 * 4096, 8 * 4096)
+    fs.assert_consistent()
+
+    fs.truncate("/work/data.bin", size=16 * 4096)
+    assert fs.files["/work/data.bin"].size == 16 * 4096
+    fs.assert_consistent()
+
+    fs.rename("/work/data.bin", "/work/renamed.bin")
+    assert "/work/data.bin" not in fs.files
+    assert "/work/renamed.bin" in fs.files
+    fs.assert_consistent()
+
+    fs.delete("/work/renamed.bin")
+    assert "/work/renamed.bin" not in fs.files
+    fs.assert_consistent()
+
+
 def test_sparse_write_does_not_backfill_hole_reads() -> None:
     fs = FileSystemSimulator(total_gb=1)
     fs.write("/sparse.bin", 8192, 4096)

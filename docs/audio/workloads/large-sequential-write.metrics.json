@@ -1,0 +1,21 @@
+{
+  "name": "large-sequential-write",
+  "title": "Large Sequential Write",
+  "duration_s": 1.2,
+  "event_count": 5,
+  "expanded_event_count": 15,
+  "metadata_event_count": 4,
+  "max_fragmentation_score": 1,
+  "max_directory_entry_count": 1,
+  "rms": 0.049994831938873316,
+  "rms_cap": 0.05,
+  "peak": 0.3974425489059114,
+  "peak_cap": 0.45,
+  "audio_lag": {
+    "event_count": 15,
+    "p95_lag_ms": 0.0,
+    "max_lag_ms": 0.0,
+    "pending_events": 0,
+    "dropped_events": 0
+  }
+}
