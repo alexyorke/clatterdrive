@@ -8,6 +8,8 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $RepoRoot
 $IsWindowsHost = $env:OS -eq "Windows_NT"
+. (Join-Path $PSScriptRoot "Use-RepoUv.ps1")
+Enable-RepoUvFallbacks
 
 $backendArgs = @()
 if ($Packaged) {
@@ -32,11 +34,11 @@ if ($Packaged) {
     $backendArgs += @("--backend-exe", $backendExe)
 }
 
-uv run python -m tools.windows_backend_e2e @backendArgs
+Invoke-Uv run python -m tools.windows_backend_e2e @backendArgs
 
 if ($IncludeMappedDrive) {
     if (-not $IsWindowsHost) {
         throw "Mapped-drive E2E is Windows-only."
     }
-    uv run python -m tools.windows_backend_e2e @backendArgs --mapped-drive
+    Invoke-Uv run python -m tools.windows_backend_e2e @backendArgs --mapped-drive
 }

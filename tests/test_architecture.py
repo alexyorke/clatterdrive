@@ -135,3 +135,21 @@ def test_windows_test_script_injects_worker_cap_unless_explicitly_overridden() -
     assert '$arg -eq "--numprocesses"' in script_text
     assert '$arg.StartsWith("--numprocesses=")' in script_text
     assert '$PytestArgs = @("-n", "4") + $PytestArgs' in script_text
+
+
+def test_windows_setup_scripts_use_repo_uv_fallback_helper() -> None:
+    script_names = (
+        "scripts/bootstrap.ps1",
+        "scripts/build-windows.ps1",
+        "scripts/lint.ps1",
+        "scripts/test.ps1",
+        "scripts/test-e2e.ps1",
+        "scripts/test-installer.ps1",
+    )
+    for script_name in script_names:
+        script_text = _module_path(script_name).read_text(encoding="utf-8")
+        assert 'Use-RepoUv.ps1' in script_text, f"{script_name} does not load the uv fallback helper"
+        assert 'Enable-RepoUvFallbacks' in script_text, f"{script_name} does not enable uv fallbacks"
+        assert "Invoke-Uv" in script_text, f"{script_name} bypasses Invoke-Uv"
+        assert "uv run " not in script_text
+        assert "uv sync " not in script_text

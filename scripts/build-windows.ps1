@@ -7,7 +7,9 @@ if (-not $IsWindowsHost) {
     throw "Windows packaging must run on Windows because WPF and PyInstaller artifacts are platform-specific."
 }
 
-uv sync --locked --group dev
+. (Join-Path $PSScriptRoot "Use-RepoUv.ps1")
+Enable-RepoUvFallbacks
+Invoke-Uv sync --locked --group dev
 
 $RuntimeDir = Join-Path $RepoRoot ".runtime"
 $PyInstallerWork = Join-Path $RuntimeDir "build\pyinstaller"
@@ -16,7 +18,7 @@ $LauncherDist = Join-Path $RuntimeDir "dist\launcher"
 
 New-Item -ItemType Directory -Force -Path $PyInstallerWork, $BackendDist, $LauncherDist | Out-Null
 
-uv run pyinstaller `
+Invoke-Uv run pyinstaller `
     --noconfirm `
     --clean `
     --name clatterdrive-backend `

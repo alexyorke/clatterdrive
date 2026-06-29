@@ -24,14 +24,14 @@ Checked-in sample renders:
 
 ## Quick Start
 
-This repo uses `uv` and the committed [uv.lock](uv.lock).
+On Windows, install Python 3.12+ and [`uv`](https://docs.astral.sh/uv/), then use the repo scripts. They handle stale local virtual environments and keep uv cache/temp paths repo-local when this machine's global uv state is unusable.
 
 ```powershell
-uv sync --group dev
+scripts\bootstrap.ps1 -PythonOnly
 uv run python main.py
 ```
 
-Or:
+After bootstrap, any of these start the backend:
 
 ```powershell
 uv run python -m clatterdrive

@@ -7,6 +7,8 @@ param(
 $ErrorActionPreference = "Stop"
 $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $RepoRoot
+. (Join-Path $PSScriptRoot "Use-RepoUv.ps1")
+Enable-RepoUvFallbacks
 
 if ($env:GITHUB_ACTIONS -ne "true" -and $env:CLATTERDRIVE_INSTALLER_E2E_VM -ne "1") {
     throw "Installer E2E mutates the host. Run it in GitHub Actions or inside a VM with CLATTERDRIVE_INSTALLER_E2E_VM=1."
@@ -128,11 +130,11 @@ try {
         throw "Installed backend doctor command reported failure."
     }
 
-    uv run python -m tools.windows_backend_e2e --backend-exe $BackendExe
-    uv run python -m tools.windows_backend_e2e --backend-exe $BackendExe --space-paths
+    Invoke-Uv run python -m tools.windows_backend_e2e --backend-exe $BackendExe
+    Invoke-Uv run python -m tools.windows_backend_e2e --backend-exe $BackendExe --space-paths
     if ($IncludeMappedDrive) {
-        uv run python -m tools.windows_backend_e2e --backend-exe $BackendExe --mapped-drive
-        uv run python -m tools.windows_backend_e2e --backend-exe $BackendExe --mapped-drive --space-paths
+        Invoke-Uv run python -m tools.windows_backend_e2e --backend-exe $BackendExe --mapped-drive
+        Invoke-Uv run python -m tools.windows_backend_e2e --backend-exe $BackendExe --mapped-drive --space-paths
     }
 
     if ($IncludeUiE2E) {
