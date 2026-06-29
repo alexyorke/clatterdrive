@@ -58,7 +58,7 @@ jobs:
             Write-Host "No signing secrets configured; release zip is unsigned."
           }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ClatterDrive-windows-x64
           path: |
@@ -127,7 +127,7 @@ jobs:
           CLATTERDRIVE_MACOS_ARCH: ${{ matrix.arch }}
         run: bash scripts/test-macos-e2e.sh --packaged --from-dmg --include-mount --use-existing-package
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ClatterDrive-macos-${{ matrix.arch }}
           path: .runtime/package/ClatterDrive-macos-${{ matrix.arch }}.dmg

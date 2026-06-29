@@ -45,7 +45,7 @@ jobs:
       - name: Installer install, native launcher, mapped-drive, and uninstall E2E
         run: scripts/test-installer.ps1 -UseExistingPackage -IncludeUiE2E -IncludeMappedDrive
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: nightly-windows-artifacts
