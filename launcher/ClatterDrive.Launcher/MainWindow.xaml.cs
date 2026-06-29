@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.Windows;
+using System.Windows.Controls;
 using Microsoft.Win32;
 
 namespace ClatterDrive.Launcher;
@@ -34,19 +35,16 @@ public partial class MainWindow : Window
         Process.Start(new ProcessStartInfo(ViewModel.WebDavUrl) { UseShellExecute = true });
     }
 
-    private void CopyUrlButton_Click(object sender, RoutedEventArgs e)
+    private void CopySelectedCommandButton_Click(object sender, RoutedEventArgs e)
     {
-        Clipboard.SetText(MountCommandBuilder.WebDavExplorerUrl(ViewModel.CurrentSettings()));
-    }
-
-    private void CopyMountButton_Click(object sender, RoutedEventArgs e)
-    {
-        Clipboard.SetText(ViewModel.NetUseCommand);
-    }
-
-    private void CopyUnmountButton_Click(object sender, RoutedEventArgs e)
-    {
-        Clipboard.SetText(ViewModel.NetUseUnmountCommand);
+        var selected = (CopyCommandComboBox.SelectedItem as ComboBoxItem)?.Tag as string;
+        var text = selected switch
+        {
+            "mount" => ViewModel.NetUseCommand,
+            "unmount" => ViewModel.NetUseUnmountCommand,
+            _ => MountCommandBuilder.WebDavExplorerUrl(ViewModel.CurrentSettings()),
+        };
+        Clipboard.SetText(text);
     }
 
     private void Window_Closing(object? sender, System.ComponentModel.CancelEventArgs e)

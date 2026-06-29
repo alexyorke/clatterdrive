@@ -99,28 +99,46 @@
       </StackPanel>
 
       <StackPanel Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="2">
-        <WrapPanel>
-          <Button Content="Start"
-                  Command="{Binding StartCommand}"
-                  AutomationProperties.AutomationId="StartServerButton" />
-          <Button Content="Stop"
-                  Command="{Binding StopCommand}"
-                  AutomationProperties.AutomationId="StopServerButton" />
-          <Button Content="Open Browser"
-                  Click="OpenBrowserButton_Click"
-                  AutomationProperties.AutomationId="OpenBrowserButton" />
-          <Button Content="Copy URL"
-                  Click="CopyUrlButton_Click"
-                  AutomationProperties.AutomationId="CopyUrlButton" />
-        </WrapPanel>
-        <WrapPanel Margin="0,8,0,0">
-          <Button Content="Copy Mount Command"
-                  Click="CopyMountButton_Click"
-                  AutomationProperties.AutomationId="CopyMountCommandButton" />
-          <Button Content="Copy Unmount"
-                  Click="CopyUnmountButton_Click"
-                  AutomationProperties.AutomationId="CopyUnmountCommandButton" />
-        </WrapPanel>
+        <Grid>
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto" />
+            <ColumnDefinition Width="28" />
+            <ColumnDefinition Width="Auto" />
+          </Grid.ColumnDefinitions>
+
+          <StackPanel Grid.Column="0">
+            <TextBlock Text="Server" FontWeight="SemiBold" />
+            <WrapPanel Margin="0,4,0,0">
+              <Button Content="Start"
+                      Command="{Binding StartCommand}"
+                      AutomationProperties.AutomationId="StartServerButton" />
+              <Button Content="Stop"
+                      Command="{Binding StopCommand}"
+                      AutomationProperties.AutomationId="StopServerButton" />
+            </WrapPanel>
+          </StackPanel>
+
+          <StackPanel Grid.Column="2">
+            <TextBlock Text="Connection" FontWeight="SemiBold" />
+            <WrapPanel Margin="0,4,0,0">
+              <Button Content="Open Browser"
+                      Click="OpenBrowserButton_Click"
+                      AutomationProperties.AutomationId="OpenBrowserButton" />
+              <ComboBox x:Name="CopyCommandComboBox"
+                        Width="190"
+                        Margin="0,0,8,0"
+                        SelectedIndex="0"
+                        AutomationProperties.AutomationId="CopyCommandComboBox">
+                <ComboBoxItem Content="Explorer URL" Tag="url" />
+                <ComboBoxItem Content="Mount command" Tag="mount" />
+                <ComboBoxItem Content="Unmount command" Tag="unmount" />
+              </ComboBox>
+              <Button Content="Copy"
+                      Click="CopySelectedCommandButton_Click"
+                      AutomationProperties.AutomationId="CopySelectedCommandButton" />
+            </WrapPanel>
+          </StackPanel>
+        </Grid>
       </StackPanel>
     </Grid>
 

@@ -38,10 +38,12 @@ public sealed class LauncherUiSmokeTests
         AssertControl(window, "AcousticProfileComboBox");
         AssertControl(window, "AudioModeComboBox");
         AssertControl(window, "StartServerButton");
-        AssertControl(window, "CopyMountCommandButton");
+        AssertControl(window, "OpenBrowserButton");
+        AssertControl(window, "CopyCommandComboBox");
+        AssertControl(window, "CopySelectedCommandButton");
         AssertControlInsideWindow(window, "AcousticProfileComboBox");
-        AssertControlInsideWindow(window, "CopyMountCommandButton");
-        AssertControlInsideWindow(window, "CopyUnmountCommandButton");
+        AssertControlInsideWindow(window, "CopyCommandComboBox");
+        AssertControlInsideWindow(window, "CopySelectedCommandButton");
         app.Close();
     }
 
