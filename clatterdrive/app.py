@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import signal
@@ -10,7 +11,7 @@ from cheroot import wsgi
 from wsgidav.wsgidav_app import WsgiDAVApp
 
 from .audio.engine import get_runtime_engine
-from .config import ClatterDriveConfig, config_from_env
+from .config import ClatterDriveConfig, config_from_env, format_url_host
 from .storage_events import CompositeStorageEventSink, DebugStorageEventSink, StorageEventRecorder, StorageEventSink
 from .webdav.provider import HDDProvider
 
@@ -29,13 +30,22 @@ class LocalControlApp:
     def __call__(self, environ: dict[str, Any], start_response: Any) -> Any:
         if environ.get("REQUEST_METHOD") == "POST" and environ.get("PATH_INFO") == "/.clatterdrive/shutdown":
             remote_addr = str(environ.get("REMOTE_ADDR", ""))
-            if remote_addr not in {"127.0.0.1", "::1", "localhost"}:
+            if not _is_loopback_remote_addr(remote_addr):
                 start_response("403 Forbidden", [("Content-Type", "text/plain")])
                 return [b"local shutdown only"]
             start_response("204 No Content", [])
             threading.Thread(target=self.shutdown_callback, daemon=True).start()
             return [b""]
         return self.inner(environ, start_response)
+
+
+def _is_loopback_remote_addr(remote_addr: str) -> bool:
+    if remote_addr == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(remote_addr).is_loopback
+    except ValueError:
+        return False
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -143,7 +153,8 @@ def start_server(config: ClatterDriveConfig | None = None, *, json_status: bool 
         app = LocalControlApp(NoAuthWsgiDAVApp(wsgidav_config), request_shutdown)
         server = wsgi.Server((host, port), app)
         server.prepare()
-        print(f"Research-Enhanced HDD WebDAV server starting on http://{host}:{port}", flush=True)
+        server_url = f"http://{format_url_host(host)}:{port}"
+        print(f"Research-Enhanced HDD WebDAV server starting on {server_url}", flush=True)
         print("Simulated Stack: VFS -> Page Cache -> Block Layer (LOOK/Deadline) -> SATA/AHCI -> NCQ/RPO -> Physical HDD", flush=True)
         print("Hardware Model: Async Power-On -> Host Ready Polling -> Spin-Up -> Self-Test -> Head Load -> Servo Lock -> Ready", flush=True)
         print("Idle Model: Unload -> Low-RPM Idle -> Staged Spin-Down -> Standby", flush=True)
@@ -157,7 +168,7 @@ def start_server(config: ClatterDriveConfig | None = None, *, json_status: bool 
                 json.dumps(
                     {
                         "event": "ready",
-                        "url": f"http://{host}:{port}",
+                        "url": server_url,
                         "backing_dir": root_path,
                         "drive_profile": provider.vhdd.drive_profile.name,
                         "acoustic_profile": provider.vhdd.acoustic_profile.name,

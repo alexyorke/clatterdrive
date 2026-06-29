@@ -20,6 +20,12 @@ FALSE_VALUES = {"0", "false", "no", "off", "disabled", "none"}
 TRUE_VALUES = {"1", "true", "yes", "on", "enabled", "live"}
 
 
+def format_url_host(host: str) -> str:
+    if ":" in host and not (host.startswith("[") and host.endswith("]")):
+        return f"[{host}]"
+    return host
+
+
 @dataclass(frozen=True)
 class ClatterDriveConfig:
     host: str = "127.0.0.1"
@@ -37,7 +43,7 @@ class ClatterDriveConfig:
 
     @property
     def url(self) -> str:
-        return f"http://{self.host}:{self.port}"
+        return f"http://{format_url_host(self.host)}:{self.port}"
 
     def to_env(self) -> dict[str, str]:
         env = {
@@ -120,13 +126,26 @@ def profile_catalog() -> dict[str, Any]:
 
 
 def _check_port_available(host: str, port: int) -> dict[str, Any]:
+    if port < 0 or port > 65535:
+        return {"ok": False, "message": "port must be between 0 and 65535"}
+
     try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            probe.bind((host, port))
+        candidates = socket.getaddrinfo(host, port, family=socket.AF_UNSPEC, type=socket.SOCK_STREAM)
     except OSError as exc:
         return {"ok": False, "message": str(exc)}
-    return {"ok": True, "message": "port is available"}
+
+    errors: list[str] = []
+    for family, socktype, proto, _canonname, sockaddr in candidates:
+        try:
+            with socket.socket(family, socktype, proto) as probe:
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                probe.bind(sockaddr)
+            return {"ok": True, "message": "port is available"}
+        except OSError as exc:
+            errors.append(str(exc))
+
+    message = "; ".join(errors) if errors else "no usable socket address found"
+    return {"ok": False, "message": message}
 
 
 def _check_backing_dir(path: str) -> dict[str, Any]:

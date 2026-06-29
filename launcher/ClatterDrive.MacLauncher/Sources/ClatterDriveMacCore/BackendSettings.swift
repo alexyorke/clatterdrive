@@ -47,7 +47,14 @@ public struct BackendSettings: Equatable {
     }
 
     public var webDavURL: String {
-        "http://\(host):\(port)"
+        "http://\(Self.urlHost(host)):\(port)"
+    }
+
+    public static func urlHost(_ host: String) -> String {
+        if host.contains(":") && !(host.hasPrefix("[") && host.hasSuffix("]")) {
+            return "[\(host)]"
+        }
+        return host
     }
 
     public func validationMessage() -> String? {

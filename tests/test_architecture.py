@@ -115,3 +115,23 @@ def test_audio_physics_artistic_budget_is_explicit() -> None:
     assert "radiate_acoustic_paths" not in physics.artistic_budget()
     assert "output_gain_stage_step" not in physics.artistic_budget()
     assert physics.artistic_budget() == ()
+
+
+def test_webdav_physical_destinations_use_normalized_backing_helper() -> None:
+    provider_text = _module_path("clatterdrive/webdav/provider.py").read_text(encoding="utf-8")
+
+    assert "def _resource_backing_path" in provider_text
+    assert "dest_file_path = os.path.join" not in provider_text
+    assert "dest_file_path = _resource_backing_path" in provider_text
+
+
+def test_windows_test_script_injects_worker_cap_unless_explicitly_overridden() -> None:
+    script_text = _module_path("scripts/test.ps1").read_text(encoding="utf-8")
+
+    assert "[string[]]$PytestArgs = @()" in script_text
+    assert "$hasWorkerCount = $false" in script_text
+    assert '$arg -eq "-n"' in script_text
+    assert '$arg.StartsWith("-n") -and $arg.Length -gt 2' in script_text
+    assert '$arg -eq "--numprocesses"' in script_text
+    assert '$arg.StartsWith("--numprocesses=")' in script_text
+    assert '$PytestArgs = @("-n", "4") + $PytestArgs' in script_text

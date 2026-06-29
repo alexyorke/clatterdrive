@@ -51,6 +51,24 @@ def _collect_process_output(process: subprocess.Popen[str]) -> str:
         return ""
 
 
+def _shutdown_process(process: subprocess.Popen[str], base_url: str) -> None:
+    if process.poll() is None:
+        try:
+            _request(base_url, "POST", "/.clatterdrive/shutdown", b"")
+            process.wait(timeout=5.0)
+            return
+        except Exception:
+            pass
+
+    if process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5.0)
+
+
 def _probe_server_ready(base_url: str) -> bool:
     parsed = urllib.parse.urlparse(base_url)
     host = parsed.hostname or "127.0.0.1"
@@ -161,13 +179,7 @@ def run_main_boot_smoke(exercise_cli: bool = True) -> None:
         except Exception as exc:
             failure = exc
         finally:
-            if process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=5.0)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=5.0)
+            _shutdown_process(process, base_url)
             output = _collect_process_output(process).strip()
         if failure is not None:
             message = str(failure)

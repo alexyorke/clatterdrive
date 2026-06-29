@@ -24,6 +24,11 @@ def _resource_file_path(resource: Any) -> str:
     return resource._file_path
 
 
+def _resource_backing_path(resource: Any, path: str) -> str:
+    normalized = resource.vhdd.fs._normalize_path(path)
+    return os.path.join(resource.provider.root_folder_path, normalized.lstrip("/").replace("/", os.sep))
+
+
 def _copy_directory_contents(source_dir: str, dest_dir: str) -> None:
     os.makedirs(dest_dir, exist_ok=True)
     source_names = {entry.name for entry in os.scandir(source_dir)}
@@ -209,9 +214,10 @@ class LatencyFileResource(_LatencyResourceMixin, FileResource):
         _log_op("DELETE", self.path, self.vhdd.delete_path(self.path))
 
     def handle_move(self, dest_path: str) -> bool:
+        dest_path = self.vhdd.fs._normalize_path(dest_path)
         self.vhdd.ensure_tree_known(self.path)
         self.vhdd.ensure_tree_known(self.vhdd.fs._parent_dir(dest_path))
-        dest_file_path = os.path.join(self.provider.root_folder_path, dest_path.lstrip("/"))
+        dest_file_path = _resource_backing_path(self, dest_path)
         os.makedirs(os.path.dirname(dest_file_path), exist_ok=True)
         if _is_case_only_alias(self.path, dest_path):
             os.rename(_resource_file_path(self), dest_file_path)
@@ -223,15 +229,17 @@ class LatencyFileResource(_LatencyResourceMixin, FileResource):
         return True
 
     def handle_copy(self, dest_path: str, *, depth_infinity: bool) -> bool:
+        dest_path = self.vhdd.fs._normalize_path(dest_path)
         if not _is_case_only_alias(self.path, dest_path):
             return False
         _log_op("COPY", f"{self.path} -> {dest_path}", self.vhdd.copy_file(self.path, dest_path))
         return True
 
     def move_recursive(self, dest_path: str) -> None:
+        dest_path = self.vhdd.fs._normalize_path(dest_path)
         self.vhdd.ensure_tree_known(self.path)
         if _is_case_only_alias(self.path, dest_path):
-            dest_file_path = os.path.join(self.provider.root_folder_path, dest_path.lstrip("/"))
+            dest_file_path = _resource_backing_path(self, dest_path)
             os.rename(_resource_file_path(self), dest_file_path)
             _log_op("MOVE", f"{self.path} -> {dest_path}", self.vhdd.rename_path(self.path, dest_path))
             return
@@ -239,6 +247,7 @@ class LatencyFileResource(_LatencyResourceMixin, FileResource):
         _log_op("MOVE", f"{self.path} -> {dest_path}", self.vhdd.rename_path(self.path, dest_path))
 
     def copy_move_single(self, dest_path: str, *, is_move: bool) -> Any:
+        dest_path = self.vhdd.fs._normalize_path(dest_path)
         if is_move:
             return super().copy_move_single(dest_path, is_move=is_move)
         if _is_case_only_alias(self.path, dest_path):
@@ -281,9 +290,10 @@ class LatencyFolderResource(_LatencyResourceMixin, FolderResource):
         _log_op("DELETE", self.path, self.vhdd.delete_directory(self.path))
 
     def handle_move(self, dest_path: str) -> bool:
+        dest_path = self.vhdd.fs._normalize_path(dest_path)
         self.vhdd.ensure_tree_known(self.path)
         self.vhdd.ensure_tree_known(self.vhdd.fs._parent_dir(dest_path))
-        dest_file_path = os.path.join(self.provider.root_folder_path, dest_path.lstrip("/"))
+        dest_file_path = _resource_backing_path(self, dest_path)
         if _is_case_only_alias(self.path, dest_path):
             os.rename(_resource_file_path(self), dest_file_path)
         else:
@@ -296,6 +306,7 @@ class LatencyFolderResource(_LatencyResourceMixin, FolderResource):
         return True
 
     def handle_copy(self, dest_path: str, *, depth_infinity: bool) -> bool:
+        dest_path = self.vhdd.fs._normalize_path(dest_path)
         if _is_case_only_alias(self.path, dest_path):
             _log_op("COPY", f"{self.path} -> {dest_path}", OperationStats(op_type="COPY"))
             return True
@@ -303,7 +314,7 @@ class LatencyFolderResource(_LatencyResourceMixin, FolderResource):
             return False
 
         source_file_path = _resource_file_path(self)
-        dest_file_path = os.path.join(self.provider.root_folder_path, dest_path.lstrip("/"))
+        dest_file_path = _resource_backing_path(self, dest_path)
         _copy_directory_contents(source_file_path, dest_file_path)
         if isinstance(getattr(self.provider, "prop_manager", None), _InMemoryPropertyManager):
             self.provider.prop_manager.copy_tree_properties(self.get_ref_url(), dest_path)
@@ -311,9 +322,10 @@ class LatencyFolderResource(_LatencyResourceMixin, FolderResource):
         return True
 
     def move_recursive(self, dest_path: str) -> None:
+        dest_path = self.vhdd.fs._normalize_path(dest_path)
         self.vhdd.ensure_tree_known(self.path)
         if _is_case_only_alias(self.path, dest_path):
-            dest_file_path = os.path.join(self.provider.root_folder_path, dest_path.lstrip("/"))
+            dest_file_path = _resource_backing_path(self, dest_path)
             os.rename(_resource_file_path(self), dest_file_path)
             _log_op("MOVE", f"{self.path} -> {dest_path}", self.vhdd.rename_path(self.path, dest_path))
             return
@@ -321,6 +333,7 @@ class LatencyFolderResource(_LatencyResourceMixin, FolderResource):
         _log_op("MOVE", f"{self.path} -> {dest_path}", self.vhdd.rename_path(self.path, dest_path))
 
     def copy_move_single(self, dest_path: str, *, is_move: bool) -> Any:
+        dest_path = self.vhdd.fs._normalize_path(dest_path)
         if is_move:
             return super().copy_move_single(dest_path, is_move=is_move)
         if _is_case_only_alias(self.path, dest_path):
@@ -468,6 +481,7 @@ class HDDProvider(FilesystemProvider):
         self.prop_manager = prop_manager or self._dead_prop_manager
 
     def get_resource_inst(self, path: str, environ: dict[str, Any]) -> Any:
+        path = self.vhdd.fs._normalize_path(path)
         self.vhdd.lookup_path(path)
         resource = super().get_resource_inst(path, environ)
         if resource is None:
@@ -475,7 +489,7 @@ class HDDProvider(FilesystemProvider):
 
         file_path = getattr(resource, "file_path", getattr(resource, "_file_path", None))
         if not file_path:
-            file_path = os.path.join(self.root_folder_path, path.lstrip("/"))
+            file_path = os.path.join(self.root_folder_path, path.lstrip("/").replace("/", os.sep))
 
         if isinstance(resource, FolderResource):
             return LatencyFolderResource(resource.path, environ, file_path, self.vhdd)

@@ -568,6 +568,120 @@ def test_webdav_zero_byte_file_copy_move_delete_paths(tmp_path: Path) -> None:
         _assert_provider_tree_matches_disk(provider, backing)
 
 
+def test_webdav_parent_reference_move_destination_stays_in_backing_root(tmp_path: Path) -> None:
+    backing = tmp_path / "backing"
+    backing.mkdir()
+
+    with _run_test_server(backing) as (base_url, provider):
+        payload = b"stay inside backing root"
+        status, _, _ = _request(base_url, "PUT", "/source.bin", payload)
+        assert status in (200, 201, 204)
+
+        status, _, _ = _request(
+            base_url,
+            "MOVE",
+            "/source.bin",
+            headers={"Destination": f"{base_url}/../escaped.bin", "Overwrite": "T"},
+        )
+        assert status in (201, 204)
+
+        assert not (backing.parent / "escaped.bin").exists()
+        assert (backing / "escaped.bin").read_bytes() == payload
+        status, body, _ = _request(base_url, "GET", "/escaped.bin")
+        assert status == 200
+        assert body == payload
+        assert "/escaped.bin" in provider.vhdd.fs.files
+        _assert_provider_tree_matches_disk(provider, backing)
+
+
+def test_webdav_parent_reference_copy_destination_stays_in_backing_root(tmp_path: Path) -> None:
+    backing = tmp_path / "backing"
+    backing.mkdir()
+
+    with _run_test_server(backing) as (base_url, provider):
+        payload = b"copy stays inside backing root"
+        status, _, _ = _request(base_url, "PUT", "/source.bin", payload)
+        assert status in (200, 201, 204)
+
+        status, _, _ = _request(
+            base_url,
+            "COPY",
+            "/source.bin",
+            headers={"Destination": f"{base_url}/../copy.bin", "Overwrite": "T"},
+        )
+        assert status in (201, 204)
+
+        assert not (backing.parent / "copy.bin").exists()
+        assert (backing / "copy.bin").read_bytes() == payload
+        status, body, _ = _request(base_url, "GET", "/copy.bin")
+        assert status == 200
+        assert body == payload
+        assert "/source.bin" in provider.vhdd.fs.files
+        assert "/copy.bin" in provider.vhdd.fs.files
+        _assert_provider_tree_matches_disk(provider, backing)
+
+
+def test_webdav_parent_reference_directory_destinations_stay_in_backing_root(tmp_path: Path) -> None:
+    backing = tmp_path / "backing"
+    backing.mkdir()
+
+    with _run_test_server(backing) as (base_url, provider):
+        payload = b"directory payload"
+        for path in ("/docs", "/docs/nested"):
+            status, _, _ = _request(base_url, "MKCOL", path)
+            assert status == 201
+        status, _, _ = _request(base_url, "PUT", "/docs/nested/file.bin", payload)
+        assert status in (200, 201, 204)
+
+        status, _, _ = _request(
+            base_url,
+            "COPY",
+            "/docs",
+            headers={"Destination": f"{base_url}/../docs-copy", "Depth": "infinity", "Overwrite": "T"},
+        )
+        assert status in (201, 204)
+        assert not (backing.parent / "docs-copy").exists()
+        assert (backing / "docs-copy" / "nested" / "file.bin").read_bytes() == payload
+
+        status, _, _ = _request(
+            base_url,
+            "MOVE",
+            "/docs-copy",
+            headers={"Destination": f"{base_url}/../docs-moved", "Overwrite": "T"},
+        )
+        assert status in (201, 204)
+        assert not (backing.parent / "docs-moved").exists()
+        assert (backing / "docs-moved" / "nested" / "file.bin").read_bytes() == payload
+        status, body, _ = _request(base_url, "GET", "/docs-moved/nested/file.bin")
+        assert status == 200
+        assert body == payload
+        assert "/docs-moved/nested/file.bin" in provider.vhdd.fs.files
+        _assert_provider_tree_matches_disk(provider, backing)
+
+
+def test_webdav_encoded_parent_reference_destination_stays_in_backing_root(tmp_path: Path) -> None:
+    backing = tmp_path / "backing"
+    backing.mkdir()
+
+    with _run_test_server(backing) as (base_url, provider):
+        payload = b"encoded parent"
+        status, _, _ = _request(base_url, "PUT", "/source.bin", payload)
+        assert status in (200, 201, 204)
+
+        status, _, _ = _request(
+            base_url,
+            "MOVE",
+            "/source.bin",
+            headers={"Destination": f"{base_url}/%2E%2E/encoded.bin", "Overwrite": "T"},
+        )
+        assert status in (201, 204)
+
+        assert not (backing.parent / "encoded.bin").exists()
+        assert (backing / "encoded.bin").read_bytes() == payload
+        assert "/encoded.bin" in provider.vhdd.fs.files
+        _assert_provider_tree_matches_disk(provider, backing)
+
+
 def test_webdav_large_directory_listing_handles_many_entries(tmp_path: Path) -> None:
     backing = tmp_path / "backing"
     backing.mkdir()

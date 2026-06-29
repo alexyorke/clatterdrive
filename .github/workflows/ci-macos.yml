@@ -1,6 +1,7 @@
 name: macOS App CI
 
 on:
+  workflow_dispatch:
   push:
   pull_request:
 

@@ -71,6 +71,18 @@ def test_virtual_hdd_materializes_existing_backing_file(tmp_path: Path) -> None:
     finally:
         vhdd.stop()
 
+def test_virtual_hdd_real_path_clamps_parent_references_to_backing_root(tmp_path: Path) -> None:
+    backing = tmp_path / "backing"
+    backing.mkdir()
+
+    vhdd = VirtualHDD(str(backing), latency_scale=0.0)
+    try:
+        resolved = Path(vhdd._real_path("../escape.bin")).resolve()
+        assert resolved == (backing / "escape.bin").resolve()
+        assert resolved.is_relative_to(backing.resolve())
+    finally:
+        vhdd.stop()
+
 def test_virtual_hdd_stop_drains_background_threads(isolated_backing_dir: Path) -> None:
     vhdd = VirtualHDD(str(isolated_backing_dir), latency_scale=0.0)
     scheduler = OSScheduler(vhdd.model)

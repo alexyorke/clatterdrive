@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import shutil
+import subprocess
 import wave
 from pathlib import Path
+from typing import Any
 
 import pytest
 from _pytest.monkeypatch import MonkeyPatch
@@ -119,6 +121,88 @@ def test_capture_workload_audio_writes_listening_page_and_samples(tmp_path: Path
 
 def test_smoke_main_boot_random_port_with_audio_disabled() -> None:
     smoke.run_main_boot_smoke(exercise_cli=False)
+
+
+def test_smoke_shutdown_process_uses_local_control_before_terminate(monkeypatch: MonkeyPatch) -> None:
+    calls: list[tuple[str, str]] = []
+
+    class FakeProcess:
+        returncode = 0
+
+        def __init__(self) -> None:
+            self.terminated = False
+            self.killed = False
+            self.wait_calls = 0
+
+        def poll(self) -> int | None:
+            return None if self.wait_calls == 0 else self.returncode
+
+        def wait(self, timeout: float | None = None) -> int:
+            del timeout
+            self.wait_calls += 1
+            return self.returncode
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        def kill(self) -> None:
+            self.killed = True
+
+    def request(base_url: str, method: str, path: str, body: bytes | None = None, headers: dict[str, str] | None = None) -> tuple[int, bytes, dict[str, str]]:
+        del body, headers
+        calls.append((method, f"{base_url}{path}"))
+        return 204, b"", {}
+
+    process = FakeProcess()
+    monkeypatch.setattr(smoke, "_request", request)
+
+    smoke._shutdown_process(process, "http://127.0.0.1:8080")  # type: ignore[arg-type]
+
+    assert calls == [("POST", "http://127.0.0.1:8080/.clatterdrive/shutdown")]
+    assert process.wait_calls == 1
+    assert process.terminated is False
+    assert process.killed is False
+
+
+def test_smoke_shutdown_process_falls_back_to_terminate_and_kill(monkeypatch: MonkeyPatch) -> None:
+    class FakeProcess:
+        returncode = None
+
+        def __init__(self) -> None:
+            self.terminated = False
+            self.killed = False
+            self.wait_calls = 0
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def wait(self, timeout: float | None = None) -> int | None:
+            del timeout
+            self.wait_calls += 1
+            if self.wait_calls == 1:
+                raise subprocess.TimeoutExpired("fake", 5.0)
+            self.returncode = -9
+            return self.returncode
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        def kill(self) -> None:
+            self.killed = True
+
+    def request(*args: Any, **kwargs: Any) -> tuple[int, bytes, dict[str, str]]:
+        del args, kwargs
+        raise OSError("shutdown endpoint unavailable")
+
+    process = FakeProcess()
+    monkeypatch.setattr(smoke, "_request", request)
+
+    smoke._shutdown_process(process, "http://127.0.0.1:8080")  # type: ignore[arg-type]
+
+    assert process.terminated is True
+    assert process.killed is True
+    assert process.wait_calls == 2
+
 
 def test_smoke_cli_probe_works_when_curl_is_available(tmp_path: Path) -> None:
     if shutil.which("curl.exe") is None and shutil.which("curl") is None:

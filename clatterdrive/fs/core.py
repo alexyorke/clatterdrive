@@ -104,13 +104,14 @@ def clone_state(state: FileSystemState) -> FileSystemState:
 
 
 def normalize_path(path: str) -> str:
-    normalized = posixpath.normpath((path or "").replace("\\", "/"))
+    raw_path = (path or "").replace("\\", "/")
+    if not raw_path.startswith("/"):
+        raw_path = f"/{raw_path}"
+    normalized = posixpath.normpath(raw_path)
     if normalized.startswith("//"):
         normalized = "/" + normalized.lstrip("/")
     if normalized in ("", "."):
         return "/"
-    if not normalized.startswith("/"):
-        normalized = f"/{normalized}"
     return normalized
 
 

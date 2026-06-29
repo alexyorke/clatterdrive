@@ -18,7 +18,16 @@ public sealed class BackendSettings
     public bool ColdStart { get; init; } = true;
     public bool AsyncPowerOn { get; init; } = true;
 
-    public string WebDavUrl => $"http://{Host}:{Port}";
+    public string WebDavUrl => $"http://{FormatUrlHost(Host)}:{Port}";
+
+    internal static string FormatUrlHost(string host)
+    {
+        if (host.Contains(':') && !(host.StartsWith('[') && host.EndsWith(']')))
+        {
+            return $"[{host}]";
+        }
+        return host;
+    }
 
     public IReadOnlyList<string> ToServeArguments(bool jsonStatus = true)
     {

@@ -117,7 +117,8 @@ public final class BackendController: BackendControlling {
         guard let currentSettings else {
             return
         }
-        let host = currentSettings.host == "0.0.0.0" || currentSettings.host == "::" ? "127.0.0.1" : currentSettings.host
+        let rawHost = currentSettings.host == "0.0.0.0" || currentSettings.host == "::" ? "127.0.0.1" : currentSettings.host
+        let host = BackendSettings.urlHost(rawHost)
         guard let url = URL(string: "http://\(host):\(currentSettings.port)/.clatterdrive/shutdown") else {
             return
         }

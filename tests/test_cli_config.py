@@ -34,6 +34,12 @@ def test_config_from_env_preserves_existing_fake_hdd_variables(tmp_path: Path) -
     assert config.to_env()["FAKE_HDD_BACKING_DIR"] == str(tmp_path)
 
 
+def test_config_url_brackets_ipv6_hosts() -> None:
+    assert ClatterDriveConfig(host="::1", port=8080).url == "http://[::1]:8080"
+    assert ClatterDriveConfig(host="[::1]", port=8080).url == "http://[::1]:8080"
+    assert ClatterDriveConfig(host="127.0.0.1", port=8080).url == "http://127.0.0.1:8080"
+
+
 def test_profile_catalog_includes_all_user_visible_presets() -> None:
     catalog = profile_catalog()
     drive_names = {profile["name"] for profile in catalog["drive_profiles"]}
@@ -62,6 +68,24 @@ def test_doctor_reports_bad_profile_and_port_conflict(tmp_path: Path) -> None:
     assert report["checks"]["profiles"]["ok"] is False
     assert report["checks"]["port"]["ok"] is False
     assert report["checks"]["webdav"]["ok"] is True
+
+
+def test_doctor_reports_invalid_port_without_crashing(tmp_path: Path) -> None:
+    for port in (-1, 65536):
+        report = doctor_report(ClatterDriveConfig(port=port, backing_dir=str(tmp_path), audio="off"))
+        assert report["ok"] is False
+        assert report["checks"]["port"]["ok"] is False
+        assert "65535" in report["checks"]["port"]["message"]
+
+
+def test_doctor_accepts_ipv6_loopback_when_available(tmp_path: Path) -> None:
+    if not socket.has_ipv6:
+        pytest.skip("IPv6 is not available on this host")
+
+    report = doctor_report(ClatterDriveConfig(host="::1", port=0, backing_dir=str(tmp_path), audio="off"))
+
+    assert report["checks"]["port"]["ok"] is True
+    assert report["config"]["url"].startswith("http://[::1]:")
 
 
 def test_profiles_json_cli_outputs_machine_readable_catalog(capsys: pytest.CaptureFixture[str]) -> None:

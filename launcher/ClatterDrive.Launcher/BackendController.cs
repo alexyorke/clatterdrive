@@ -93,9 +93,8 @@ public sealed class BackendController : IBackendController
         }
         try
         {
-            var host = currentSettings.Host is "0.0.0.0" or "::" ? "127.0.0.1" : currentSettings.Host;
             using var client = new HttpClient { Timeout = TimeSpan.FromMilliseconds(500) };
-            using var request = new HttpRequestMessage(HttpMethod.Post, $"http://{host}:{currentSettings.Port}/.clatterdrive/shutdown");
+            using var request = new HttpRequestMessage(HttpMethod.Post, BuildLocalControlUrl(currentSettings));
             client.Send(request);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
@@ -171,6 +170,13 @@ public sealed class BackendController : IBackendController
                 candidate.Dispose();
             }
         }
+    }
+
+    internal static string BuildLocalControlUrl(BackendSettings settings)
+    {
+        var host = settings.Host is "0.0.0.0" or "::" ? "127.0.0.1" : settings.Host;
+        host = BackendSettings.FormatUrlHost(host);
+        return $"http://{host}:{settings.Port}/.clatterdrive/shutdown";
     }
 
     internal static ProcessStartInfo BuildStartInfo(BackendSettings settings)

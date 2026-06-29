@@ -9,4 +9,10 @@ final class MountCommandBuilderTests: XCTestCase {
         XCTAssertTrue(MountCommandBuilder.mountCommand(settings: settings).contains("mount_webdav"))
         XCTAssertTrue(MountCommandBuilder.unmountCommand().contains("umount"))
     }
+
+    func testWebDavURLBracketsIPv6Hosts() {
+        XCTAssertEqual(BackendSettings(host: "::1", port: 9090).webDavURL, "http://[::1]:9090")
+        XCTAssertEqual(BackendSettings(host: "[::1]", port: 9090).webDavURL, "http://[::1]:9090")
+        XCTAssertEqual(BackendSettings(host: "127.0.0.1", port: 9090).webDavURL, "http://127.0.0.1:9090")
+    }
 }

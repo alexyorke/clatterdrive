@@ -71,6 +71,9 @@ def test_path_normalization_stays_posix_like_on_windows() -> None:
     assert fs._normalize_path("foo\\bar") == "/foo/bar"
     assert fs._normalize_path("/foo/bar") == "/foo/bar"
     assert fs._normalize_path("//foo//bar") == "/foo/bar"
+    assert fs._normalize_path("../escape") == "/escape"
+    assert fs._normalize_path("../../escape") == "/escape"
+    assert fs._normalize_path("/../../escape") == "/escape"
     assert fs._parent_dir("/foo/bar/baz.txt") == "/foo/bar"
 
 def test_delete_returns_metadata_operations() -> None:

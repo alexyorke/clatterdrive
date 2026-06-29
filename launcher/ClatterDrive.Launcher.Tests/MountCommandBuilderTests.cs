@@ -1,5 +1,6 @@
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using System.Linq;
+using System.Reflection;
 
 namespace ClatterDrive.Launcher.Tests;
 
@@ -38,6 +39,14 @@ public sealed class MountCommandBuilderTests
     }
 
     [TestMethod]
+    public void BackendSettingsWebDavUrlBracketsIpv6Hosts()
+    {
+        Assert.AreEqual("http://[::1]:8123", new BackendSettings { Host = "::1", Port = 8123 }.WebDavUrl);
+        Assert.AreEqual("http://[::1]:8123", new BackendSettings { Host = "[::1]", Port = 8123 }.WebDavUrl);
+        Assert.AreEqual("http://127.0.0.1:8123", new BackendSettings { Host = "127.0.0.1", Port = 8123 }.WebDavUrl);
+    }
+
+    [TestMethod]
     public void ViewModelExposesStableDefaultProfiles()
     {
         using var viewModel = new LauncherViewModel();
@@ -46,5 +55,20 @@ public sealed class MountCommandBuilderTests
         Assert.IsTrue(viewModel.DriveProfiles.Contains("desktop_7200_internal"));
         Assert.IsTrue(viewModel.AcousticProfiles.Contains("mounted_in_case"));
         Assert.AreEqual("http://127.0.0.1:8080", viewModel.WebDavUrl);
+    }
+
+    [TestMethod]
+    public void BackendControllerLocalControlUrlBracketsIpv6Hosts()
+    {
+        var method = typeof(BackendController).GetMethod("BuildLocalControlUrl", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.IsNotNull(method);
+
+        var ipv6Url = (string?)method.Invoke(null, new object[] { new BackendSettings { Host = "::1", Port = 8123 } });
+        var bindAllUrl = (string?)method.Invoke(null, new object[] { new BackendSettings { Host = "::", Port = 8123 } });
+        var ipv4Url = (string?)method.Invoke(null, new object[] { new BackendSettings { Host = "127.0.0.1", Port = 8123 } });
+
+        Assert.AreEqual("http://[::1]:8123/.clatterdrive/shutdown", ipv6Url);
+        Assert.AreEqual("http://127.0.0.1:8123/.clatterdrive/shutdown", bindAllUrl);
+        Assert.AreEqual("http://127.0.0.1:8123/.clatterdrive/shutdown", ipv4Url);
     }
 }

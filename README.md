@@ -102,6 +102,8 @@ bash scripts/test-macos-e2e.sh --include-mount
 bash scripts/test-macos-e2e.sh --packaged --from-dmg --include-mount
 ```
 
+For an on-demand macOS build server, run the manually triggerable `macOS App CI` workflow in GitHub Actions. It uses GitHub-hosted macOS runners to build and test both architecture-specific DMGs, then exposes them as workflow artifacts without requiring a release tag.
+
 The macOS launcher copies `mount_webdav` and unmount commands instead of auto-mounting. Signing and notarization are conditional in release builds when Apple Developer ID secrets are configured; otherwise DMGs are unsigned internal builds.
 
 See [docs/macos-vm.md](docs/macos-vm.md) for the VM decision. Short version: use GitHub-hosted macOS first; a local macOS VM is only appropriate on Apple hardware.
