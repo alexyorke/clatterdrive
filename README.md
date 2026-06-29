@@ -54,19 +54,21 @@ Default URL:
 
 The Windows-first desktop path is a native WPF launcher plus a packaged Python backend. It is not Tkinter, Electron, or a browser shell.
 
-Local developer build:
-
-```powershell
-scripts\build-windows.ps1
-```
-
-Release zip:
+Preferred portable zip:
 
 ```powershell
 scripts\package-windows.ps1
 ```
 
-MSI installer:
+Unzip `.runtime\package\ClatterDrive-windows-x64.zip`, then double-click `Start ClatterDrive.cmd`. No installer is required. The portable start command keeps the default backing folder inside `sample-backing` next to the app.
+
+Local developer build without creating the zip:
+
+```powershell
+scripts\build-windows.ps1
+```
+
+Optional MSI installer:
 
 ```powershell
 scripts\build-installer.ps1

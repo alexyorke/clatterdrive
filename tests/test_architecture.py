@@ -153,3 +153,14 @@ def test_windows_setup_scripts_use_repo_uv_fallback_helper() -> None:
         assert "Invoke-Uv" in script_text, f"{script_name} bypasses Invoke-Uv"
         assert "uv run " not in script_text
         assert "uv sync " not in script_text
+
+
+def test_windows_portable_package_has_double_click_start_artifacts() -> None:
+    script_text = _module_path("scripts/package-windows.ps1").read_text(encoding="utf-8")
+
+    assert "Start ClatterDrive.cmd" in script_text
+    assert "README-START-HERE.txt" in script_text
+    assert "CLATTERDRIVE_LAUNCHER_BACKING_DIR" in script_text
+    assert "sample-backing" in script_text
+    assert 'pushd "%APP_DIR%"' in script_text
+    assert "ClatterDrive.Launcher.exe" in script_text

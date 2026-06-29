@@ -39,6 +39,9 @@ public sealed class LauncherUiSmokeTests
         AssertControl(window, "AudioModeComboBox");
         AssertControl(window, "StartServerButton");
         AssertControl(window, "CopyMountCommandButton");
+        AssertControlInsideWindow(window, "AcousticProfileComboBox");
+        AssertControlInsideWindow(window, "CopyMountCommandButton");
+        AssertControlInsideWindow(window, "CopyUnmountCommandButton");
         app.Close();
     }
 
@@ -118,6 +121,21 @@ public sealed class LauncherUiSmokeTests
     private static void AssertControl(Window window, string automationId)
     {
         Assert.IsNotNull(window.FindFirstDescendant(control => control.ByAutomationId(automationId)), automationId);
+    }
+
+    private static void AssertControlInsideWindow(Window window, string automationId)
+    {
+        var control = window.FindFirstDescendant(descendant => descendant.ByAutomationId(automationId));
+        Assert.IsNotNull(control, automationId);
+        var windowBounds = window.BoundingRectangle;
+        var controlBounds = control.BoundingRectangle;
+        Assert.IsTrue(
+            controlBounds.Left >= windowBounds.Left
+                && controlBounds.Right <= windowBounds.Right
+                && controlBounds.Top >= windowBounds.Top
+                && controlBounds.Bottom <= windowBounds.Bottom,
+            $"{automationId} is clipped by the default launcher window."
+        );
     }
 
     private static void DumpLauncherLogs(Window window)

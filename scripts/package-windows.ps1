@@ -40,6 +40,41 @@ Copy-Item -Force README.md $PackageRoot
 Copy-Item -Recurse -Force docs (Join-Path $PackageRoot "docs")
 New-Item -ItemType Directory -Force -Path (Join-Path $PackageRoot "sample-backing") | Out-Null
 
+$portableLauncher = @'
+@echo off
+setlocal
+set "APP_DIR=%~dp0"
+set "CLATTERDRIVE_LAUNCHER_BACKING_DIR=%APP_DIR%sample-backing"
+pushd "%APP_DIR%" >nul
+start "" "%APP_DIR%ClatterDrive.Launcher.exe"
+popd
+'@
+[System.IO.File]::WriteAllText(
+    (Join-Path $PackageRoot "Start ClatterDrive.cmd"),
+    $portableLauncher.Replace("`r`n", "`n").Replace("`n", "`r`n"),
+    [System.Text.UTF8Encoding]::new($false)
+)
+
+$startHere = @'
+ClatterDrive portable Windows package
+
+Start:
+1. Double-click Start ClatterDrive.cmd.
+2. Press Start in the ClatterDrive window.
+3. Use Copy URL or Copy Mount Command.
+
+Notes:
+- No installer is required for this portable package.
+- Your default portable backing folder is sample-backing next to this file.
+- Keep the backend folder beside ClatterDrive.Launcher.exe.
+- If Windows SmartScreen appears on an unsigned build, choose More info, then Run anyway only if you trust this build.
+'@
+[System.IO.File]::WriteAllText(
+    (Join-Path $PackageRoot "README-START-HERE.txt"),
+    $startHere.Replace("`r`n", "`n").Replace("`n", "`r`n"),
+    [System.Text.UTF8Encoding]::new($false)
+)
+
 if (Test-Path $ZipPath) {
     Remove-Item -Force $ZipPath
 }
