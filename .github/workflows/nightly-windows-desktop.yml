@@ -25,11 +25,11 @@ jobs:
           version: "0.11.8"
           enable-cache: true
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: "8.0.x"
 
@@ -45,7 +45,7 @@ jobs:
       - name: Installer install, native launcher, mapped-drive, and uninstall E2E
         run: scripts/test-installer.ps1 -UseExistingPackage -IncludeUiE2E -IncludeMappedDrive
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: nightly-windows-artifacts
