@@ -17,6 +17,9 @@ public struct BackendSettings: Equatable {
     public var eventTracePath: String
     public var driveProfile: String
     public var acousticProfile: String
+    public var capacityGb: Double
+    public var filesystemProfile: String
+    public var statePath: String
     public var coldStart: Bool
     public var asyncPowerOn: Bool
 
@@ -30,6 +33,9 @@ public struct BackendSettings: Equatable {
         eventTracePath: String = "",
         driveProfile: String = "seagate_ironwolf_pro_16tb",
         acousticProfile: String = "mounted_in_case",
+        capacityGb: Double = 10.0,
+        filesystemProfile: String = "apfs_like",
+        statePath: String = "",
         coldStart: Bool = true,
         asyncPowerOn: Bool = true
     ) {
@@ -42,6 +48,9 @@ public struct BackendSettings: Equatable {
         self.eventTracePath = eventTracePath
         self.driveProfile = driveProfile
         self.acousticProfile = acousticProfile
+        self.capacityGb = capacityGb
+        self.filesystemProfile = filesystemProfile
+        self.statePath = statePath
         self.coldStart = coldStart
         self.asyncPowerOn = asyncPowerOn
     }
@@ -70,6 +79,12 @@ public struct BackendSettings: Equatable {
         if driveProfile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return "Choose a drive profile."
         }
+        if capacityGb <= 0 || capacityGb > 256 {
+            return "Choose a capacity from greater than 0 through 256 GB."
+        }
+        if filesystemProfile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "Choose a filesystem profile."
+        }
         return nil
     }
 
@@ -86,6 +101,10 @@ public struct BackendSettings: Equatable {
             audioMode.rawValue,
             "--drive-profile",
             driveProfile,
+            "--capacity-gb",
+            String(capacityGb),
+            "--filesystem-profile",
+            filesystemProfile,
         ]
         if jsonStatus {
             args.append("--json-status")
@@ -101,6 +120,9 @@ public struct BackendSettings: Equatable {
         }
         if !eventTracePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             args.append(contentsOf: ["--event-trace-path", eventTracePath])
+        }
+        if !statePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            args.append(contentsOf: ["--state-path", statePath])
         }
         if !coldStart {
             args.append("--ready")
@@ -118,6 +140,8 @@ public struct BackendSettings: Equatable {
             "FAKE_HDD_BACKING_DIR": backingDirectory,
             "FAKE_HDD_AUDIO": audioMode.rawValue,
             "FAKE_HDD_DRIVE_PROFILE": driveProfile,
+            "FAKE_HDD_CAPACITY_GB": String(capacityGb),
+            "FAKE_HDD_FILESYSTEM_PROFILE": filesystemProfile,
             "FAKE_HDD_COLD_START": coldStart ? "on" : "off",
             "FAKE_HDD_ASYNC_POWER_ON": asyncPowerOn ? "on" : "off",
         ]
@@ -132,6 +156,9 @@ public struct BackendSettings: Equatable {
         }
         if !eventTracePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             env["FAKE_HDD_EVENT_TRACE_PATH"] = eventTracePath
+        }
+        if !statePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            env["FAKE_HDD_STATE_PATH"] = statePath
         }
         return env
     }

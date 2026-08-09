@@ -40,6 +40,9 @@ class VirtualHDD:
         async_power_on: bool = False,
         drive_profile: str | DriveProfile | None = None,
         acoustic_profile: str | AcousticProfile | None = None,
+        capacity_gb: float = 10.0,
+        filesystem_profile: str = "generic_journaled",
+        state_path: str | None = None,
         event_sink: StorageEventSink | None = None,
         deps: RuntimeDeps | None = None,
     ) -> None:
@@ -51,7 +54,21 @@ class VirtualHDD:
             acoustic_profile,
             env=self.deps.env,
         )
-        self.fs = FileSystemSimulator()
+        self.backing_dir = os.path.abspath(backing_dir)
+        resolved_state_path = os.path.abspath(state_path) if state_path else f"{self.backing_dir}.clatterdrive-state.json"
+        try:
+            state_is_served = os.path.normcase(os.path.commonpath([self.backing_dir, resolved_state_path])) == os.path.normcase(
+                self.backing_dir
+            )
+        except ValueError:
+            state_is_served = False
+        if state_is_served:
+            raise ValueError("state_path must be outside backing_dir so it cannot be served or reconciled as user data")
+        self.fs = FileSystemSimulator(
+            total_gb=capacity_gb,
+            filesystem_profile=filesystem_profile,
+            state_path=resolved_state_path,
+        )
         self.model = HDDLatencyModel(
             addressable_blocks=self.fs.total_blocks,
             block_bytes=self.fs.block_size,
@@ -61,11 +78,12 @@ class VirtualHDD:
             event_sink=event_sink,
             deps=self.deps,
         )
-        self.backing_dir = backing_dir
         self.scheduler = None
         self.lookup_cache: dict[str, float] = {}
         self.lookup_cache_ttl_s = 0.35
-        self.backing_observed_paths: set[str] = set()
+        self.backing_observed_paths: set[str] = (
+            {*self.fs.files, *self.fs.directories} if self.fs.loaded_from_state else set()
+        )
         self.copy_chunk_bytes = 1024 * 1024
         self.writeback_cluster_gap_blocks = max(8, self.model.read_ahead_blocks // 8)
 
@@ -285,22 +303,32 @@ class VirtualHDD:
         )
 
         data_extent_count = len([operation for operation in operations if operation.kind == "data"])
-        for operation in operations:
-            size_bytes = operation.block_count * self.fs.block_size
-            operation_extent_count = data_extent_count if operation.kind == "data" else 0
-            if self.scheduler:
-                request_id = self.scheduler.submit_bio(
-                    operation.lba,
-                    size_bytes,
-                    is_write,
-                    op_kind=operation.kind,
-                    sync=force_unit_access,
-                    extent_count=operation_extent_count,
-                    directory_entry_count=operation.directory_entry_count,
-                    fragmentation_score=operation.fragmentation_score,
-                )
-                result = self.scheduler.wait_for_completion(request_id)
-            else:
+        operation_results: list[tuple[IOOperation, OperationStats]] = []
+        if self.scheduler:
+            journal_operations = [operation for operation in operations if operation.kind == "journal"]
+            post_journal_operations = [operation for operation in operations if operation.kind != "journal"]
+            for phase in (journal_operations, post_journal_operations):
+                pending: list[tuple[IOOperation, str]] = []
+                for operation in phase:
+                    size_bytes = operation.block_count * self.fs.block_size
+                    operation_extent_count = data_extent_count if operation.kind == "data" else 0
+                    request_id = self.scheduler.submit_bio(
+                        operation.lba,
+                        size_bytes,
+                        is_write,
+                        op_kind=operation.kind,
+                        sync=force_unit_access,
+                        extent_count=operation_extent_count,
+                        directory_entry_count=operation.directory_entry_count,
+                        fragmentation_score=operation.fragmentation_score,
+                    )
+                    pending.append((operation, request_id))
+                for operation, request_id in pending:
+                    operation_results.append((operation, self.scheduler.wait_for_completion(request_id)))
+        else:
+            for operation in operations:
+                size_bytes = operation.block_count * self.fs.block_size
+                operation_extent_count = data_extent_count if operation.kind == "data" else 0
                 result = self.model.submit_physical_access(
                     operation.lba,
                     size_bytes,
@@ -311,7 +339,9 @@ class VirtualHDD:
                     directory_entry_count=operation.directory_entry_count,
                     fragmentation_score=operation.fragmentation_score,
                 )
+                operation_results.append((operation, result))
 
+        for _operation, result in operation_results:
             total_stats = OperationStats(
                 total_ms=total_stats.total_ms + result.total_ms,
                 extents=total_stats.extents,
@@ -336,6 +366,8 @@ class VirtualHDD:
                 fragmentation_score=max(total_stats.fragmentation_score, result.fragmentation_score),
             )
 
+        if force_unit_access and is_write:
+            self.fs.persist()
         return total_stats
 
     def _enqueue_writeback(self, operations: list[IOOperation]) -> float:
@@ -465,6 +497,7 @@ class VirtualHDD:
     def sync_all(self) -> float:
         total_ms = self._drain_write_cache(target_bytes=0)
         self._wait_for_writeback_idle()
+        self.fs.persist()
         return total_ms
 
     def reset_runtime_state(self) -> None:
@@ -707,9 +740,11 @@ class VirtualHDD:
             self._mark_backing_observed(dest_path)
         return self._merge_stats("COPY", *copy_stats)
 
-    def prepare_overwrite(self, path: str) -> Stats:
+    def prepare_overwrite(self, path: str, *, reconcile_backing: bool = True) -> Stats:
         path = self._resolve_existing_path(path)
-        self._ensure_known_path(path)
+        if reconcile_backing:
+            self._ensure_known_path(path)
+            path = self._resolve_existing_path(path)
         if path not in self.fs.files:
             return empty_operation_stats("TRUNCATE", total_ms=0.0)
         self._invalidate_lookup(path)

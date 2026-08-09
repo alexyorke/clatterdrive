@@ -10,11 +10,15 @@ public final class LauncherViewModel: ObservableObject {
     @Published public var acousticProfile: String
     @Published public var audioMode: AudioMode
     @Published public var audioDevice: String
+    @Published public var capacityText: String
+    @Published public var filesystemProfile: String
+    @Published public var statePath: String
     @Published public var status: String
     @Published public var isRunning: Bool
     @Published public var logs: [String]
     @Published public var driveProfileNames: [String]
     @Published public var acousticProfileNames: [String]
+    @Published public var filesystemProfileNames: [String]
 
     private let backend: BackendControlling
 
@@ -28,11 +32,15 @@ public final class LauncherViewModel: ObservableObject {
         acousticProfile = ProcessInfo.processInfo.environment["CLATTERDRIVE_LAUNCHER_ACOUSTIC_PROFILE"] ?? defaults.acousticProfile
         audioMode = AudioMode(rawValue: ProcessInfo.processInfo.environment["CLATTERDRIVE_LAUNCHER_AUDIO"] ?? "") ?? defaults.audioMode
         audioDevice = ProcessInfo.processInfo.environment["CLATTERDRIVE_LAUNCHER_AUDIO_DEVICE"] ?? defaults.audioDevice
+        capacityText = ProcessInfo.processInfo.environment["CLATTERDRIVE_LAUNCHER_CAPACITY_GB"] ?? String(defaults.capacityGb)
+        filesystemProfile = ProcessInfo.processInfo.environment["CLATTERDRIVE_LAUNCHER_FILESYSTEM_PROFILE"] ?? defaults.filesystemProfile
+        statePath = ProcessInfo.processInfo.environment["CLATTERDRIVE_LAUNCHER_STATE_PATH"] ?? defaults.statePath
         status = "Stopped"
         isRunning = false
         logs = []
         driveProfileNames = ProfileCatalog.fallback.driveProfiles.map(\.name)
         acousticProfileNames = ProfileCatalog.fallback.acousticProfiles.map(\.name)
+        filesystemProfileNames = ProfileCatalog.fallback.filesystemProfiles.map(\.name)
 
         backend.onLog = { [weak self] line in
             Task { @MainActor in
@@ -65,7 +73,10 @@ public final class LauncherViewModel: ObservableObject {
             audioMode: audioMode,
             audioDevice: audioDevice,
             driveProfile: driveProfile,
-            acousticProfile: acousticProfile
+            acousticProfile: acousticProfile,
+            capacityGb: Double(capacityText) ?? 0,
+            filesystemProfile: filesystemProfile,
+            statePath: statePath
         )
     }
 
@@ -94,11 +105,15 @@ public final class LauncherViewModel: ObservableObject {
             let catalog = try backend.loadProfiles()
             driveProfileNames = catalog.driveProfiles.map(\.name)
             acousticProfileNames = catalog.acousticProfiles.map(\.name)
+            filesystemProfileNames = catalog.filesystemProfiles.map(\.name)
             if !driveProfileNames.contains(driveProfile), let first = driveProfileNames.first {
                 driveProfile = first
             }
             if !acousticProfileNames.contains(acousticProfile), let first = acousticProfileNames.first {
                 acousticProfile = first
+            }
+            if !filesystemProfileNames.contains(filesystemProfile), let first = filesystemProfileNames.first {
+                filesystemProfile = first
             }
         } catch {
             appendLog("Profile load failed: \(error.localizedDescription)")

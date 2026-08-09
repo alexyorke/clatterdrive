@@ -69,6 +69,7 @@ class MechanicalState:
     heads_loaded: bool
     has_completed_power_on: bool
     last_access_time: float
+    position_updated_at: float
     load_unload_count: int
 
 
@@ -226,7 +227,6 @@ def merge_operation_stats(op_type: str, *results: OperationStats | None) -> Oper
 def build_zones(
     *,
     addressable_blocks: int,
-    total_cylinders: int,
     num_heads: int,
     blocks_per_track_outer: int,
     blocks_per_track_inner: int,
@@ -234,31 +234,41 @@ def build_zones(
     inner_rate: float,
     zone_count: int = 8,
 ) -> tuple[Zone, ...]:
+    if addressable_blocks <= 0:
+        raise ValueError("addressable_blocks must be positive")
+    if num_heads <= 0:
+        raise ValueError("num_heads must be positive")
+
     zones: list[Zone] = []
-    cylinders_per_zone = math.ceil(total_cylinders / zone_count)
-    current_lba = 0
-
-    for idx in range(zone_count):
-        if current_lba >= addressable_blocks:
-            break
-        start_cyl = idx * cylinders_per_zone
-        if start_cyl >= total_cylinders:
-            break
-
-        end_cyl = min(total_cylinders - 1, ((idx + 1) * cylinders_per_zone) - 1)
-        fraction = idx / max(zone_count - 1, 1)
-        blocks_per_track = round(
-            blocks_per_track_outer + (blocks_per_track_inner - blocks_per_track_outer) * fraction
+    effective_zone_count = max(1, min(int(zone_count), addressable_blocks))
+    blocks_per_tracks = [
+        round(
+            blocks_per_track_outer
+            + (blocks_per_track_inner - blocks_per_track_outer)
+            * (idx / max(effective_zone_count - 1, 1))
         )
+        for idx in range(effective_zone_count)
+    ]
+    remaining_weight = sum(blocks_per_tracks)
+    remaining_blocks = addressable_blocks
+    current_lba = 0
+    current_cyl = 0
+
+    for idx, blocks_per_track in enumerate(blocks_per_tracks):
+        fraction = idx / max(effective_zone_count - 1, 1)
         transfer_rate = outer_rate + (inner_rate - outer_rate) * fraction
-        zone_blocks = (end_cyl - start_cyl + 1) * num_heads * blocks_per_track
-        zone_end = min(addressable_blocks - 1, current_lba + zone_blocks - 1)
-        if zone_end < current_lba:
-            break
+        zones_left = effective_zone_count - idx
+        if zones_left == 1:
+            zone_blocks = remaining_blocks
+        else:
+            proportional_blocks = round(remaining_blocks * blocks_per_track / remaining_weight)
+            zone_blocks = max(1, min(proportional_blocks, remaining_blocks - (zones_left - 1)))
+        cylinder_count = max(1, math.ceil(zone_blocks / (num_heads * blocks_per_track)))
+        zone_end = current_lba + zone_blocks - 1
         zones.append(
             Zone(
-                start_cyl=start_cyl,
-                end_cyl=end_cyl,
+                start_cyl=current_cyl,
+                end_cyl=current_cyl + cylinder_count - 1,
                 start_lba=current_lba,
                 end_lba=zone_end,
                 blocks_per_track=blocks_per_track,
@@ -266,7 +276,36 @@ def build_zones(
             )
         )
         current_lba = zone_end + 1
+        current_cyl += cylinder_count
+        remaining_blocks -= zone_blocks
+        remaining_weight -= blocks_per_track
     return tuple(zones)
+
+
+def mean_sqrt_seek_distance(
+    zones: Sequence[Zone],
+    addressable_blocks: int,
+    num_heads: int,
+    sample_count: int = 257,
+) -> float:
+    """Approximate E[sqrt(|cylinder_a-cylinder_b|)] for uniformly random LBAs."""
+    count = max(2, min(int(sample_count), addressable_blocks))
+    sampled_cylinders: list[int] = []
+    for index in range(count):
+        lba = round(index * (addressable_blocks - 1) / (count - 1))
+        zone = next((candidate for candidate in zones if lba <= candidate.end_lba), zones[-1])
+        relative = max(0, lba - zone.start_lba)
+        blocks_per_cyl = max(1, num_heads * zone.blocks_per_track)
+        cylinder_offset = min(zone.end_cyl - zone.start_cyl, relative // blocks_per_cyl)
+        sampled_cylinders.append(zone.start_cyl + cylinder_offset)
+
+    total = 0.0
+    pair_count = 0
+    for left in sampled_cylinders:
+        for right in sampled_cylinders:
+            total += math.sqrt(abs(left - right))
+            pair_count += 1
+    return total / max(pair_count, 1)
 
 
 def build_resume_sequence(config: HDDCoreConfig, start_rpm: float, heads_loaded: bool) -> list[StartupStage]:
@@ -973,7 +1012,13 @@ def estimated_lba(config: HDDCoreConfig, mechanical: MechanicalState) -> int:
     zone = zone_for_cyl(config, mechanical.current_cyl)
     blocks_per_cyl = config.num_heads * zone.blocks_per_track
     cyl_offset = mechanical.current_cyl - zone.start_cyl
-    return zone.start_lba + cyl_offset * blocks_per_cyl + mechanical.current_head * zone.blocks_per_track + mechanical.current_sector
+    estimated = (
+        zone.start_lba
+        + cyl_offset * blocks_per_cyl
+        + mechanical.current_head * zone.blocks_per_track
+        + mechanical.current_sector
+    )
+    return min(estimated, zone.end_lba)
 
 
 def zone_for_lba(config: HDDCoreConfig, lba: int) -> Zone:
@@ -1019,9 +1064,10 @@ def remember_read(config: HDDCoreConfig, cache_state: CacheState, lba: int, bloc
     pruned = prune_cache(cache_state, now)
     max_window = max(config.read_ahead_blocks * 4, blocks)
     initial_window = max(blocks * 2, config.read_ahead_blocks // 2)
-    is_contiguous = lba <= cache_state.last_read_end_lba + 1
+    is_first_read = cache_state.last_read_end_lba < 0
+    is_contiguous = lba == cache_state.last_read_end_lba + 1
 
-    if is_contiguous:
+    if is_first_read or is_contiguous:
         previous_window = cache_state.read_ahead_window_blocks or initial_window
         cache_blocks = min(max_window, max(blocks, previous_window * 2))
     else:
@@ -1047,6 +1093,7 @@ def calculate_position_latency(
     mechanical: MechanicalState,
     target_lba: int,
     block_count: int,
+    now: float | None = None,
 ) -> tuple[float, int, int, int, int, Zone]:
     target_cyl, target_head, target_sector, zone = lba_to_chs(config, target_lba)
     distance = abs(target_cyl - mechanical.current_cyl)
@@ -1065,8 +1112,15 @@ def calculate_position_latency(
     elif target_head != mechanical.current_head:
         skew_blocks += config.track_skew_blocks
 
+    current_zone = zone_for_cyl(config, mechanical.current_cyl)
+    current_phase = mechanical.current_sector / max(current_zone.blocks_per_track, 1)
+    if now is not None and mechanical.current_rpm > 0.0:
+        elapsed_s = max(0.0, now - mechanical.position_updated_at)
+        current_phase = (current_phase + elapsed_s * mechanical.current_rpm / 60.0) % 1.0
+
     rotational_blocks = ((seek_ms + head_switch_ms) / config.ms_per_rotation) * zone.blocks_per_track
-    current_sector_after_seek = (mechanical.current_sector + rotational_blocks + skew_blocks) % zone.blocks_per_track
+    phase_sector = current_phase * zone.blocks_per_track
+    current_sector_after_seek = (phase_sector + rotational_blocks + skew_blocks) % zone.blocks_per_track
     sector_delta = (target_sector - current_sector_after_seek) % zone.blocks_per_track
     rotational_ms = (sector_delta / zone.blocks_per_track) * config.ms_per_rotation
 
@@ -1075,8 +1129,18 @@ def calculate_position_latency(
 
 
 def transfer_ms_for_span(config: HDDCoreConfig, start_lba: int, block_count: int) -> float:
-    remaining_blocks = max(0, block_count)
-    lba = max(0, start_lba)
+    if block_count <= 0:
+        return 0.0
+    if start_lba < 0 or start_lba >= config.addressable_blocks:
+        raise ValueError(f"start LBA {start_lba} is outside the addressable range")
+    if block_count > config.addressable_blocks - start_lba:
+        raise ValueError(
+            f"LBA span [{start_lba}, {start_lba + block_count}) exceeds "
+            f"the {config.addressable_blocks}-block addressable range"
+        )
+
+    remaining_blocks = block_count
+    lba = start_lba
     transfer_ms = 0.0
     while remaining_blocks > 0:
         zone = zone_for_lba(config, lba)

@@ -96,6 +96,27 @@ struct ContentView: View {
                 .accessibilityIdentifier("acousticProfilePicker")
             }
             GridRow {
+                Text("Volume")
+                HStack {
+                    TextField("Capacity (GB)", text: $viewModel.capacityText)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 120)
+                        .accessibilityIdentifier("capacityGbTextField")
+                    Picker("Filesystem", selection: $viewModel.filesystemProfile) {
+                        ForEach(viewModel.filesystemProfileNames, id: \.self) { name in
+                            Text(name).tag(name)
+                        }
+                    }
+                    .accessibilityIdentifier("filesystemProfilePicker")
+                }
+            }
+            GridRow {
+                Text("State Sidecar")
+                TextField("Optional path; defaults beside the backing folder", text: $viewModel.statePath)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityIdentifier("statePathTextField")
+            }
+            GridRow {
                 Text("Audio")
                 HStack {
                     Picker("Audio", selection: $viewModel.audioMode) {

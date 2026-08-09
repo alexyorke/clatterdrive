@@ -17,6 +17,9 @@ public sealed class LauncherViewModel : INotifyPropertyChanged, IDisposable
     private string acousticProfile = "mounted_in_case";
     private string audioMode = "live";
     private string audioDevice = "";
+    private double capacityGb = 10.0;
+    private string filesystemProfile = "ntfs_like";
+    private string statePath = "";
     private string status = "Stopped";
     private bool isRunning;
     private bool coldStart = true;
@@ -46,6 +49,7 @@ public sealed class LauncherViewModel : INotifyPropertyChanged, IDisposable
 
     public string[] DriveProfiles => ProfileCatalog.DriveProfiles;
     public string[] AcousticProfiles => ProfileCatalog.AcousticProfiles;
+    public string[] FilesystemProfiles => ProfileCatalog.FilesystemProfiles;
     public string[] AudioModes => ProfileCatalog.AudioModes;
     public ObservableCollection<string> Logs { get; } = [];
     public ICommand StartCommand { get; }
@@ -115,6 +119,36 @@ public sealed class LauncherViewModel : INotifyPropertyChanged, IDisposable
         set => SetField(ref audioDevice, value);
     }
 
+    public double CapacityGb
+    {
+        get => capacityGb;
+        set
+        {
+            if (SetField(ref capacityGb, value))
+            {
+                RefreshValidation();
+            }
+        }
+    }
+
+    public string FilesystemProfile
+    {
+        get => filesystemProfile;
+        set
+        {
+            if (SetField(ref filesystemProfile, value))
+            {
+                RefreshValidation();
+            }
+        }
+    }
+
+    public string StatePath
+    {
+        get => statePath;
+        set => SetField(ref statePath, value);
+    }
+
     public string Status
     {
         get => status;
@@ -152,6 +186,9 @@ public sealed class LauncherViewModel : INotifyPropertyChanged, IDisposable
             AudioDevice = string.IsNullOrWhiteSpace(AudioDevice) ? null : AudioDevice,
             DriveProfile = DriveProfile,
             AcousticProfile = AcousticProfile,
+            CapacityGb = CapacityGb,
+            FilesystemProfile = FilesystemProfile,
+            StatePath = string.IsNullOrWhiteSpace(StatePath) ? null : StatePath,
             ColdStart = coldStart,
             AsyncPowerOn = asyncPowerOn,
         };
@@ -207,6 +244,16 @@ public sealed class LauncherViewModel : INotifyPropertyChanged, IDisposable
         audioDevice = Environment.GetEnvironmentVariable("CLATTERDRIVE_LAUNCHER_AUDIO_DEVICE") ?? audioDevice;
         driveProfile = Environment.GetEnvironmentVariable("CLATTERDRIVE_LAUNCHER_DRIVE_PROFILE") ?? driveProfile;
         acousticProfile = Environment.GetEnvironmentVariable("CLATTERDRIVE_LAUNCHER_ACOUSTIC_PROFILE") ?? acousticProfile;
+        if (double.TryParse(
+            Environment.GetEnvironmentVariable("CLATTERDRIVE_LAUNCHER_CAPACITY_GB"),
+            System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture,
+            out var envCapacityGb))
+        {
+            capacityGb = envCapacityGb;
+        }
+        filesystemProfile = Environment.GetEnvironmentVariable("CLATTERDRIVE_LAUNCHER_FILESYSTEM_PROFILE") ?? filesystemProfile;
+        statePath = Environment.GetEnvironmentVariable("CLATTERDRIVE_LAUNCHER_STATE_PATH") ?? statePath;
         if (IsTruthy(Environment.GetEnvironmentVariable("CLATTERDRIVE_LAUNCHER_READY")))
         {
             coldStart = false;
@@ -235,6 +282,14 @@ public sealed class LauncherViewModel : INotifyPropertyChanged, IDisposable
         if (Port is < 1 or > 65535)
         {
             return "Choose a port from 1 to 65535.";
+        }
+        if (CapacityGb <= 0 || CapacityGb > 256)
+        {
+            return "Choose a capacity from greater than 0 through 256 GB.";
+        }
+        if (string.IsNullOrWhiteSpace(FilesystemProfile))
+        {
+            return "Choose a filesystem profile.";
         }
         return "";
     }

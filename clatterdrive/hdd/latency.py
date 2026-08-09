@@ -30,6 +30,7 @@ from .core import (
     calculate_position_latency,
     command_overhead_for,
     estimated_lba,
+    mean_sqrt_seek_distance,
     remember_cached_write,
     remember_read,
     resolve_startup_plan,
@@ -135,7 +136,7 @@ class HDDLatencyModel:
         self.addressable_blocks = max(1, addressable_blocks)
         self.target_rpm: float = float(rpm)
         self.current_rpm: float = float(rpm)
-        self.num_heads = platters * 2
+        self.num_heads = resolved_drive.active_heads or (platters * 2)
         self.ms_per_rotation = 60000.0 / rpm
         self.ncq_depth = ncq_depth
         self.latency_scale = latency_scale
@@ -180,15 +181,17 @@ class HDDLatencyModel:
         )
         self.blocks_per_track_outer = max(outer_blocks, inner_blocks)
         self.blocks_per_track_inner = min(outer_blocks, inner_blocks)
-        self.total_cylinders = max(
-            128,
-            math.ceil(self.addressable_blocks / (self.num_heads * self.blocks_per_track_inner)),
+        self.zones = self._build_zones(transfer_rate_outer_mbps, transfer_rate_inner_mbps)
+        self.total_cylinders = self.zones[-1].end_cyl + 1
+        mean_seek_factor = mean_sqrt_seek_distance(
+            self.zones,
+            self.addressable_blocks,
+            self.num_heads,
         )
         self.seek_curve_b = (
             (self.avg_seek_ms - self.track_to_track_ms - self.settle_ms)
-            / math.sqrt(max(self.total_cylinders / 3.0, 1.0))
+            / max(mean_seek_factor, 1.0)
         )
-        self.zones = self._build_zones(transfer_rate_outer_mbps, transfer_rate_inner_mbps)
         self.core_config = HDDCoreConfig(
             drive_profile=self.drive_profile,
             block_bytes=self.block_bytes,
@@ -224,6 +227,7 @@ class HDDLatencyModel:
         self.current_head = 0
         self.current_sector = 0
         self.last_access_time = self.clock.now()
+        self.position_updated_at = self.last_access_time
         self.power_state = "active" if start_ready else "power_on"
         self.load_unload_count = 0
         self.heads_loaded = start_ready
@@ -267,7 +271,6 @@ class HDDLatencyModel:
         return list(
             build_zones(
                 addressable_blocks=self.addressable_blocks,
-                total_cylinders=self.total_cylinders,
                 num_heads=self.num_heads,
                 blocks_per_track_outer=self.blocks_per_track_outer,
                 blocks_per_track_inner=self.blocks_per_track_inner,
@@ -302,6 +305,7 @@ class HDDLatencyModel:
             self.heads_loaded = False
             self.has_completed_power_on = False
             self.last_access_time = self.clock.now()
+            self.position_updated_at = self.last_access_time
             self.ready_event.clear()
             self._clear_read_cache_locked()
             self.transition_kind = None
@@ -323,6 +327,7 @@ class HDDLatencyModel:
             heads_loaded=self.heads_loaded,
             has_completed_power_on=self.has_completed_power_on,
             last_access_time=self.last_access_time,
+            position_updated_at=self.position_updated_at,
             load_unload_count=self.load_unload_count,
         )
 
@@ -547,17 +552,20 @@ class HDDLatencyModel:
                 self.heads_loaded = True
                 self.has_completed_power_on = True
                 self.last_access_time = self.clock.now()
+                self.position_updated_at = self.last_access_time
                 self.ready_event.set()
             elif kind == "slowdown":
                 self.power_state = "low_rpm_idle"
                 self.current_rpm = self.low_rpm_rpm
                 self.heads_loaded = False
                 self.last_access_time = self.clock.now()
+                self.position_updated_at = self.last_access_time
             else:
                 self.power_state = "standby"
                 self.current_rpm = 0.0
                 self.heads_loaded = False
                 self.last_access_time = self.clock.now()
+                self.position_updated_at = self.last_access_time
                 self.ready_event.clear()
                 self._clear_read_cache_locked()
 
@@ -809,7 +817,22 @@ class HDDLatencyModel:
         target_lba: int,
         block_count: int,
     ) -> tuple[float, int, int, int, int, Zone]:
-        return calculate_position_latency(self.core_config, self._core_mechanical_state(), target_lba, block_count)
+        return calculate_position_latency(
+            self.core_config,
+            self._core_mechanical_state(),
+            target_lba,
+            block_count,
+            now=self.clock.now(),
+        )
+
+    def estimate_positioning_ms(self, target_lba: int, size_bytes: int = 4096) -> float:
+        with self.lock:
+            if target_lba < 0 or target_lba >= self.addressable_blocks:
+                raise ValueError(f"target LBA {target_lba} is outside the addressable range")
+            block_count = max(1, math.ceil(size_bytes / self.block_bytes))
+            block_count = min(block_count, self.addressable_blocks - target_lba)
+            total_ms, *_ = self._calculate_position_latency(target_lba, block_count)
+            return max(0.0, total_ms - self._transfer_ms_for_span(target_lba, block_count))
 
     def _transfer_ms_for_span(self, start_lba: int, block_count: int) -> float:
         return transfer_ms_for_span(self.core_config, start_lba, block_count)
@@ -1008,6 +1031,7 @@ class HDDLatencyModel:
                 self.current_cyl = final_cyl
                 self.current_head = final_head
                 self.current_sector = (final_sector + 1) % final_zone.blocks_per_track
+                self.position_updated_at = now
                 self.background_scan_lba = 0 if final_lba >= self.addressable_blocks - 1 else final_lba + 1
                 self.background_busy_until = max(self.background_busy_until, now + (total_latency_ms / 1000.0))
                 self.last_background_scan_time = now
@@ -1068,6 +1092,7 @@ class HDDLatencyModel:
                 if not is_write and op_kind == "data":
                     overlap = self._cache_overlap_blocks(lba, block_count, now)
                     if overlap >= block_count:
+                        self._sleep_ms(maintenance_wait_ms)
                         self._publish_event(
                             self.current_rpm,
                             is_seq=True,
@@ -1079,9 +1104,9 @@ class HDDLatencyModel:
                             directory_entry_count=directory_entry_count,
                             fragmentation_score=fragmentation_score,
                         )
-                        self.last_access_time = now
+                        self.last_access_time = self.clock.now()
                         return OperationStats(
-                            total_ms=0.03 + ready_info.ready_poll_ms,
+                            total_ms=0.03 + ready_info.ready_poll_ms + maintenance_wait_ms,
                             cache_hit=True,
                             partial_hit=False,
                             cyl=self.current_cyl,
@@ -1169,6 +1194,7 @@ class HDDLatencyModel:
                 self.current_head = final_head
                 self.current_sector = (final_sector + 1) % final_zone.blocks_per_track
                 self.last_access_time = self.clock.now()
+                self.position_updated_at = self.last_access_time
                 self.power_state = "active"
 
                 if not is_write and op_kind == "data":

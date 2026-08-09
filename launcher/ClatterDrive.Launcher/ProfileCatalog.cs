@@ -20,5 +20,13 @@ public static class ProfileCatalog
         "drive_on_desk",
     ];
 
+    public static readonly string[] FilesystemProfiles =
+    [
+        "ntfs_like",
+        "generic_journaled",
+        "ext4_like",
+        "apfs_like",
+    ];
+
     public static readonly string[] AudioModes = ["live", "off"];
 }

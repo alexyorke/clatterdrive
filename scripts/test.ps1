@@ -32,3 +32,4 @@ if (-not $hasBaseTemp) {
 }
 
 Invoke-Uv run python -m pytest @PytestArgs
+Invoke-Uv run python -m tools.audio_physics_benchmark

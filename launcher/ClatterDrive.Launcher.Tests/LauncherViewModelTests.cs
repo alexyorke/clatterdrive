@@ -35,6 +35,9 @@ public sealed class LauncherViewModelTests
                 BackingDirectory = tempDir,
                 Port = 8123,
                 AudioMode = "off",
+                CapacityGb = 24.0,
+                FilesystemProfile = "ext4_like",
+                StatePath = Path.Combine(tempDir, "state.json"),
             };
 
             viewModel.Start();
@@ -46,6 +49,9 @@ public sealed class LauncherViewModelTests
             Assert.AreEqual("Running", viewModel.Status);
             Assert.AreEqual(8123, backend.LastSettings?.Port);
             Assert.AreEqual("off", backend.LastSettings?.AudioMode);
+            Assert.AreEqual(24.0, backend.LastSettings?.CapacityGb);
+            Assert.AreEqual("ext4_like", backend.LastSettings?.FilesystemProfile);
+            Assert.AreEqual(Path.Combine(tempDir, "state.json"), backend.LastSettings?.StatePath);
             Assert.IsFalse(viewModel.StartCommand.CanExecute(null));
             Assert.IsTrue(viewModel.StopCommand.CanExecute(null));
 
@@ -62,6 +68,16 @@ public sealed class LauncherViewModelTests
                 Directory.Delete(tempDir, recursive: true);
             }
         }
+    }
+
+    [TestMethod]
+    public void StartCommandRejectsUnsupportedCapacity()
+    {
+        using var backend = new FakeBackendController();
+        using var viewModel = new LauncherViewModel(backend) { CapacityGb = 257.0 };
+
+        Assert.IsFalse(viewModel.StartCommand.CanExecute(null));
+        Assert.AreEqual("Choose a capacity from greater than 0 through 256 GB.", viewModel.ValidationMessage);
     }
 
     [TestMethod]

@@ -17,6 +17,12 @@ final class ProfileCatalogTests: XCTestCase {
               "name": "mounted_in_case",
               "description": "Case"
             }
+          ],
+          "filesystem_profiles": [
+            {
+              "name": "apfs_like",
+              "description": "APFS"
+            }
           ]
         }
         """.data(using: .utf8)!
@@ -26,5 +32,6 @@ final class ProfileCatalogTests: XCTestCase {
         XCTAssertEqual(catalog.driveProfiles.first?.name, "seagate_ironwolf_pro_16tb")
         XCTAssertEqual(catalog.driveProfiles.first?.defaultAcousticProfile, "mounted_in_case")
         XCTAssertEqual(catalog.acousticProfiles.first?.name, "mounted_in_case")
+        XCTAssertEqual(catalog.filesystemProfiles.first?.name, "apfs_like")
     }
 }

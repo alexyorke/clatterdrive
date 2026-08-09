@@ -348,8 +348,14 @@ def _aligned_log_mel(feature: dict[str, Any], frames: int) -> FloatArray:
 def compare_startup_features(
     generated: dict[str, Any],
     references: list[tuple[ReferenceSource, dict[str, Any]]],
+    *,
+    drive_bucket: str | None = None,
 ) -> dict[str, Any]:
-    startup_refs = [(entry, feature) for entry, feature in references if entry.is_startup_reference]
+    startup_refs = [
+        (entry, feature)
+        for entry, feature in references
+        if entry.is_startup_reference and (drive_bucket is None or entry.drive_bucket == drive_bucket)
+    ]
     if not startup_refs:
         return {"references_used": 0}
 
@@ -390,6 +396,7 @@ def compare_startup_features(
 
     return {
         "references_used": len(startup_refs),
+        "reference_bucket": drive_bucket or "mixed",
         "reference_ids": [entry.id for entry, _ in startup_refs],
         "generated": {
             "first_audible_s": float(generated["first_audible_s"]),
@@ -432,6 +439,59 @@ def compare_startup_features(
             "low_ratio": generated_low_ratio.tolist(),
             "fundamental_hz": generated_fundamental.tolist(),
             "log_mel": generated_mel.tolist(),
+        },
+    }
+
+
+def evaluate_startup_acceptance(
+    generated: dict[str, Any],
+    summary: dict[str, Any],
+    *,
+    drive_bucket: str,
+) -> dict[str, Any]:
+    reference_bucket = str(summary.get("reference_bucket", "enterprise_ultrastar"))
+    band = summary["reference_band"]
+    checks = {
+        "reference_bucket_matches": drive_bucket == reference_bucket,
+        "first_audible_s": (
+            float(band["first_audible_s_min"])
+            <= float(generated["first_audible_s"])
+            <= float(band["first_audible_s_max"])
+        ),
+        "time_to_90_s": (
+            float(band["time_to_90_s_min"])
+            <= float(generated["time_to_90_s"])
+            <= float(band["time_to_90_s_max"])
+        ),
+        "spectral_centroid_hz": (
+            float(band["spectral_centroid_hz_min"])
+            <= float(generated["spectral_centroid_hz"])
+            <= float(band["spectral_centroid_hz_max"])
+        ),
+        "low_band_ratio": (
+            float(band["low_band_ratio_min"])
+            <= float(generated["low_band_ratio"])
+            <= float(band["low_band_ratio_max"])
+        ),
+        "bubbly_modulation_ratio": (
+            float(generated["bubbly_modulation_ratio"])
+            <= float(band["bubbly_modulation_ratio_max"])
+        ),
+    }
+    return {
+        "passed": all(checks.values()),
+        "drive_bucket": drive_bucket,
+        "reference_bucket": reference_bucket,
+        "checks": checks,
+        "measured": {
+            key: float(generated[key])
+            for key in (
+                "first_audible_s",
+                "time_to_90_s",
+                "spectral_centroid_hz",
+                "low_band_ratio",
+                "bubbly_modulation_ratio",
+            )
         },
     }
 

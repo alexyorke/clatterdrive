@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import wave
 from pathlib import Path
 from typing import Any
@@ -16,10 +17,15 @@ from tools.generate_audio_samples import (
     startup_only_duration,
     update_metadata_storm,
 )
-from tools.reference_audio import compute_audio_features
+from tools.reference_audio import compute_audio_features, evaluate_startup_acceptance, write_startup_summary_svg
 
 
 ROOT = Path(__file__).resolve().parents[1]
+REFERENCE_DRIVE_PROFILE = "enterprise_7200_bare"
+REFERENCE_ACOUSTIC_PROFILE = "bare_drive_lab"
+REFERENCE_BUCKET = "enterprise_ultrastar"
+REFERENCE_SUMMARY_PATH = ROOT / "docs" / "reference-calibration" / "startup_reference_summary.json"
+REFERENCE_SUMMARY_SVG_PATH = ROOT / "docs" / "reference-calibration" / "startup_reference_summary.svg"
 
 
 def _rms(values: np.ndarray) -> float:
@@ -99,10 +105,10 @@ def render_startup_only() -> np.ndarray:
     engine = HDDAudioEngine(
         seed=0,
         sample_rate=sample_rate,
-        drive_profile="desktop_7200_internal",
-        acoustic_profile="drive_on_desk",
+        drive_profile=REFERENCE_DRIVE_PROFILE,
+        acoustic_profile=REFERENCE_ACOUSTIC_PROFILE,
     )
-    total_frames = int(startup_only_duration("desktop_7200_internal") * sample_rate)
+    total_frames = int(startup_only_duration(REFERENCE_DRIVE_PROFILE) * sample_rate)
     startup_event = HDDAudioEvent(
         rpm=0.0,
         emitted_at=0.0,
@@ -122,10 +128,10 @@ def render_startup_only() -> np.ndarray:
     return diagnostics.output
 
 
-def startup_reference_distances() -> dict[str, float]:
-    summary = json.loads((ROOT / "docs" / "reference-calibration" / "startup_reference_summary.json").read_text(encoding="utf-8"))
-    startup = render_startup_only()
-    features = compute_audio_features(startup, 22050, "desktop_7200_internal")
+def startup_reference_distances(features: dict[str, Any] | None = None) -> dict[str, float]:
+    summary = json.loads(REFERENCE_SUMMARY_PATH.read_text(encoding="utf-8"))
+    if features is None:
+        features = compute_audio_features(render_startup_only(), 22050, REFERENCE_BUCKET)
     median = summary["median_reference_curves"]
     curve_frames = len(median["envelope"])
     mel_frames = len(median["log_mel"][0])
@@ -138,12 +144,58 @@ def startup_reference_distances() -> dict[str, float]:
     }
 
 
+def startup_reference_acceptance(features: dict[str, Any] | None = None) -> dict[str, Any]:
+    summary = json.loads(REFERENCE_SUMMARY_PATH.read_text(encoding="utf-8"))
+    if features is None:
+        features = compute_audio_features(render_startup_only(), 22050, REFERENCE_BUCKET)
+    return evaluate_startup_acceptance(features, summary, drive_bucket=REFERENCE_BUCKET)
+
+
+def refresh_startup_reference_summary(features: dict[str, Any]) -> None:
+    """Refresh the generated side of the committed report without requiring local source WAVs."""
+    summary = json.loads(REFERENCE_SUMMARY_PATH.read_text(encoding="utf-8"))
+    median = summary["median_reference_curves"]
+    curve_frames = len(median["envelope"])
+    mel_frames = len(median["log_mel"][0])
+    summary["generated_drive_profile"] = REFERENCE_DRIVE_PROFILE
+    summary["generated_acoustic_profile"] = REFERENCE_ACOUSTIC_PROFILE
+    summary["generated"] = {
+        key: float(features[key])
+        for key in (
+            "first_audible_s",
+            "time_to_90_s",
+            "steady_fundamental_hz",
+            "spectral_centroid_hz",
+            "low_band_ratio",
+            "bubbly_modulation_ratio",
+            "transient_density",
+        )
+    }
+    summary["distance"].update(startup_reference_distances(features))
+    summary["generated_curves"] = {
+        "envelope": _aligned_curve(features, "envelope_curve", curve_frames).tolist(),
+        "centroid_hz": _aligned_curve(features, "centroid_curve", curve_frames).tolist(),
+        "low_ratio": _aligned_curve(features, "low_ratio_curve", curve_frames).tolist(),
+        "fundamental_hz": _aligned_curve(features, "fundamental_curve", curve_frames).tolist(),
+        "log_mel": _aligned_log_mel(features, mel_frames).tolist(),
+    }
+    REFERENCE_SUMMARY_PATH.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8", newline="\n")
+    write_startup_summary_svg(REFERENCE_SUMMARY_SVG_PATH, summary)
+
+
 def main() -> None:
+    startup_features = compute_audio_features(render_startup_only(), 22050, REFERENCE_BUCKET)
+    if "--refresh-summary" in sys.argv[1:]:
+        refresh_startup_reference_summary(startup_features)
+    acceptance = startup_reference_acceptance(startup_features)
     payload = {
         "metadata_storm": metadata_storm_metrics(),
-        "startup_reference": startup_reference_distances(),
+        "startup_reference": startup_reference_distances(startup_features),
+        "startup_acceptance": acceptance,
     }
     print(json.dumps(payload, indent=2))
+    if not acceptance["passed"]:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

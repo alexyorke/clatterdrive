@@ -7,7 +7,6 @@ from dataclasses import dataclass, field, replace
 
 Extent = tuple[int, int, int]
 BlockRun = tuple[int, int]
-DIRECTORY_ENTRY_BYTES = 192
 
 
 @dataclass(frozen=True)
@@ -51,6 +50,7 @@ class FileSystemState:
     directory_start: int
     bitmap_start: int
     data_start_block: int
+    directory_entry_bytes: int
     bitmap: bytearray
     files: dict[str, FileInode]
     directories: dict[str, DirectoryInode]
@@ -58,6 +58,8 @@ class FileSystemState:
     dir_children: dict[str, set[str]]
     next_inode_block: int
     next_directory_block: int
+    free_inode_blocks: list[int] = field(default_factory=list)
+    free_directory_blocks: list[int] = field(default_factory=list)
     journal_cursor: int = 0
 
 
@@ -75,6 +77,7 @@ def clone_state(state: FileSystemState) -> FileSystemState:
         directory_start=state.directory_start,
         bitmap_start=state.bitmap_start,
         data_start_block=state.data_start_block,
+        directory_entry_bytes=state.directory_entry_bytes,
         bitmap=bytearray(state.bitmap),
         files={
             path: FileInode(
@@ -99,6 +102,8 @@ def clone_state(state: FileSystemState) -> FileSystemState:
         dir_children={path: set(children) for path, children in state.dir_children.items()},
         next_inode_block=state.next_inode_block,
         next_directory_block=state.next_directory_block,
+        free_inode_blocks=list(state.free_inode_blocks),
+        free_directory_blocks=list(state.free_directory_blocks),
         journal_cursor=state.journal_cursor,
     )
 
@@ -137,6 +142,7 @@ def create_filesystem_state(
     inode_table_blocks: int = 4096,
     directory_blocks: int = 2048,
     bitmap_blocks: int = 256,
+    directory_entry_bytes: int = 192,
 ) -> FileSystemState:
     total_blocks = int((total_gb * 1024 * 1024 * 1024) // block_size)
     journal_start = superblock_blocks
@@ -166,6 +172,7 @@ def create_filesystem_state(
         directory_start=directory_start,
         bitmap_start=bitmap_start,
         data_start_block=data_start_block,
+        directory_entry_bytes=max(1, int(directory_entry_bytes)),
         bitmap=bitmap,
         files={},
         directories={"/": root_dir},
@@ -177,6 +184,11 @@ def create_filesystem_state(
 
 
 def allocate_inode_block(state: FileSystemState) -> tuple[FileSystemState, int]:
+    if state.free_inode_blocks:
+        next_state = clone_state(state)
+        block = min(next_state.free_inode_blocks)
+        next_state.free_inode_blocks.remove(block)
+        return next_state, block
     if state.next_inode_block >= state.inode_table_start + state.inode_table_blocks:
         raise RuntimeError("inode table exhausted")
     block = state.next_inode_block
@@ -184,18 +196,30 @@ def allocate_inode_block(state: FileSystemState) -> tuple[FileSystemState, int]:
 
 
 def allocate_directory_block(state: FileSystemState) -> tuple[FileSystemState, int]:
+    if state.free_directory_blocks:
+        next_state = clone_state(state)
+        block = min(next_state.free_directory_blocks)
+        next_state.free_directory_blocks.remove(block)
+        return next_state, block
     if state.next_directory_block >= state.directory_start + state.directory_region_blocks:
         raise RuntimeError("directory metadata area exhausted")
     block = state.next_directory_block
     return replace(state, next_directory_block=state.next_directory_block + 1), block
 
 
-def journal_op(state: FileSystemState, block_count: int, source: str) -> tuple[FileSystemState, IOOperation]:
+def journal_op(state: FileSystemState, block_count: int, source: str) -> tuple[FileSystemState, list[IOOperation]]:
     bounded_count = max(1, int(block_count))
-    start = state.journal_start + state.journal_cursor
     next_cursor = (state.journal_cursor + bounded_count) % state.journal_blocks
     next_state = replace(state, journal_cursor=next_cursor)
-    return next_state, IOOperation(start, bounded_count, "journal", source)
+    operations: list[IOOperation] = []
+    remaining = bounded_count
+    cursor = state.journal_cursor
+    while remaining > 0:
+        run_length = min(remaining, state.journal_blocks - cursor)
+        operations.append(IOOperation(state.journal_start + cursor, run_length, "journal", source))
+        remaining -= run_length
+        cursor = 0
+    return next_state, operations
 
 
 def bitmap_ops_for_extents(state: FileSystemState, extents: list[Extent]) -> list[IOOperation]:
@@ -221,7 +245,7 @@ def directory_entry_count(state: FileSystemState, path: str) -> int:
 
 def directory_scan_blocks(state: FileSystemState, path: str) -> int:
     entries = max(1, directory_entry_count(state, path))
-    return max(1, math.ceil((entries * DIRECTORY_ENTRY_BYTES) / state.block_size))
+    return max(1, math.ceil((entries * state.directory_entry_bytes) / state.block_size))
 
 
 def directory_metadata_op(
@@ -453,7 +477,7 @@ def rename_metadata_ops(
     source: str,
 ) -> tuple[FileSystemState, list[IOOperation]]:
     next_state, journal = journal_op(state, 2, source)
-    operations = [journal]
+    operations = list(journal)
     if old_parent == new_parent:
         operations.append(directory_metadata_op(next_state, old_parent, "dir_rename"))
     else:
@@ -547,7 +571,7 @@ def create_directory(state: FileSystemState, path: str) -> tuple[FileSystemState
 
     next_state, journal = journal_op(next_state, 2, "mkdir_intent")
     return next_state, [
-        journal,
+        *journal,
         directory_metadata_op(next_state, parent_entry.path, "dir_insert"),
         IOOperation(directory.inode_block, 1, "metadata", "inode_create"),
         directory_metadata_op(next_state, directory.path, "dir_init"),
@@ -566,7 +590,7 @@ def update_directory(
     directory = next_state.directories[normalized]
     next_state, journal = journal_op(next_state, 1, source)
     return next_state, [
-        journal,
+        *journal,
         IOOperation(directory.inode_block, 1, "metadata", "inode_update"),
         directory_metadata_op(next_state, normalized, "dir_metadata"),
     ]
@@ -584,7 +608,7 @@ def update_file_metadata(
     inode = next_state.files[normalized]
     next_state, journal = journal_op(next_state, 1, source)
     return next_state, [
-        journal,
+        *journal,
         IOOperation(inode.inode_block, 1, "metadata", "inode_metadata"),
     ]
 
@@ -608,7 +632,7 @@ def create_empty_file(state: FileSystemState, path: str) -> tuple[FileSystemStat
     next_state.dir_children[parent_entry.path].add(basename(normalized))
     next_state, journal = journal_op(next_state, 2, "create_intent")
     return next_state, [
-        journal,
+        *journal,
         directory_metadata_op(next_state, parent_entry.path, "dir_insert"),
         IOOperation(inode.inode_block, 1, "metadata", "inode_create"),
     ]
@@ -641,7 +665,7 @@ def write(state: FileSystemState, path: str, offset: int, length: int) -> tuple[
 
     next_state, journal = journal_op(next_state, 2 if (created or new_extents) else 1, "write_intent")
     metadata_ops = [
-        journal,
+        *journal,
         IOOperation(
             next_inode.inode_block,
             1,
@@ -683,13 +707,14 @@ def delete(state: FileSystemState, path: str) -> tuple[FileSystemState, list[IOO
     parent_entry = next_state.directories[inode.parent_dir]
     next_state, journal = journal_op(next_state, 2, "delete_intent")
     operations = [
-        journal,
+        *journal,
         directory_metadata_op(next_state, parent_entry.path, "dir_remove"),
         IOOperation(inode.inode_block, 1, "metadata", "inode_delete"),
     ]
     operations.extend(bitmap_ops_for_extents(next_state, inode.extents))
 
     _free_extents_in_place(next_state, inode.extents)
+    next_state.free_inode_blocks.append(inode.inode_block)
     next_state.dir_children[parent_entry.path].discard(basename(normalized))
     del next_state.files[normalized]
     return next_state, operations
@@ -723,7 +748,7 @@ def delete_directory(
 
     next_state = clone_state(state)
     next_state, journal = journal_op(next_state, max(2, 1 + len(file_paths) + len(child_dirs)), "rmdir_intent")
-    operations = [journal]
+    operations = list(journal)
 
     for file_path in file_paths:
         inode = next_state.files[file_path]
@@ -750,10 +775,13 @@ def delete_directory(
     for file_path in file_paths:
         inode = next_state.files.pop(file_path)
         _free_extents_in_place(next_state, inode.extents)
+        next_state.free_inode_blocks.append(inode.inode_block)
         next_state.dir_children[inode.parent_dir].discard(basename(file_path))
 
     for dir_path in [*child_dirs, normalized]:
         directory = next_state.directories.pop(dir_path)
+        next_state.free_inode_blocks.append(directory.inode_block)
+        next_state.free_directory_blocks.append(directory.dir_block)
         next_state.directory_blocks.pop(dir_path, None)
         next_state.dir_children.pop(dir_path, None)
         next_state.dir_children[directory.parent_dir].discard(basename(dir_path))
@@ -885,7 +913,7 @@ def truncate(state: FileSystemState, path: str, size: int = 0) -> tuple[FileSyst
 
     next_state, journal = journal_op(next_state, 2 if freed_extents else 1, "truncate_intent")
     operations = [
-        journal,
+        *journal,
         IOOperation(inode.inode_block, 1, "metadata", "inode_truncate"),
     ]
     if freed_extents:
@@ -902,6 +930,10 @@ def get_fragmentation_score(state: FileSystemState, path: str) -> int:
 
 def assert_consistent(state: FileSystemState) -> None:
     assert "/" in state.directories
+    assert state.directory_entry_bytes > 0
+    assert 0 <= state.journal_cursor < state.journal_blocks
+    assert state.inode_table_start <= state.next_inode_block <= state.inode_table_start + state.inode_table_blocks
+    assert state.directory_start <= state.next_directory_block <= state.directory_start + state.directory_region_blocks
     assert set(state.directory_blocks) == set(state.directories)
     assert set(state.dir_children) == set(state.directories)
 
@@ -910,9 +942,26 @@ def assert_consistent(state: FileSystemState) -> None:
     seen_dir_blocks = set()
     seen_data_blocks = set()
 
+    assert len(state.free_inode_blocks) == len(set(state.free_inode_blocks))
+    assert len(state.free_directory_blocks) == len(set(state.free_directory_blocks))
+    assert all(
+        state.inode_table_start <= block < state.inode_table_start + state.inode_table_blocks
+        for block in state.free_inode_blocks
+    )
+    assert all(block < state.next_inode_block for block in state.free_inode_blocks)
+    assert all(
+        state.directory_start <= block < state.directory_start + state.directory_region_blocks
+        for block in state.free_directory_blocks
+    )
+    assert all(block < state.next_directory_block for block in state.free_directory_blocks)
+
     for path, directory in state.directories.items():
         assert path == directory.path
         assert state.directory_blocks[path] == directory.dir_block
+        assert state.inode_table_start <= directory.inode_block < state.inode_table_start + state.inode_table_blocks
+        assert state.directory_start <= directory.dir_block < state.directory_start + state.directory_region_blocks
+        assert directory.inode_block < state.next_inode_block
+        assert directory.dir_block < state.next_directory_block
         assert directory.inode_block not in seen_inode_blocks
         assert directory.dir_block not in seen_dir_blocks
         seen_inode_blocks.add(directory.inode_block)
@@ -927,6 +976,8 @@ def assert_consistent(state: FileSystemState) -> None:
         assert path == inode.path
         assert path not in state.directories
         assert inode.parent_dir in state.directories
+        assert state.inode_table_start <= inode.inode_block < state.inode_table_start + state.inode_table_blocks
+        assert inode.inode_block < state.next_inode_block
         assert inode.inode_block not in seen_inode_blocks
         seen_inode_blocks.add(inode.inode_block)
         expected_children[inode.parent_dir].add(basename(path))
@@ -945,3 +996,5 @@ def assert_consistent(state: FileSystemState) -> None:
 
     actual_children = {path: set(children) for path, children in state.dir_children.items()}
     assert actual_children == expected_children
+    assert seen_inode_blocks.isdisjoint(state.free_inode_blocks)
+    assert seen_dir_blocks.isdisjoint(state.free_directory_blocks)

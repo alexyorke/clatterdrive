@@ -407,7 +407,10 @@ class LatencyWriter:
             self.offset = int(writer.tell())
         except Exception:
             self.offset = 0
-        self.vhdd.prepare_overwrite(self.path)
+        # WsgiDAV has already opened the backing file with "wb" at this point.
+        # Reconciliation would observe that host-side truncation and discard the
+        # old simulated extents before their modeled truncate I/O is emitted.
+        self.vhdd.prepare_overwrite(self.path, reconcile_backing=False)
 
     def write(self, data: bytes) -> Any:
         size = len(data)
@@ -460,6 +463,9 @@ class HDDProvider(FilesystemProvider):
         event_sink: StorageEventSink | None = None,
         drive_profile: str | None = None,
         acoustic_profile: str | None = None,
+        capacity_gb: float = 10.0,
+        filesystem_profile: str = "generic_journaled",
+        state_path: str | None = None,
         cold_start: bool = True,
         async_power_on: bool = True,
     ) -> None:
@@ -472,9 +478,12 @@ class HDDProvider(FilesystemProvider):
             async_power_on=async_power_on,
             drive_profile=drive_profile,
             acoustic_profile=acoustic_profile,
+            capacity_gb=capacity_gb,
+            filesystem_profile=filesystem_profile,
+            state_path=state_path,
             event_sink=event_sink,
         )
-        self.scheduler = OSScheduler(self.vhdd.model)
+        self.scheduler = OSScheduler(self.vhdd.model, max_queue_depth=self.vhdd.model.ncq_depth)
         self.vhdd.set_scheduler(self.scheduler)
 
     def set_prop_manager(self, prop_manager: Any) -> None:

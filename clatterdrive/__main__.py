@@ -19,6 +19,9 @@ def _add_config_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--trace-events", action="store_true")
     parser.add_argument("--drive-profile", default=None)
     parser.add_argument("--acoustic-profile", default=None)
+    parser.add_argument("--capacity-gb", type=float, default=None)
+    parser.add_argument("--filesystem-profile", default=None)
+    parser.add_argument("--state-path", default=None)
     parser.add_argument("--ready", action="store_true", help="Start with the simulated drive already ready.")
     parser.add_argument("--sync-power-on", action="store_true", help="Disable background startup sequencing.")
 
@@ -38,6 +41,9 @@ def _config_from_args(args: argparse.Namespace) -> ClatterDriveConfig:
         async_power_on=False if args.sync_power_on else base.async_power_on,
         drive_profile=args.drive_profile or base.drive_profile,
         acoustic_profile=args.acoustic_profile or base.acoustic_profile,
+        capacity_gb=base.capacity_gb if args.capacity_gb is None else float(args.capacity_gb),
+        filesystem_profile=args.filesystem_profile or base.filesystem_profile,
+        state_path=args.state_path or base.state_path,
     )
 
 
@@ -92,6 +98,12 @@ def main(argv: Sequence[str] | None = None) -> None:
             print("Acoustic profiles:")
             for profile in catalog["acoustic_profiles"]:
                 print(f"- {profile['name']}: {profile['description']}")
+            print("Filesystem profiles:")
+            for profile in catalog["filesystem_profiles"]:
+                print(f"- {profile['name']}: {profile['description']}")
+            print("Frontends:")
+            for frontend in catalog["frontends"]:
+                print(f"- {frontend['name']} ({frontend['status']}): {frontend['description']}")
         return
     if command == "doctor":
         report = doctor_report(_config_from_args(args))

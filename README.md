@@ -46,6 +46,15 @@ uv run clatterdrive profiles --json
 uv run clatterdrive doctor --json
 ```
 
+Capacity, filesystem layout, and persistent simulated allocation state can be selected on the command line:
+
+```powershell
+uv run clatterdrive serve --capacity-gb 40 --filesystem-profile ntfs_like
+uv run clatterdrive serve --state-path C:\path\to\volume-state.json
+```
+
+Supported simulated capacities are greater than zero and up to 256 GB. Unless `--state-path` is supplied, state is stored atomically beside the backing directory as `<backing-directory>.clatterdrive-state.json`; the sidecar is outside the served WebDAV tree.
+
 Default URL:
 
 - `http://127.0.0.1:8080`
@@ -74,7 +83,7 @@ Optional MSI installer:
 scripts\build-installer.ps1
 ```
 
-The packaged launcher lets a non-developer choose the backing folder, port, drive/acoustic profile, audio mode/device, start/stop the backend, open the WebDAV URL, copy the `net use` command, copy the unmount command, and inspect logs.
+The packaged launcher lets a non-developer choose the backing folder, volume capacity, filesystem and drive/acoustic profiles, persistent-state path, port, audio mode/device, start/stop the backend, open the WebDAV URL, copy the `net use` command, copy the unmount command, and inspect logs.
 
 Installer E2E intentionally refuses to run on an unmarked local host because it installs and uninstalls the app. Run it in GitHub Actions, or inside a disposable Windows VM with `CLATTERDRIVE_INSTALLER_E2E_VM=1`:
 
@@ -204,6 +213,9 @@ If live audio is enabled, directory creation and listing, uploads, downloads, ov
 - `FAKE_HDD_ASYNC_POWER_ON=off`: disable background startup sequencing
 - `FAKE_HDD_DRIVE_PROFILE`: choose a drive preset
 - `FAKE_HDD_ACOUSTIC_PROFILE`: choose an installation/acoustic preset
+- `FAKE_HDD_CAPACITY_GB`: choose the simulated volume capacity, up to 256 GB
+- `FAKE_HDD_FILESYSTEM_PROFILE`: choose the simulated metadata layout
+- `FAKE_HDD_STATE_PATH`: override the persistent allocation-state sidecar path
 
 Current drive presets:
 
@@ -220,6 +232,13 @@ Current acoustic presets:
 - `mounted_in_case`
 - `external_enclosure`
 - `drive_on_desk`
+
+Current filesystem presets:
+
+- `generic_journaled`
+- `ntfs_like`
+- `ext4_like`
+- `apfs_like`
 
 Example:
 
@@ -284,9 +303,12 @@ Key files:
 - [main.py](main.py): thin startup entrypoint
 - [clatterdrive/app.py](clatterdrive/app.py): server startup and wiring
 - [clatterdrive/webdav/provider.py](clatterdrive/webdav/provider.py): WebDAV interception layer
+- [clatterdrive/block_frontend.py](clatterdrive/block_frontend.py): raw block-I/O extension API for future WinFsp, FUSE, NBD, or driver adapters
 - [clatterdrive/hdd/latency.py](clatterdrive/hdd/latency.py): HDD timing and power-state model
+- [clatterdrive/fs/persistence.py](clatterdrive/fs/persistence.py): validated, atomic simulated-volume state persistence
 - [clatterdrive/hardware_priors.py](clatterdrive/hardware_priors.py): source-backed hardware priors and bounded calibration helpers
 - [clatterdrive/audio/core.py](clatterdrive/audio/core.py): audio plant and render logic
+- [clatterdrive/audio/calibration.py](clatterdrive/audio/calibration.py): per-drive audio calibration provenance and reference-bucket mapping
 - [clatterdrive/audio/physics.py](clatterdrive/audio/physics.py): labeled physical-state, plausible-model, and artistic-calibration audio primitives
 - [clatterdrive/audio/engine.py](clatterdrive/audio/engine.py): runtime audio shell
 
@@ -355,7 +377,10 @@ Audio traces and audits:
 ```powershell
 uv run python -m tools.trace_audio_scenarios
 uv run python -m tools.audit_audio_stack
+uv run python -m tools.audio_physics_benchmark
 ```
+
+The normal Python test gate also runs the matched enterprise-startup benchmark. It fails on absolute onset, spin-up timing, spectral-centroid, low-frequency balance, or modulation bounds; it does not rely only on comparison with an older generated render.
 
 Internal calibration tooling:
 
@@ -373,7 +398,9 @@ Notes:
 ## Limits
 
 - This is not a real block device or kernel filesystem.
+- A tested raw block adapter API now shares the same latency and NCQ model, but no privileged WinFsp, FUSE, NBD, or kernel integration is bundled.
 - Out-of-band edits to the backing tree are only partially reconciled.
 - WebDAV locks are in-memory and exist to satisfy clients like the Windows WebClient; they are not persisted across restart.
-- The project is physically structured and benchmark-gated, but it is not yet a reference-grade HDD/acoustics model without measured drive constants and transfer functions.
+- The simulated allocation map and filesystem metadata survive clean restarts through the JSON sidecar. They are not a crash-consistent replica of the host filesystem.
+- Zoned transfer rates, platter/head geometry, rotational phase, seek-distance calibration, request ordering, and filesystem metadata profiles are modeled, but this is not a reference-grade HDD/acoustics model without per-unit measured drive constants and transfer functions.
 - The audio model is explicitly labeled by tier: physical state covers runtime variables such as spindle phase/RPM and actuator position/velocity; physical model covers normalized mechanics, source routing, modal radiation, and gain staging; artistic calibration is kept as an audit tier for any future nonphysical exception.

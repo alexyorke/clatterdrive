@@ -8,6 +8,7 @@ import numpy as np
 import numpy.typing as npt
 
 from .commands import AudioCommand, command_from_event
+from .calibration import resolve_drive_modal_calibration
 from . import physics
 from ..profiles import AcousticProfile, DriveProfile
 from ..storage_events import StorageEvent
@@ -51,6 +52,9 @@ class AudioModeBank:
     desk_gain: float
     final_lowpass_alpha: float
     final_highpass_alpha: float
+    calibration_id: str
+    reference_bucket: str | None
+    startup_windage_airborne_gain: float
 
 
 @dataclass
@@ -215,24 +219,7 @@ def build_mode_bank(
     sample_rate: int,
     acoustic_profile: AcousticProfile,
 ) -> AudioModeBank:
-    base_modes = (
-        (72.0, 0.095, 0.92),
-        (118.0, 0.082, 0.74),
-        (168.0, 0.070, 0.56),
-        (248.0, 0.060, 0.34),
-    )
-    cover_modes = (
-        (212.0, 0.055, 0.44),
-        (412.0, 0.048, 0.28),
-        (576.0, 0.042, 0.24),
-        (822.0, 0.038, 0.18),
-        (1208.0, 0.034, 0.12),
-    )
-    actuator_modes = (
-        (980.0, 0.036, 0.40),
-        (1325.0, 0.032, 0.56),
-        (1680.0, 0.028, 0.34),
-    )
+    calibration = resolve_drive_modal_calibration(drive_profile.name)
     enclosure_modes = (
         (58.0, 0.120, 0.54),
         (96.0, 0.104, 0.60),
@@ -253,21 +240,21 @@ def build_mode_bank(
     actuator_gain_scale = acoustic_profile.actuator_gain * drive_profile.actuator_gain_scale
     return AudioModeBank(
         base=_configure_modes(
-            base_modes,
+            calibration.base_modes,
             sample_rate=sample_rate,
             freq_scale=0.96 + 0.05 * drive_profile.cover_frequency_scale,
             gain_scale=base_gain_scale,
             input_scale=1.5,
         ),
         cover=_configure_modes(
-            cover_modes,
+            calibration.cover_modes,
             sample_rate=sample_rate,
             freq_scale=drive_profile.cover_frequency_scale,
             gain_scale=cover_gain_scale,
             input_scale=0.88,
         ),
         actuator=_configure_modes(
-            actuator_modes,
+            calibration.actuator_modes,
             sample_rate=sample_rate,
             freq_scale=drive_profile.actuator_frequency_scale,
             gain_scale=actuator_gain_scale,
@@ -298,6 +285,9 @@ def build_mode_bank(
         desk_gain=acoustic_profile.table_radiation_gain,
         final_lowpass_alpha=_one_pole_alpha(acoustic_profile.final_lowpass_hz, sample_rate),
         final_highpass_alpha=_one_pole_alpha(acoustic_profile.final_highpass_hz, sample_rate),
+        calibration_id=calibration.calibration_id,
+        reference_bucket=calibration.reference_bucket,
+        startup_windage_airborne_gain=drive_profile.startup_windage_airborne_gain,
     )
 
 
@@ -752,6 +742,9 @@ def _render_segment_internal(
             rpm_norm=rpm_norm,
             startup_active=startup_active,
             windage_gain=drive_profile.windage_gain,
+            startup_low_alpha=drive_profile.startup_windage_low_alpha,
+            startup_high_alpha=drive_profile.startup_windage_high_alpha,
+            startup_strength=drive_profile.startup_windage_strength,
         )
         plant.windage_low_state = windage_step.primary_state
         plant.windage_high_state = windage_step.secondary_state
@@ -831,6 +824,7 @@ def _render_segment_internal(
             fragmentation_activity=supervisor.fragmentation_activity,
             startup_ramp_value=startup_ramp,
             acoustic_profile=acoustic_profile,
+            startup_windage_structure_scale=drive_profile.startup_windage_structure_scale,
         )
 
         plant.base_disp, plant.base_vel, base_signal = _step_modal_bank(

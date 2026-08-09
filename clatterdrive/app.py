@@ -124,6 +124,9 @@ def start_server(config: ClatterDriveConfig | None = None, *, json_status: bool 
             event_sink=event_sink,
             drive_profile=drive_profile,
             acoustic_profile=acoustic_profile,
+            capacity_gb=resolved_config.capacity_gb,
+            filesystem_profile=resolved_config.filesystem_profile,
+            state_path=resolved_config.state_path,
             cold_start=resolved_config.cold_start,
             async_power_on=resolved_config.async_power_on,
         )
@@ -172,6 +175,9 @@ def start_server(config: ClatterDriveConfig | None = None, *, json_status: bool 
                         "backing_dir": root_path,
                         "drive_profile": provider.vhdd.drive_profile.name,
                         "acoustic_profile": provider.vhdd.acoustic_profile.name,
+                        "capacity_gb": resolved_config.capacity_gb,
+                        "filesystem_profile": provider.vhdd.fs.profile.name,
+                        "state_path": str(provider.vhdd.fs.state_path),
                         "audio_enabled": audio.output_enabled,
                         "tee_path": audio.tee_path,
                     },
@@ -184,6 +190,7 @@ def start_server(config: ClatterDriveConfig | None = None, *, json_status: bool 
         pass
     except OSError as exc:
         print(f"Server startup failed: {exc}", flush=True)
+        raise SystemExit(1) from exc
     finally:
         if server is not None:
             server.stop()

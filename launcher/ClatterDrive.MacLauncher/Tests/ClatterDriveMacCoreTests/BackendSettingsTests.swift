@@ -12,6 +12,9 @@ final class BackendSettingsTests: XCTestCase {
             eventTracePath: "/tmp/events.json",
             driveProfile: "seagate_ironwolf_pro_16tb",
             acousticProfile: "drive_on_desk",
+            capacityGb: 24.5,
+            filesystemProfile: "apfs_like",
+            statePath: "/tmp/clatterdrive-state.json",
             coldStart: false,
             asyncPowerOn: false
         )
@@ -23,6 +26,9 @@ final class BackendSettingsTests: XCTestCase {
         XCTAssertTrue(args.contains("--sync-power-on"))
         XCTAssertTrue(args.contains("/tmp/backing folder"))
         XCTAssertTrue(args.contains("/tmp/audio.wav"))
+        XCTAssertTrue(args.contains("24.5"))
+        XCTAssertTrue(args.contains("apfs_like"))
+        XCTAssertTrue(args.contains("/tmp/clatterdrive-state.json"))
         XCTAssertEqual(settings.environment()["FAKE_HDD_AUDIO"], "off")
     }
 

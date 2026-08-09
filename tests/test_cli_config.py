@@ -21,6 +21,9 @@ def test_config_from_env_preserves_existing_fake_hdd_variables(tmp_path: Path) -
         "FAKE_HDD_ASYNC_POWER_ON": "off",
         "FAKE_HDD_DRIVE_PROFILE": "seagate_ironwolf_pro_16tb",
         "FAKE_HDD_ACOUSTIC_PROFILE": "bare_drive_lab",
+        "FAKE_HDD_CAPACITY_GB": "24.5",
+        "FAKE_HDD_FILESYSTEM_PROFILE": "ntfs_like",
+        "FAKE_HDD_STATE_PATH": str(tmp_path / "state.json"),
     }
 
     config = config_from_env(env)
@@ -31,6 +34,9 @@ def test_config_from_env_preserves_existing_fake_hdd_variables(tmp_path: Path) -
     assert config.cold_start is False
     assert config.async_power_on is False
     assert config.drive_profile == "seagate_ironwolf_pro_16tb"
+    assert config.capacity_gb == 24.5
+    assert config.filesystem_profile == "ntfs_like"
+    assert config.state_path == str(tmp_path / "state.json")
     assert config.to_env()["FAKE_HDD_BACKING_DIR"] == str(tmp_path)
 
 
@@ -48,6 +54,7 @@ def test_profile_catalog_includes_all_user_visible_presets() -> None:
     assert "desktop_7200_internal" in drive_names
     assert "seagate_ironwolf_pro_16tb" in drive_names
     assert "drive_on_desk" in acoustic_names
+    assert any(profile["name"] == "ext4_like" for profile in catalog["filesystem_profiles"])
 
 
 def test_doctor_reports_bad_profile_and_port_conflict(tmp_path: Path) -> None:
@@ -78,6 +85,24 @@ def test_doctor_reports_invalid_port_without_crashing(tmp_path: Path) -> None:
         assert "65535" in report["checks"]["port"]["message"]
 
 
+def test_doctor_rejects_state_sidecar_inside_served_tree(tmp_path: Path) -> None:
+    backing = tmp_path / "backing"
+    backing.mkdir()
+
+    report = doctor_report(
+        ClatterDriveConfig(
+            backing_dir=str(backing),
+            state_path=str(backing / "volume-state.json"),
+            audio="off",
+            port=0,
+        )
+    )
+
+    assert report["ok"] is False
+    assert report["checks"]["volume"]["ok"] is False
+    assert "outside" in report["checks"]["volume"]["message"]
+
+
 def test_doctor_accepts_ipv6_loopback_when_available(tmp_path: Path) -> None:
     if not socket.has_ipv6:
         pytest.skip("IPv6 is not available on this host")
@@ -94,3 +119,4 @@ def test_profiles_json_cli_outputs_machine_readable_catalog(capsys: pytest.Captu
 
     assert "drive_profiles" in payload
     assert any(profile["name"] == "seagate_ironwolf_pro_16tb" for profile in payload["drive_profiles"])
+    assert any(profile["name"] == "apfs_like" for profile in payload["filesystem_profiles"])

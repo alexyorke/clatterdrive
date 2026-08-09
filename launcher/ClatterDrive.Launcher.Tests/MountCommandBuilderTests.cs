@@ -28,6 +28,9 @@ public sealed class MountCommandBuilderTests
             AudioMode = "off",
             DriveProfile = "seagate_ironwolf_pro_16tb",
             AcousticProfile = "drive_on_desk",
+            CapacityGb = 24.5,
+            FilesystemProfile = "ntfs_like",
+            StatePath = @"C:\Temp\ClatterDrive.state.json",
         };
 
         var args = settings.ToServeArguments();
@@ -36,6 +39,9 @@ public sealed class MountCommandBuilderTests
         CollectionAssert.Contains(args.ToList(), "--json-status");
         CollectionAssert.Contains(args.ToList(), "seagate_ironwolf_pro_16tb");
         CollectionAssert.Contains(args.ToList(), "drive_on_desk");
+        CollectionAssert.Contains(args.ToList(), "24.5");
+        CollectionAssert.Contains(args.ToList(), "ntfs_like");
+        CollectionAssert.Contains(args.ToList(), @"C:\Temp\ClatterDrive.state.json");
     }
 
     [TestMethod]

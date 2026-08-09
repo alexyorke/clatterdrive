@@ -403,6 +403,9 @@ def step_windage_noise(
     rpm_norm: float,
     startup_active: bool,
     windage_gain: float,
+    startup_low_alpha: float = 0.005,
+    startup_high_alpha: float = 0.024,
+    startup_strength: float = 0.050,
 ) -> NoiseStep:
     """Tier: physical_model.
 
@@ -410,12 +413,17 @@ def step_windage_noise(
     speed plus dynamic pressure/turbulence terms; `windage_gain` is the one
     profile-level calibration scalar retained for this source.
     """
-    windage_low_alpha = 0.005 if startup_active else 0.020
-    windage_high_alpha = 0.024 if startup_active else 0.130
+    windage_low_alpha = startup_low_alpha if startup_active else 0.020
+    windage_high_alpha = startup_high_alpha if startup_active else 0.130
     next_low_state = low_state + windage_low_alpha * (raw_sample - low_state)
     next_high_state = high_state + windage_high_alpha * (next_low_state - high_state)
-    source_strength = spindle_airflow_source(rpm_norm, startup_active=startup_active)
-    signal = (next_low_state - next_high_state) * source_strength * windage_gain
+    source_strength = spindle_airflow_source(
+        rpm_norm,
+        startup_active=startup_active,
+        startup_turbulence_gain=startup_strength,
+    )
+    filtered_flow = next_low_state - next_high_state
+    signal = filtered_flow * source_strength * windage_gain
     return NoiseStep(
         primary_state=next_low_state,
         secondary_state=next_high_state,
@@ -424,7 +432,12 @@ def step_windage_noise(
     )
 
 
-def spindle_airflow_source(rpm_norm: float, *, startup_active: bool) -> float:
+def spindle_airflow_source(
+    rpm_norm: float,
+    *,
+    startup_active: bool,
+    startup_turbulence_gain: float = 0.050,
+) -> float:
     """Tier: physical_model.
 
     HDD windage roughly follows spindle surface speed and turbulent/dynamic
@@ -435,7 +448,7 @@ def spindle_airflow_source(rpm_norm: float, *, startup_active: bool) -> float:
     dynamic_pressure = speed_ratio * speed_ratio
     turbulent_pressure = dynamic_pressure * speed_ratio * speed_ratio
     if startup_active:
-        return 0.002 * speed_ratio + 0.050 * turbulent_pressure * speed_ratio**0.8
+        return 0.002 * speed_ratio + startup_turbulence_gain * turbulent_pressure * speed_ratio**0.8
     return 0.010 * speed_ratio + 0.18 * dynamic_pressure
 
 
@@ -660,6 +673,7 @@ def route_sources_to_structure(
     fragmentation_activity: float,
     startup_ramp_value: float,
     acoustic_profile: AcousticProfile,
+    startup_windage_structure_scale: float = 1.0,
 ) -> SourceForces:
     """Tier: physical_model.
 
@@ -673,18 +687,19 @@ def route_sources_to_structure(
             1.55 * torque_structure
             + 0.14 * spindle_tone * startup_ramp_value
             + 0.06 * bearing
-            + 0.03 * windage
+            + 0.03 * startup_windage_structure_scale * windage
         )
         cover_force = (
             0.44 * torque_structure
             + 0.08 * spindle_tone * startup_ramp_value
-            + 0.03 * windage
+            + 0.03 * startup_windage_structure_scale * windage
             + 0.02 * bearing
         )
         actuator_force = 0.0
         enclosure_force = (
             acoustic_profile.enclosure_coupling * (0.52 * base_force + 0.22 * cover_force)
-            + acoustic_profile.internal_air_coupling * (0.04 * windage + 0.04 * spindle_tone)
+            + acoustic_profile.internal_air_coupling
+            * (0.04 * startup_windage_structure_scale * windage + 0.04 * spindle_tone)
         )
         desk_force = acoustic_profile.desk_coupling * (0.94 * base_force + 0.20 * cover_force)
     else:
@@ -773,7 +788,9 @@ def radiate_acoustic_paths(
             * (1.72 * base_signal + 0.78 * cover_signal + 1.02 * enclosure_signal + 1.42 * desk_signal)
         )
         airborne = (
-            mode_bank.direct_gain * startup_airborne_gate * (0.16 * spindle_tone + 0.05 * windage + 0.03 * bearing)
+            mode_bank.direct_gain
+            * startup_airborne_gate
+            * (0.16 * spindle_tone + mode_bank.startup_windage_airborne_gain * windage + 0.03 * bearing)
             + 0.07 * mode_bank.cover_gain * cover_signal
         )
     else:

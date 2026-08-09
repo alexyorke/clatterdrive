@@ -58,6 +58,24 @@ def test_webdav_end_to_end_directory_lifecycle(tmp_path: Path) -> None:
         _assert_provider_tree_matches_disk(provider, backing)
 
 
+def test_webdav_empty_overwrite_emits_modeled_truncate_io(tmp_path: Path) -> None:
+    backing = tmp_path / "backing"
+    backing.mkdir()
+    recorder = StorageEventRecorder()
+
+    with _run_test_server(backing, event_sink=recorder) as (base_url, provider):
+        status, _, _ = _request(base_url, "PUT", "/overwrite.bin", b"x" * 32768)
+        assert status in (200, 201, 204)
+        provider.vhdd.sync_all()
+        recorder.clear()
+
+        status, _, _ = _request(base_url, "PUT", "/overwrite.bin", b"")
+
+        assert status in (200, 201, 204)
+        assert provider.vhdd.fs.files["/overwrite.bin"].size == 0
+        assert any(event.is_flush for event in recorder.snapshot())
+
+
 def test_webdav_operations_emit_renderable_audio_events(tmp_path: Path) -> None:
     backing = tmp_path / "backing"
     backing.mkdir()
