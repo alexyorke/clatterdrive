@@ -27,6 +27,8 @@ if (-not $hasWorkerCount) {
     $PytestArgs = @("-n", "4") + $PytestArgs
 }
 if (-not $hasBaseTemp) {
+    # Pytest creates basetemp itself, but not its parent on a fresh checkout.
+    New-Item -ItemType Directory -Force -Path (Join-Path $RepoRoot ".tmp_tests") | Out-Null
     $runId = [guid]::NewGuid().ToString("N").Substring(0, 8)
     $PytestArgs = @("--basetemp=.tmp_tests/pytest-basetemp-$runId") + $PytestArgs
 }
