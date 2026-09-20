@@ -324,16 +324,27 @@ def test_audio_engine_headless_tee_renders_without_manual_pull(
     try:
         assert engine.output_enabled is False
         assert engine.stream is None
+        # Exercise an already-running silent recorder, not just startup timing.
+        idle_deadline = time.monotonic() + 20.0
+        while time.monotonic() < idle_deadline and engine.render_frame_cursor < engine.chunk_size * 4:
+            time.sleep(0.02)
+        assert engine.render_frame_cursor >= engine.chunk_size * 4
         engine.emit_telemetry(7200.0, seek_trigger=True, seek_dist=700, op_kind="data")
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline and engine.render_frame_cursor < engine.chunk_size * 4:
+        # On loaded runners, wall-clock time can advance before this thread
+        # publishes the event. Four chunks from startup may still be silence;
+        # wait for four chunks beyond the event's position in the audio clock.
+        assert engine.time_origin is not None
+        event_frame_bound = int((engine.clock.now() - engine.time_origin) * engine.fs) + 1
+        minimum_frames = max(engine.render_frame_cursor, event_frame_bound) + engine.chunk_size * 4
+        deadline = time.monotonic() + 20.0
+        while time.monotonic() < deadline and engine.render_frame_cursor < minimum_frames:
             time.sleep(0.02)
     finally:
         engine.stop()
 
     assert tee_path.exists()
     with wave.open(str(tee_path), "rb") as wav_file:
-        assert wav_file.getnframes() >= engine.chunk_size * 4
+        assert wav_file.getnframes() >= minimum_frames
     rms, peak = _wav_metrics(tee_path)
     assert rms > 0.001
     assert peak > 0.004
