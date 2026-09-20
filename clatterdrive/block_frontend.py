@@ -80,16 +80,28 @@ class LatencyBlockDevice:
         self.store = store
         self.scheduler = scheduler or OSScheduler(model, max_queue_depth=model.ncq_depth)
         self._owns_scheduler = scheduler is None
+        # Completion includes the backing store, not just simulated latency.
+        # Serialize this synchronous adapter until it has dispatch callbacks
+        # that can commit data in the scheduler's actual execution order.
+        self._operation_lock = threading.RLock()
+        self._closed = False
 
     @property
     def capacity_bytes(self) -> int:
         return self.model.addressable_blocks * self.model.block_bytes
 
     def close(self) -> None:
-        if self._owns_scheduler:
-            self.scheduler.stop()
+        with self._operation_lock:
+            if self._closed:
+                return
+            self.store.flush()
+            if self._owns_scheduler:
+                self.scheduler.stop()
+            self._closed = True
 
     def _validate_span(self, lba: int, block_count: int) -> None:
+        if self._closed:
+            raise RuntimeError("block device is closed")
         if lba < 0 or block_count <= 0 or lba + block_count > self.model.addressable_blocks:
             raise ValueError("block request is outside the addressable range")
 
@@ -109,35 +121,42 @@ class LatencyBlockDevice:
         return result
 
     def read_blocks(self, lba: int, block_count: int) -> tuple[bytes, OperationStats]:
-        stats = self._submit(lba, block_count, is_write=False, op_kind="data", sync=False)
-        return self.store.read_blocks(lba, block_count, self.model.block_bytes), stats
+        with self._operation_lock:
+            stats = self._submit(lba, block_count, is_write=False, op_kind="data", sync=False)
+            data = self.store.read_blocks(lba, block_count, self.model.block_bytes)
+            if len(data) != block_count * self.model.block_bytes:
+                raise OSError("backing store returned a short block read")
+            return data, stats
 
     def write_blocks(self, lba: int, data: bytes, *, force_unit_access: bool = False) -> OperationStats:
         if not data or len(data) % self.model.block_bytes != 0:
             raise ValueError("block writes must contain a positive whole number of model blocks")
         block_count = len(data) // self.model.block_bytes
-        stats = self._submit(
-            lba,
-            block_count,
-            is_write=True,
-            op_kind="data",
-            sync=force_unit_access,
-        )
-        self.store.write_blocks(lba, data, self.model.block_bytes)
-        if force_unit_access:
-            self.store.flush()
-        return stats
+        with self._operation_lock:
+            stats = self._submit(
+                lba,
+                block_count,
+                is_write=True,
+                op_kind="data",
+                sync=force_unit_access,
+            )
+            self.store.write_blocks(lba, data, self.model.block_bytes)
+            if force_unit_access:
+                self.store.flush()
+            return stats
 
     def flush(self) -> OperationStats:
-        lba = min(self.model.get_estimated_lba(), self.model.addressable_blocks - 1)
-        stats = self._submit(lba, 1, is_write=True, op_kind="flush", sync=True)
-        self.store.flush()
-        return stats.with_updates(type="FLUSH")
+        with self._operation_lock:
+            lba = min(self.model.get_estimated_lba(), self.model.addressable_blocks - 1)
+            stats = self._submit(lba, 1, is_write=True, op_kind="flush", sync=True)
+            self.store.flush()
+            return stats.with_updates(type="FLUSH")
 
     def discard_blocks(self, lba: int, block_count: int) -> OperationStats:
-        self._validate_span(lba, block_count)
-        self.store.discard_blocks(lba, block_count)
-        return OperationStats(total_ms=0.02, op_type="DISCARD", block_count=block_count)
+        with self._operation_lock:
+            self._validate_span(lba, block_count)
+            self.store.discard_blocks(lba, block_count)
+            return OperationStats(total_ms=0.02, op_type="DISCARD", block_count=block_count)
 
 
 __all__ = [

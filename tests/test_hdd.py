@@ -130,7 +130,7 @@ def test_zone_boundary_transfer_latency_uses_per_zone_rates() -> None:
         start_lba = first_zone.end_lba - 2
         block_count = 8
         cross_zone_ms = model._transfer_ms_for_span(start_lba, block_count)
-        start_only_ms = ((block_count * model.block_bytes) / (1024 * 1024)) / first_zone.transfer_rate_mbps * 1000.0
+        start_only_ms = (block_count * model.block_bytes) / (first_zone.transfer_rate_mbps * 1_000_000) * 1000.0
 
         assert cross_zone_ms > start_only_ms
     finally:

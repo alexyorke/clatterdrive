@@ -397,6 +397,11 @@ Notes:
 
 ## Limits
 
+See [mechanics and reliability review](docs/realism-reliability-notes.md) for
+the physical sources, updated sound assumptions, and persistence guarantees.
+The [runtime physics audit](docs/physics-audit.md) records source coverage,
+additional corrections, and the remaining measurement-dependent approximations.
+
 - This is not a real block device or kernel filesystem.
 - A tested raw block adapter API now shares the same latency and NCQ model, but no privileged WinFsp, FUSE, NBD, or kernel integration is bundled.
 - Out-of-band edits to the backing tree are only partially reconciled.

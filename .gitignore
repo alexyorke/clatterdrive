@@ -13,6 +13,7 @@ server.err
 backing_storage/
 *.clatterdrive-state.json
 *.clatterdrive-state.json.tmp
+*.clatterdrive-state.json.*.tmp
 .runtime/
 .tmp_tests/
 .tmp_uv_cache/

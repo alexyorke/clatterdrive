@@ -236,7 +236,7 @@ def ironwolf_parameter_bounds(_prior: HardwarePrior | None = None) -> dict[str, 
             0.20,
             2.60,
             "ms",
-            "head/media and latch contact event width",
+            "ramp/latch contact event width (not healthy head/media contact)",
             "Bounds the normalized stiffness/damping contact event duration.",
         ),
         "installation_loss_db": ParameterBound(

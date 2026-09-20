@@ -26,7 +26,7 @@ class DriveProfile:
     track_to_track_ms: float
     settle_ms: float
     head_switch_ms: float
-    transfer_rate_outer_mbps: float
+    transfer_rate_outer_mbps: float  # Decimal MB/s (legacy field spelling).
     transfer_rate_inner_mbps: float
     ncq_depth: int
     read_ahead_kb: int
@@ -221,7 +221,7 @@ DRIVE_PROFILES: dict[str, DriveProfile] = {
         head_switch_ms=0.28,
         transfer_rate_outer_mbps=255.0,
         transfer_rate_inner_mbps=150.0,
-        ncq_depth=64,
+        ncq_depth=32,
         read_ahead_kb=1024,
         write_cache_mb=128,
         dirty_expire_ms=250.0,
@@ -277,7 +277,7 @@ DRIVE_PROFILES: dict[str, DriveProfile] = {
         head_switch_ms=0.26,
         transfer_rate_outer_mbps=255.0,
         transfer_rate_inner_mbps=150.0,
-        ncq_depth=64,
+        ncq_depth=32,
         read_ahead_kb=1024,
         write_cache_mb=512,
         dirty_expire_ms=220.0,

@@ -173,11 +173,11 @@ class HDDLatencyModel:
 
         outer_blocks = max(
             32,
-            round((transfer_rate_outer_mbps * 1024 * 1024 * (self.ms_per_rotation / 1000.0)) / block_bytes),
+            round((transfer_rate_outer_mbps * 1_000_000 * (self.ms_per_rotation / 1000.0)) / block_bytes),
         )
         inner_blocks = max(
             16,
-            round((transfer_rate_inner_mbps * 1024 * 1024 * (self.ms_per_rotation / 1000.0)) / block_bytes),
+            round((transfer_rate_inner_mbps * 1_000_000 * (self.ms_per_rotation / 1000.0)) / block_bytes),
         )
         self.blocks_per_track_outer = max(outer_blocks, inner_blocks)
         self.blocks_per_track_inner = min(outer_blocks, inner_blocks)
@@ -237,6 +237,7 @@ class HDDLatencyModel:
 
         self.read_cache: deque[CacheSpan] = deque(maxlen=16)
         self.last_read_end_lba = -1
+        self.read_ahead_window_blocks = 0
         self.lock = threading.RLock()
         self.io_lock = threading.Lock()
         self.ready_event = threading.Event()
@@ -293,8 +294,7 @@ class HDDLatencyModel:
 
     def reset_caches(self) -> None:
         with self.lock:
-            self.read_cache.clear()
-            self.last_read_end_lba = -1
+            self._clear_read_cache_locked()
 
     def power_on(self) -> None:
         with self.lock:
@@ -316,6 +316,7 @@ class HDDLatencyModel:
     def _clear_read_cache_locked(self) -> None:
         self.read_cache.clear()
         self.last_read_end_lba = -1
+        self.read_ahead_window_blocks = 0
 
     def _core_mechanical_state(self) -> MechanicalState:
         return MechanicalState(
@@ -340,11 +341,15 @@ class HDDLatencyModel:
         )
 
     def _core_cache_state(self) -> CacheState:
-        return CacheState(spans=tuple(self.read_cache), last_read_end_lba=self.last_read_end_lba)
+        return CacheState(
+            spans=tuple(self.read_cache), last_read_end_lba=self.last_read_end_lba,
+            read_ahead_window_blocks=self.read_ahead_window_blocks,
+        )
 
     def _apply_cache_state(self, cache_state: CacheState) -> None:
         self.read_cache = deque(cache_state.spans, maxlen=16)
         self.last_read_end_lba = cache_state.last_read_end_lba
+        self.read_ahead_window_blocks = cache_state.read_ahead_window_blocks
 
     def _build_resume_sequence(self, start_rpm: float, heads_loaded: bool) -> list[StartupStage]:
         return build_resume_sequence(self.core_config, start_rpm, heads_loaded)
@@ -438,6 +443,8 @@ class HDDLatencyModel:
         )
         previous_time_ms = 0.0
         for point in trace:
+            self._sleep_ms(max(point.time_ms - previous_time_ms, 0.0))
+            previous_time_ms = point.time_ms
             if cancel_event.is_set() or not self.running:
                 return False
             with self.lock:
@@ -494,8 +501,6 @@ class HDDLatencyModel:
                     is_spinup=point.is_spinup,
                 )
 
-            self._sleep_ms(max(point.time_ms - previous_time_ms, 0.0))
-            previous_time_ms = point.time_ms
         return True
 
     def _run_spindown_trace(
@@ -512,6 +517,8 @@ class HDDLatencyModel:
         )
         previous_time_ms = 0.0
         for point in trace:
+            self._sleep_ms(max(point.time_ms - previous_time_ms, 0.0))
+            previous_time_ms = point.time_ms
             if cancel_event.is_set() or not self.running:
                 return False
             with self.lock:
@@ -533,12 +540,12 @@ class HDDLatencyModel:
                 motion_duration_ms=2.4 if point.park_event else 0.0,
                 settle_duration_ms=1.8 if point.park_event else 0.0,
             )
-            self._sleep_ms(max(point.time_ms - previous_time_ms, 0.0))
-            previous_time_ms = point.time_ms
         return True
 
     def _finish_transition(self, cancel_event: threading.Event, kind: str, origin: str) -> None:
         with self.lock:
+            if self.transition_cancel is not cancel_event or cancel_event.is_set():
+                return
             if self.transition_cancel is cancel_event:
                 self.transition_thread = None
                 self.transition_cancel = None
@@ -904,6 +911,10 @@ class HDDLatencyModel:
         transfer_ms: float = 0.0,
         directory_entry_count: int = 0,
         fragmentation_score: int = 0,
+        track_delta: float | None = None,
+        target_track: float | None = None,
+        transfer_delay_ms: float = 0.0,
+        track_phase: float = 0.0,
     ) -> None:
         if servo_mode is None:
             servo_mode = "track" if is_seq else None
@@ -941,7 +952,10 @@ class HDDLatencyModel:
                 power_state=self.power_state,
                 heads_loaded=self.heads_loaded,
                 servo_mode=servo_mode,
-                track_delta=min(max(seek_dist / max(self.total_cylinders, 1), 0.0), 1.0),
+                track_delta=min(max(
+                    seek_dist / max(self.total_cylinders, 1) if track_delta is None else track_delta,
+                    -1.0,
+                ), 1.0),
                 transfer_activity=transfer_activity,
                 motion_duration_ms=motion_duration_ms,
                 settle_duration_ms=settle_duration_ms,
@@ -952,6 +966,9 @@ class HDDLatencyModel:
                 directory_entry_count=max(0, int(directory_entry_count)),
                 fragmentation_score=max(0, int(fragmentation_score)),
                 seek_distance=seek_dist,
+                target_track=target_track,
+                transfer_delay_ms=transfer_delay_ms,
+                track_phase=track_phase,
             )
         )
 
@@ -1093,17 +1110,7 @@ class HDDLatencyModel:
                     overlap = self._cache_overlap_blocks(lba, block_count, now)
                     if overlap >= block_count:
                         self._sleep_ms(maintenance_wait_ms)
-                        self._publish_event(
-                            self.current_rpm,
-                            is_seq=True,
-                            queue_depth=queue_depth,
-                            op_kind=op_kind,
-                            size_bytes=requested_size_bytes,
-                            block_count=block_count,
-                            extent_count=reported_extent_count,
-                            directory_entry_count=directory_entry_count,
-                            fragmentation_score=fragmentation_score,
-                        )
+                        # Controller RAM hits do not move heads or read media.
                         self.last_access_time = self.clock.now()
                         return OperationStats(
                             total_ms=0.03 + ready_info.ready_poll_ms + maintenance_wait_ms,
@@ -1173,7 +1180,7 @@ class HDDLatencyModel:
                     queue_depth=queue_depth,
                     op_kind=op_kind,
                     is_flush=(force_unit_access or op_kind == "flush"),
-                    is_spinup=ready_info.ready_poll_ms > 0.0,
+                    is_spinup=False,
                     motion_duration_ms=motion_duration_ms,
                     settle_duration_ms=settle_duration_ms,
                     target_rpm=self.target_rpm,
@@ -1183,6 +1190,10 @@ class HDDLatencyModel:
                     transfer_ms=transfer_ms,
                     directory_entry_count=directory_entry_count,
                     fragmentation_score=fragmentation_score,
+                    track_delta=(target_cyl - self.current_cyl) / max(self.total_cylinders - 1, 1),
+                    target_track=target_cyl / max(self.total_cylinders - 1, 1),
+                    transfer_delay_ms=max(0.0, total_latency_ms - ready_info.ready_poll_ms - transfer_ms),
+                    track_phase=_target_sector / zone.blocks_per_track,
                 )
 
             self._sleep_ms(total_latency_ms - ready_info.ready_poll_ms)
@@ -1251,7 +1262,7 @@ class HDDLatencyModel:
             if decision.park:
                 self._publish_event(
                     decision.rpm,
-                    target_rpm=0.0,
+                    target_rpm=decision.rpm,
                     is_park=True,
                     motion_duration_ms=2.4,
                     settle_duration_ms=1.8,

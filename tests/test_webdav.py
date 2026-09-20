@@ -177,7 +177,9 @@ def test_webdav_workload_shape_reaches_audio_event_trace(tmp_path: Path) -> None
     assert max(event.directory_entry_count for event in events) >= 96
     assert max(event.fragmentation_score for event in events) > 1
     expanded_count = sum(len(expand_workload_event(event, audio.fs)) for event in events)
-    assert expanded_count > len(events) * 1.5
+    # Extent operations already describe the physical workload. Audio must not
+    # multiply them into invented seeks or transfers.
+    assert expanded_count == len(events)
     rms, peak = _wav_metrics(tee_path)
     assert rms > 0.0005
     assert peak > 0.002

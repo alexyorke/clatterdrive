@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -62,10 +63,26 @@ def state_payload(state: FileSystemState, filesystem_profile: str) -> dict[str, 
 def save_filesystem_state(path: str | Path, state: FileSystemState, filesystem_profile: str) -> Path:
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_name(f"{destination.name}.tmp")
     encoded = json.dumps(state_payload(state, filesystem_profile), sort_keys=True, separators=(",", ":"))
-    temporary.write_text(encoded, encoding="utf-8", newline="\n")
-    os.replace(temporary, destination)
+    # A unique sibling keeps replacement on the same filesystem and prevents
+    # concurrent saves from sharing a partially written temporary file.
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", newline="\n", dir=destination.parent,
+        prefix=f"{destination.name}.", suffix=".tmp", delete=False,
+    ) as handle:
+        temporary = Path(handle.name)
+        try:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        except BaseException:
+            handle.close()
+            temporary.unlink(missing_ok=True)
+            raise
+    try:
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
     return destination
 
 

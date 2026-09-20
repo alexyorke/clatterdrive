@@ -486,6 +486,8 @@ def test_virtual_hdd_can_emit_to_injected_event_sink(isolated_backing_dir: Path)
     vhdd = VirtualHDD(str(isolated_backing_dir), latency_scale=0.0, event_sink=sink)
     try:
         vhdd.access_file("/captured.bin", 0, 4096, is_write=True)
+        # Test a media read; a controller-cache hit correctly emits no motion.
+        vhdd.reset_runtime_state()
         vhdd.access_file("/captured.bin", 0, 4096, is_write=False)
 
         assert sink.events

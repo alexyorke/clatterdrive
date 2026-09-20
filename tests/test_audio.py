@@ -362,7 +362,7 @@ def test_workload_mapper_preserves_hand_authored_demo_events() -> None:
     assert expanded == [(event, 0)]
 
 
-def test_workload_mapper_expands_directory_metadata_storms() -> None:
+def test_workload_mapper_does_not_invent_directory_seeks() -> None:
     event = _audio_event(
         rpm=7200.0,
         target_rpm=7200.0,
@@ -375,16 +375,10 @@ def test_workload_mapper_expands_directory_metadata_storms() -> None:
     )
 
     expanded = expand_workload_event(event, 44100)
-    offsets = [offset for _event, offset in expanded]
-
-    assert len(expanded) >= 6
-    assert offsets == sorted(offsets)
-    assert expanded[0][0].op_kind == "journal"
-    assert any(item.op_kind == "metadata" for item, _offset in expanded[1:])
-    assert max(abs(item.track_delta) for item, _offset in expanded) > 0.03
+    assert expanded == [(event, 0)]
 
 
-def test_workload_mapper_adds_transfer_ticks_for_large_fragmented_writeback() -> None:
+def test_workload_mapper_does_not_double_count_fragmented_writeback() -> None:
     event = _audio_event(
         rpm=7200.0,
         target_rpm=7200.0,
@@ -400,10 +394,7 @@ def test_workload_mapper_adds_transfer_ticks_for_large_fragmented_writeback() ->
 
     expanded = expand_workload_event(event, 44100)
 
-    assert len(expanded) > 1
-    assert expanded[0] == (event, 0)
-    assert any(item.servo_mode == "seek" for item, _offset in expanded[1:])
-    assert max(offset for _item, offset in expanded) > 0
+    assert expanded == [(event, 0)]
 
 
 def test_audio_engine_reports_event_to_render_lag() -> None:
@@ -428,7 +419,7 @@ def test_audio_engine_reports_event_to_render_lag() -> None:
     assert lag["max_lag_ms"] >= 70.0
 
 
-def test_audio_engine_caps_workload_expansion_for_bursty_chunks() -> None:
+def test_audio_engine_preserves_physical_event_count_for_bursty_chunks() -> None:
     engine = HDDAudioEngine(seed=0, max_pending_events=80)
     for index in range(80):
         engine.publish_event(
@@ -448,8 +439,8 @@ def test_audio_engine_caps_workload_expansion_for_bursty_chunks() -> None:
     engine.render_chunk(1024)
     lag = engine.audio_lag_snapshot()
 
-    assert lag["event_count"] == engine._max_scheduled_events_per_chunk
-    assert lag["dropped_events"] > 0
+    assert lag["event_count"] == 80
+    assert lag["dropped_events"] == 0
     assert lag["pending_events"] == 0
 
 
@@ -614,6 +605,9 @@ def test_audio_engine_demo_samples_stay_feature_close_to_golden() -> None:
             acoustic_profile=acoustic_profile,
             force_silence_prefix_s=silence_prefix_s,
         )
+        # Compare the same PCM16 encoding: quantization noise changes magnitude-
+        # weighted spectral features even when waveforms agree within one LSB.
+        rendered = np.clip(rendered * 32767.0, -32768, 32767).astype(np.int16).astype(np.float64) / 32767.0
         rendered_features = compute_audio_features(rendered, sample_rate, "desktop_7200_internal")
         golden_features = compute_audio_features(golden, sample_rate, "desktop_7200_internal")
 
@@ -895,8 +889,10 @@ def test_audio_engine_startup_only_has_real_delay_and_no_immediate_output() -> N
     features = compute_audio_features(startup_chunk, 22050, "desktop_7200_internal")
     time_to_90 = _startup_time_to_fraction(diagnostics, 7200.0, 0.90)
 
-    assert _rms(startup_chunk[: int(0.5 * 22050)]) < 0.0002
-    assert 0.75 <= float(features["first_audible_s"]) <= 1.55
+    # No motor command before 0.85 s means no excitation at all. The former
+    # short onset bound included a spurious stationary-rotor DC transient.
+    assert np.count_nonzero(startup_chunk[: int(0.85 * 22050)]) == 0
+    assert 0.85 <= float(features["first_audible_s"]) < time_to_90
     assert time_to_90 > 5.0
     assert time_to_90 < 10.5
     assert float(np.max(np.abs(diagnostics.actuator_torque))) < 0.03

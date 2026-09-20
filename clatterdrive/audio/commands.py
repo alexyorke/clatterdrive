@@ -35,6 +35,9 @@ class AudioCommand:
     transfer_duration_s: float
     directory_entry_count: int
     fragmentation_score: int
+    target_track: float | None
+    transfer_delay_s: float
+    track_phase: float
 
 
 ScheduledCommand = tuple[AudioCommand, int]
@@ -76,6 +79,8 @@ def _derive_track_delta(event: StorageEvent) -> float:
 
 
 def _derive_transfer_activity(event: StorageEvent) -> float:
+    if event.target_track is not None:
+        return 1.0 if event.transfer_ms > 0.0 and event.heads_loaded is not False else 0.0
     base = (
         float(event.transfer_activity)
         if event.transfer_activity
@@ -111,6 +116,8 @@ def math_log2(value: float) -> float:
 
 def _derive_transfer_duration_s(event: StorageEvent) -> float:
     duration = max(0.0, float(event.transfer_ms) / 1000.0)
+    if event.target_track is not None:
+        return duration
     if duration <= 0.0 and event.block_count > 0 and event.op_kind in {"data", "writeback", "metadata"}:
         duration = max(0.002, min(0.350, event.block_count * 0.00010))
     if event.directory_entry_count > 0:
@@ -185,4 +192,7 @@ def command_from_event(event: StorageEvent) -> AudioCommand:
         transfer_duration_s=_derive_transfer_duration_s(event),
         directory_entry_count=max(0, int(event.directory_entry_count)),
         fragmentation_score=max(0, int(event.fragmentation_score)),
+        target_track=event.target_track,
+        transfer_delay_s=max(0.0, event.transfer_delay_ms / 1000.0),
+        track_phase=event.track_phase % 1.0,
     )

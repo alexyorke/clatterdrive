@@ -1145,7 +1145,8 @@ def transfer_ms_for_span(config: HDDCoreConfig, start_lba: int, block_count: int
     while remaining_blocks > 0:
         zone = zone_for_lba(config, lba)
         zone_blocks = min(remaining_blocks, zone.end_lba - lba + 1)
-        transfer_ms += ((zone_blocks * config.block_bytes) / (1024 * 1024)) / zone.transfer_rate_mbps * 1000.0
+        # Vendor sustained rates are decimal MB/s, not MiB/s.
+        transfer_ms += (zone_blocks * config.block_bytes) / (zone.transfer_rate_mbps * 1_000_000) * 1000.0
         remaining_blocks -= zone_blocks
         lba += zone_blocks
     return transfer_ms

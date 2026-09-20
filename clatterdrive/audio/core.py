@@ -101,6 +101,7 @@ class SupervisorState:
     op_kind: str = "data"
     transfer_activity: float = 0.0
     transfer_remaining_s: float = 0.0
+    transfer_delay_s: float = 0.0
     directory_activity: float = 0.0
     fragmentation_activity: float = 0.0
     target_track: float = 0.52
@@ -116,6 +117,7 @@ class SupervisorState:
     last_event_emitted_at: float = -1.0
     repetition_pressure: float = 0.0
     repetition_variant: float = 0.0
+    physical_telemetry: bool = False
 
 
 @dataclass
@@ -203,7 +205,9 @@ def _configure_modes(
     coeff_xv = decay * (sin_theta / np.maximum(wd, EPS))
     coeff_vx = -decay * ((wn**2 / np.maximum(wd, EPS)) * sin_theta)
     coeff_vv = decay * (cos_theta - (damping * wn / np.maximum(wd, EPS)) * sin_theta)
-    input_gain = 0.00135 * input_scale * np.maximum(output_gain, 0.12)
+    # Force acts for dt seconds; a fixed velocity kick per sample made a
+    # structure driven at 48 kHz louder than the same structure at 22.05 kHz.
+    input_gain = (44100.0 / sample_rate) * 0.00135 * input_scale * np.maximum(output_gain, 0.12)
     return DiscreteModalBank(
         coeff_xx=coeff_xx,
         coeff_xv=coeff_xv,
@@ -219,6 +223,8 @@ def build_mode_bank(
     sample_rate: int,
     acoustic_profile: AcousticProfile,
 ) -> AudioModeBank:
+    if sample_rate <= 0:
+        raise ValueError("sample_rate must be positive")
     calibration = resolve_drive_modal_calibration(drive_profile.name)
     enclosure_modes = (
         (58.0, 0.120, 0.54),
@@ -398,7 +404,14 @@ def _apply_command(
     plant = state.plant
     supervisor = state.supervisor
     previous_heads_loaded = supervisor.heads_loaded
+    previous_power_state = supervisor.power_state
     previous_track = supervisor.target_track
+    if command.target_track is not None and not supervisor.physical_telemetry:
+        # Align the first physical event with its reported source position.
+        # Legacy demos start at mid-stroke; a real LBA trace need not.
+        previous_track = _clamp(command.target_track - command.track_delta, 0.0, 1.0)
+        plant.actuator_pos = previous_track
+        plant.actuator_vel = 0.0
     emitted_gap_s = (
         command.emitted_at - supervisor.last_event_emitted_at
         if supervisor.last_event_emitted_at >= 0.0
@@ -422,10 +435,18 @@ def _apply_command(
     supervisor.power_state = command.power_state
     supervisor.queue_depth = max(1, int(command.queue_depth))
     supervisor.op_kind = command.op_kind
+    supervisor.physical_telemetry = command.target_track is not None
+    if supervisor.physical_telemetry:
+        supervisor.repetition_pressure = 0.0
+        supervisor.repetition_variant = 0.0
     supervisor.transfer_activity = float(command.transfer_activity) * (
         1.0 + 0.09 * supervisor.repetition_pressure * supervisor.repetition_variant
     )
     supervisor.transfer_remaining_s = max(supervisor.transfer_remaining_s, command.transfer_duration_s)
+    if supervisor.physical_telemetry:
+        supervisor.transfer_remaining_s = command.transfer_duration_s
+        supervisor.transfer_delay_s = command.transfer_delay_s
+        plant.boundary_timer_s = physics.sequential_track_interval(command.target_rpm, 1.0) * (1.0 - command.track_phase)
     supervisor.directory_activity = (
         min(1.0, math.log2(command.directory_entry_count + 1) / 11.0)
         if command.directory_entry_count > 0
@@ -447,7 +468,8 @@ def _apply_command(
         supervisor.load_state = "loading"
     if command.is_spinup:
         supervisor.power_state = "starting"
-        supervisor.startup_elapsed_s = 0.0
+        if previous_power_state != "starting":
+            supervisor.startup_elapsed_s = 0.0
         supervisor.heads_loaded = False
         supervisor.load_state = "parked"
     elif supervisor.power_state == "active" and supervisor.target_rpm > 0.0:
@@ -467,7 +489,8 @@ def _apply_command(
         repetition_pressure=supervisor.repetition_pressure,
         repetition_variant=supervisor.repetition_variant,
     )
-    supervisor.wedge_impulse += media_event_forces.wedge
+    if not supervisor.physical_telemetry:
+        supervisor.wedge_impulse += media_event_forces.wedge
     supervisor.contact_impulse += media_event_forces.contact
 
     if servo_mode == "park":
@@ -489,11 +512,13 @@ def _apply_command(
         supervisor.wedge_impulse += physics.actuator_latch_event_force(servo_mode)
     elif servo_mode in {"seek", "track"}:
         delta = command.track_delta
-        if abs(delta) < 0.015 and servo_mode == "seek":
+        if abs(delta) < 0.015 and servo_mode == "seek" and not supervisor.physical_telemetry:
             delta = math.copysign(0.06, delta if delta != 0.0 else 1.0)
         if supervisor.repetition_pressure > 0.0 and command.op_kind in {"data", "writeback", "metadata"}:
             delta += 0.020 * supervisor.repetition_pressure * supervisor.repetition_variant
         target = _clamp(previous_track + delta, 0.04, 0.96)
+        if command.target_track is not None:
+            target = _clamp(command.target_track, 0.0, 1.0)
         supervisor.seek_origin = plant.actuator_pos
         supervisor.target_track = target
         seek_duration_s = max(
@@ -506,8 +531,11 @@ def _apply_command(
         settle_duration_s = max(command.settle_duration_s, 0.004 if servo_mode == "track" else 0.009)
         settle_duration_s *= 1.0 + 0.14 * supervisor.repetition_pressure * max(0.0, -supervisor.repetition_variant)
         supervisor.settle_remaining_s = settle_duration_s
+        if supervisor.physical_telemetry:
+            supervisor.seek_duration_s = command.motion_duration_s
+            supervisor.settle_remaining_s = command.settle_duration_s
     else:
-        supervisor.target_track = previous_track
+        supervisor.target_track = command.target_track if command.target_track is not None else previous_track
         supervisor.seek_origin = plant.actuator_pos
         supervisor.seek_duration_s = 0.0
         supervisor.seek_elapsed_s = 0.0
@@ -615,6 +643,10 @@ def _render_segment_internal(
     supervisor = state.supervisor
     target_omega = supervisor.target_rpm * TAU / 60.0
     harmonic_phases = np.linspace(0.15, 1.4, len(mode_bank.spindle_harmonics), dtype=np.float64)
+    # Legacy decay constants were calibrated at 44.1 kHz.
+    decays = {value: value ** (44100.0 / state.fs) for value in (
+        0.992, 0.990, 0.9991, 0.9988, 0.9990, 0.9992, 0.96, 0.95,
+    )}
 
     for index in range(frames):
         target_omega = supervisor.target_rpm * TAU / 60.0
@@ -653,8 +685,8 @@ def _render_segment_internal(
             supervisor.servo_mode = "idle"
             plant.servo_wedge_timer_s = 0.0
             plant.boundary_timer_s = 0.0
-            plant.servo_integrator *= 0.992
-            plant.actuator_torque *= 0.990
+            plant.servo_integrator *= decays[0.992]
+            plant.actuator_torque *= decays[0.990]
         else:
             if supervisor.seek_duration_s > 0.0 and supervisor.seek_elapsed_s < supervisor.seek_duration_s:
                 desired_pos, desired_vel = _sample_seek_reference(supervisor)
@@ -662,7 +694,7 @@ def _render_segment_internal(
             else:
                 desired_pos = supervisor.target_track
                 desired_vel = 0.0
-                if supervisor.servo_mode == "seek":
+                if supervisor.servo_mode in {"seek", "park", "calibration"}:
                     supervisor.servo_mode = "settle"
 
             if supervisor.servo_mode == "settle":
@@ -677,15 +709,23 @@ def _render_segment_internal(
                     else:
                         supervisor.servo_mode = "idle"
 
-            if supervisor.transfer_remaining_s > 0.0:
+            transfer_waiting = supervisor.physical_telemetry and supervisor.transfer_delay_s > 0.0
+            if transfer_waiting:
+                supervisor.transfer_delay_s = max(0.0, supervisor.transfer_delay_s - dt)
+                supervisor.transfer_activity = 0.0
+            elif supervisor.transfer_remaining_s > 0.0:
+                if supervisor.physical_telemetry:
+                    supervisor.transfer_activity = 1.0
                 supervisor.transfer_remaining_s = max(0.0, supervisor.transfer_remaining_s - dt)
             else:
-                supervisor.transfer_activity *= 0.9991
-                supervisor.directory_activity *= 0.9988
-                supervisor.fragmentation_activity *= 0.9990
+                supervisor.transfer_activity *= decays[0.9991]
+                if supervisor.physical_telemetry:
+                    supervisor.transfer_activity = 0.0
+                supervisor.directory_activity *= decays[0.9988]
+                supervisor.fragmentation_activity *= decays[0.9990]
             if supervisor.repetition_pressure > 0.0:
-                supervisor.repetition_pressure *= 0.9992
-                supervisor.repetition_variant *= 0.9988
+                supervisor.repetition_pressure *= decays[0.9992]
+                supervisor.repetition_variant *= decays[0.9988]
 
             sectors_per_rev = _command_frequency(drive_profile, supervisor)
             servo_interval = 1.0 / max((plant.spindle_omega / TAU) * sectors_per_rev, 35.0)
@@ -700,30 +740,31 @@ def _render_segment_internal(
                     integrator=plant.servo_integrator,
                     servo_interval=servo_interval,
                     servo_mode=supervisor.servo_mode,
-                    queue_depth=supervisor.queue_depth,
-                    retry_activity=supervisor.retry_activity,
-                    fragmentation_activity=supervisor.fragmentation_activity,
-                    directory_activity=supervisor.directory_activity,
+                    queue_depth=1 if supervisor.physical_telemetry else supervisor.queue_depth,
+                    retry_activity=0.0 if supervisor.physical_telemetry else supervisor.retry_activity,
+                    fragmentation_activity=0.0 if supervisor.physical_telemetry else supervisor.fragmentation_activity,
+                    directory_activity=0.0 if supervisor.physical_telemetry else supervisor.directory_activity,
                 )
                 plant.servo_integrator = servo_step.integrator
                 torque_delta = servo_step.torque_command - plant.actuator_torque
                 plant.actuator_torque += 0.62 * torque_delta
                 supervisor.wedge_impulse += physics.voice_coil_force_transfer(torque_delta, supervisor.servo_mode)
             else:
-                plant.actuator_torque *= 0.9992
+                plant.actuator_torque *= decays[0.9992]
 
             if supervisor.is_sequential and supervisor.transfer_activity > 0.2 and supervisor.heads_loaded:
                 plant.boundary_timer_s -= dt
                 if plant.boundary_timer_s <= 0.0:
-                    duration_scale = 0.82 if supervisor.transfer_remaining_s > 0.0 else 1.18
-                    interval = duration_scale * max(0.004, 0.010 / max(supervisor.transfer_activity, 0.25))
+                    interval = physics.sequential_track_interval(
+                        plant.spindle_omega * 60.0 / TAU, supervisor.transfer_activity
+                    )
                     plant.boundary_timer_s += interval
                     supervisor.wedge_impulse += physics.sequential_boundary_contact_force(
                         boundary_gain=acoustic_profile.sequential_boundary_gain,
                         rpm_norm=rpm_norm,
-                        fragmentation_activity=supervisor.fragmentation_activity,
+                        fragmentation_activity=0.0 if supervisor.physical_telemetry else supervisor.fragmentation_activity,
                     )
-            else:
+            elif not supervisor.physical_telemetry:
                 plant.boundary_timer_s = 0.0
 
         actuator_step = physics.step_actuator_mechanics(
@@ -745,6 +786,7 @@ def _render_segment_internal(
             startup_low_alpha=drive_profile.startup_windage_low_alpha,
             startup_high_alpha=drive_profile.startup_windage_high_alpha,
             startup_strength=drive_profile.startup_windage_strength,
+            sample_rate=state.fs,
         )
         plant.windage_low_state = windage_step.primary_state
         plant.windage_high_state = windage_step.secondary_state
@@ -756,6 +798,7 @@ def _render_segment_internal(
             rpm_norm=rpm_norm,
             startup_active=startup_active,
             bearing_gain=drive_profile.bearing_gain,
+            sample_rate=state.fs,
         )
         plant.bearing_state = bearing_step.primary_state
         bearing = bearing_step.signal
@@ -784,10 +827,10 @@ def _render_segment_internal(
         supervisor.wedge_impulse = 0.0
         supervisor.contact_impulse = 0.0
         if startup_active:
-            plant.wedge_fast_state *= 0.96
-            plant.wedge_slow_state *= 0.96
-            plant.contact_fast_state *= 0.95
-            plant.contact_slow_state *= 0.95
+            plant.wedge_fast_state *= decays[0.96]
+            plant.wedge_slow_state *= decays[0.96]
+            plant.contact_fast_state *= decays[0.95]
+            plant.contact_slow_state *= decays[0.95]
             wedge_force = 0.0
             contact_force = 0.0
         else:
@@ -819,9 +862,9 @@ def _render_segment_internal(
             wedge_force=wedge_force,
             contact_force=contact_force,
             actuator_vel=plant.actuator_vel,
-            transfer_activity=supervisor.transfer_activity,
-            directory_activity=supervisor.directory_activity,
-            fragmentation_activity=supervisor.fragmentation_activity,
+            transfer_activity=0.0 if supervisor.physical_telemetry else supervisor.transfer_activity,
+            directory_activity=0.0 if supervisor.physical_telemetry else supervisor.directory_activity,
+            fragmentation_activity=0.0 if supervisor.physical_telemetry else supervisor.fragmentation_activity,
             startup_ramp_value=startup_ramp,
             acoustic_profile=acoustic_profile,
             startup_windage_structure_scale=drive_profile.startup_windage_structure_scale,
