@@ -294,13 +294,14 @@ def step_spindle_motor(
         inertia=inertia,
         windage_drag_share_at_nominal=windage_drag_share_at_nominal,
     )
-    next_omega = exact_rotor_step(
-        omega_before,
-        target_omega,
-        tau_s,
-        dt,
-        inertia=inertia,
-        windage_drag_share_at_nominal=windage_drag_share_at_nominal,
+    # Audio-rate steps need one substep; reuse the torque already calculated.
+    next_omega = (
+        omega_before + torque_balance.angular_accel * dt
+        if 0.0 < dt <= 0.0005
+        else exact_rotor_step(
+            omega_before, target_omega, tau_s, dt, inertia=inertia,
+            windage_drag_share_at_nominal=windage_drag_share_at_nominal,
+        )
     )
     phase_increment = 0.5 * (omega_before + next_omega) * dt
     rpm_norm = clamp(next_omega / max(nominal_omega, EPS), 0.0, 1.35)

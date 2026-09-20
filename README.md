@@ -290,6 +290,13 @@ uv run python -m tools.docker_webdav_audio_smoke
 This writes temporary artifacts under `.runtime/docker-e2e/`, uploads and downloads through WebDAV, then verifies both the event trace and tee WAV are nonempty.
 It also exercises large transfer, many-small-file, fragmented, and large-directory-listing workloads.
 
+## Real-time playback
+
+For playback deadline measurements, run `uv run python -m tools.audio_realtime_benchmark`.
+Add `--live --seconds 30` to test the actual output device (this plays sound).
+Stop other simulator instances first. See [real-time audio notes](docs/realtime-audio.md)
+for the optimized renderer, buffering tradeoff, and validation scope.
+
 ## Repo Layout
 
 - [clatterdrive](clatterdrive): packaged application code
