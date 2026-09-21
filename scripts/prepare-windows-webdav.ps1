@@ -16,7 +16,10 @@ if ($null -eq $webClient) {
         throw "WebDAV-Redirector installation failed: $($result.ExitCode)"
     }
     if ($result.RestartNeeded -eq "Yes") {
-        throw "WebDAV-Redirector requires a reboot; use a runner image with the feature preinstalled."
+        # Some runner images report a pending reboot even when the redirector
+        # can start now. Require a running service AND the actual mapped-drive
+        # E2E below; never turn this into a skipped/passing capability check.
+        Write-Warning "WebDAV-Redirector requested a reboot; testing whether WebClient can start in this session."
     }
 }
 

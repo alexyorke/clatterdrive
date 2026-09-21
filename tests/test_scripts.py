@@ -48,14 +48,14 @@ def test_webdav_ci_provisioning_is_explicit_and_keeps_failures_visible(scenario:
         function global:Start-Service { param($Name) $global:started = $true }
         & $env:CLATTERDRIVE_TEST_SCRIPT
         if (-not $global:started) { throw 'Service was not started' }
-        if ($global:installed -ne ($env:CLATTERDRIVE_TEST_SCENARIO -eq 'missing')) { throw 'Wrong install path' }
+        if ($global:installed -ne ($env:CLATTERDRIVE_TEST_SCENARIO -in @('missing', 'restart'))) { throw 'Wrong install path' }
         """], env=env, capture_output=True, text=True, timeout=30)
-    if scenario in {"installed", "missing"}:
+    if scenario in {"installed", "missing", "restart"}:
         assert result.returncode == 0, result.stdout + result.stderr
         assert "mapped-drive E2E remains enabled" in result.stdout
     else:
         assert result.returncode != 0
-        expected = {"restart": "requires a reboot", "failed": "installation failed", "workstation": "restricted to CI"}
+        expected = {"failed": "installation failed", "workstation": "restricted to CI"}
         assert expected[scenario] in result.stderr
 
 
