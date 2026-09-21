@@ -8,6 +8,8 @@ Set-Location $RepoRoot
 . (Join-Path $PSScriptRoot "Use-RepoUv.ps1")
 Enable-RepoUvFallbacks
 
+New-Item -ItemType Directory -Force -Path (Join-Path $RepoRoot ".tmp_tests") | Out-Null
+
 $hasWorkerCount = $false
 $hasBaseTemp = $false
 foreach ($arg in $PytestArgs) {
