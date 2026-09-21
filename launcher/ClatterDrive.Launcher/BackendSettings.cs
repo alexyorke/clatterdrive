@@ -15,6 +15,9 @@ public sealed class BackendSettings
     public string? EventTracePath { get; init; }
     public string DriveProfile { get; init; } = "desktop_7200_internal";
     public string? AcousticProfile { get; init; }
+    public double CapacityGb { get; init; } = 10.0;
+    public string FilesystemProfile { get; init; } = "ntfs_like";
+    public string? StatePath { get; init; }
     public bool ColdStart { get; init; } = true;
     public bool AsyncPowerOn { get; init; } = true;
 
@@ -44,6 +47,10 @@ public sealed class BackendSettings
             AudioMode,
             "--drive-profile",
             DriveProfile,
+            "--capacity-gb",
+            CapacityGb.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            "--filesystem-profile",
+            FilesystemProfile,
         };
         if (jsonStatus)
         {
@@ -69,6 +76,11 @@ public sealed class BackendSettings
             args.Add("--event-trace-path");
             args.Add(EventTracePath);
         }
+        if (!string.IsNullOrWhiteSpace(StatePath))
+        {
+            args.Add("--state-path");
+            args.Add(StatePath);
+        }
         if (!ColdStart)
         {
             args.Add("--ready");
@@ -89,6 +101,8 @@ public sealed class BackendSettings
             ["FAKE_HDD_BACKING_DIR"] = BackingDirectory,
             ["FAKE_HDD_AUDIO"] = AudioMode,
             ["FAKE_HDD_DRIVE_PROFILE"] = DriveProfile,
+            ["FAKE_HDD_CAPACITY_GB"] = CapacityGb.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["FAKE_HDD_FILESYSTEM_PROFILE"] = FilesystemProfile,
             ["FAKE_HDD_COLD_START"] = ColdStart ? "on" : "off",
             ["FAKE_HDD_ASYNC_POWER_ON"] = AsyncPowerOn ? "on" : "off",
         };
@@ -107,6 +121,10 @@ public sealed class BackendSettings
         if (!string.IsNullOrWhiteSpace(EventTracePath))
         {
             env["FAKE_HDD_EVENT_TRACE_PATH"] = EventTracePath!;
+        }
+        if (!string.IsNullOrWhiteSpace(StatePath))
+        {
+            env["FAKE_HDD_STATE_PATH"] = StatePath!;
         }
         return env;
     }

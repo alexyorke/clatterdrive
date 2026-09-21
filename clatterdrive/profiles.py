@@ -26,7 +26,7 @@ class DriveProfile:
     track_to_track_ms: float
     settle_ms: float
     head_switch_ms: float
-    transfer_rate_outer_mbps: float
+    transfer_rate_outer_mbps: float  # Decimal MB/s (legacy field spelling).
     transfer_rate_inner_mbps: float
     ncq_depth: int
     read_ahead_kb: int
@@ -59,6 +59,12 @@ class DriveProfile:
     windage_gain: float
     bearing_gain: float
     boundary_excitation_gain: float
+    active_heads: int | None = None
+    startup_windage_low_alpha: float = 0.005
+    startup_windage_high_alpha: float = 0.024
+    startup_windage_strength: float = 0.050
+    startup_windage_airborne_gain: float = 0.050
+    startup_windage_structure_scale: float = 1.0
     helium: bool = False
     hardware_prior: str | None = None
     spindle_inertia_scale: float = 1.0
@@ -215,7 +221,7 @@ DRIVE_PROFILES: dict[str, DriveProfile] = {
         head_switch_ms=0.28,
         transfer_rate_outer_mbps=255.0,
         transfer_rate_inner_mbps=150.0,
-        ncq_depth=64,
+        ncq_depth=32,
         read_ahead_kb=1024,
         write_cache_mb=128,
         dirty_expire_ms=250.0,
@@ -253,6 +259,11 @@ DRIVE_PROFILES: dict[str, DriveProfile] = {
         windage_gain=1.20,
         bearing_gain=1.08,
         boundary_excitation_gain=1.28,
+        startup_windage_low_alpha=0.035,
+        startup_windage_high_alpha=0.120,
+        startup_windage_strength=0.35,
+        startup_windage_airborne_gain=1.50,
+        startup_windage_structure_scale=0.167,
     ),
     "wd_ultrastar_hc550": DriveProfile(
         name="wd_ultrastar_hc550",
@@ -266,7 +277,7 @@ DRIVE_PROFILES: dict[str, DriveProfile] = {
         head_switch_ms=0.26,
         transfer_rate_outer_mbps=255.0,
         transfer_rate_inner_mbps=150.0,
-        ncq_depth=64,
+        ncq_depth=32,
         read_ahead_kb=1024,
         write_cache_mb=512,
         dirty_expire_ms=220.0,
@@ -304,6 +315,11 @@ DRIVE_PROFILES: dict[str, DriveProfile] = {
         windage_gain=1.28,
         bearing_gain=1.12,
         boundary_excitation_gain=1.34,
+        startup_windage_low_alpha=0.035,
+        startup_windage_high_alpha=0.120,
+        startup_windage_strength=0.35,
+        startup_windage_airborne_gain=1.50,
+        startup_windage_structure_scale=0.167,
         helium=True,
     ),
     "seagate_ironwolf_pro_16tb": DriveProfile(
@@ -356,6 +372,12 @@ DRIVE_PROFILES: dict[str, DriveProfile] = {
         windage_gain=0.96,
         bearing_gain=1.02,
         boundary_excitation_gain=1.10,
+        active_heads=15,
+        startup_windage_low_alpha=0.035,
+        startup_windage_high_alpha=0.120,
+        startup_windage_strength=0.35,
+        startup_windage_airborne_gain=1.50,
+        startup_windage_structure_scale=0.167,
         helium=True,
         hardware_prior="seagate_ironwolf_pro_16tb",
         spindle_inertia_scale=1.1666945025797724,

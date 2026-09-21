@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Final
 
@@ -116,6 +117,7 @@ def pick_next_request(
     current_lba: int,
     direction: int,
     now: float,
+    positioning_costs: Mapping[str, float] | None = None,
 ) -> tuple[tuple[SchedulerRequest, ...], SchedulerRequest | None, int]:
     if not queue:
         return queue, None, direction
@@ -125,6 +127,19 @@ def pick_next_request(
         request = min(expired, key=lambda item: (item.deadline, item.arrival_time))
         remaining = tuple(item for item in queue if item.id != request.id)
         return remaining, request, direction
+
+    if positioning_costs:
+        request = min(
+            queue,
+            key=lambda item: (
+                positioning_costs.get(item.id, float("inf")),
+                item.deadline,
+                item.arrival_time,
+            ),
+        )
+        remaining = tuple(item for item in queue if item.id != request.id)
+        next_direction = 1 if request.lba >= current_lba else -1
+        return remaining, request, next_direction
 
     forward = [request for request in queue if request.lba >= current_lba]
     backward = [request for request in queue if request.lba < current_lba]
@@ -138,4 +153,10 @@ def pick_next_request(
         remaining = tuple(item for item in queue if item.id != request.id)
         return remaining, request, direction
 
-    return pick_next_request(queue, current_lba=current_lba, direction=-direction, now=now)
+    return pick_next_request(
+        queue,
+        current_lba=current_lba,
+        direction=-direction,
+        now=now,
+        positioning_costs=positioning_costs,
+    )

@@ -23,15 +23,31 @@ public struct ProfileSummary: Codable, Equatable, Hashable, Identifiable {
 public struct ProfileCatalog: Codable, Equatable {
     public var driveProfiles: [ProfileSummary]
     public var acousticProfiles: [ProfileSummary]
+    public var filesystemProfiles: [ProfileSummary]
 
     enum CodingKeys: String, CodingKey {
         case driveProfiles = "drive_profiles"
         case acousticProfiles = "acoustic_profiles"
+        case filesystemProfiles = "filesystem_profiles"
     }
 
-    public init(driveProfiles: [ProfileSummary], acousticProfiles: [ProfileSummary]) {
+    public init(
+        driveProfiles: [ProfileSummary],
+        acousticProfiles: [ProfileSummary],
+        filesystemProfiles: [ProfileSummary] = []
+    ) {
         self.driveProfiles = driveProfiles
         self.acousticProfiles = acousticProfiles
+        self.filesystemProfiles = filesystemProfiles
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        driveProfiles = try container.decode([ProfileSummary].self, forKey: .driveProfiles)
+        acousticProfiles = try container.decode([ProfileSummary].self, forKey: .acousticProfiles)
+        filesystemProfiles = try container.decodeIfPresent([ProfileSummary].self, forKey: .filesystemProfiles) ?? [
+            ProfileSummary(name: "apfs_like", description: "APFS-inspired metadata layout.")
+        ]
     }
 
     public static let fallback = ProfileCatalog(
@@ -50,6 +66,12 @@ public struct ProfileCatalog: Codable, Equatable {
         acousticProfiles: [
             ProfileSummary(name: "mounted_in_case", description: "Mounted in a PC case."),
             ProfileSummary(name: "drive_on_desk", description: "Bare drive on a desk."),
+        ],
+        filesystemProfiles: [
+            ProfileSummary(name: "apfs_like", description: "APFS-inspired metadata layout."),
+            ProfileSummary(name: "generic_journaled", description: "Generic journaled metadata layout."),
+            ProfileSummary(name: "ext4_like", description: "ext4-inspired metadata layout."),
+            ProfileSummary(name: "ntfs_like", description: "NTFS-inspired metadata layout."),
         ]
     )
 }

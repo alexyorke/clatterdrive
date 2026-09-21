@@ -14,6 +14,8 @@ except (ImportError, OSError):
     sd = None
 
 from .profiles import ACOUSTIC_PROFILES, DRIVE_PROFILES, resolve_acoustic_profile, resolve_drive_profile
+from .fs import FILESYSTEM_PROFILES, FileSystemSimulator, resolve_filesystem_profile
+from .block_frontend import FRONTEND_CAPABILITIES
 
 
 FALSE_VALUES = {"0", "false", "no", "off", "disabled", "none"}
@@ -40,6 +42,9 @@ class ClatterDriveConfig:
     async_power_on: bool = True
     drive_profile: str = "desktop_7200_internal"
     acoustic_profile: str | None = None
+    capacity_gb: float = 10.0
+    filesystem_profile: str = "generic_journaled"
+    state_path: str | None = None
 
     @property
     def url(self) -> str:
@@ -55,6 +60,8 @@ class ClatterDriveConfig:
             "FAKE_HDD_COLD_START": "on" if self.cold_start else "off",
             "FAKE_HDD_ASYNC_POWER_ON": "on" if self.async_power_on else "off",
             "FAKE_HDD_DRIVE_PROFILE": self.drive_profile,
+            "FAKE_HDD_CAPACITY_GB": format(self.capacity_gb, "g"),
+            "FAKE_HDD_FILESYSTEM_PROFILE": self.filesystem_profile,
         }
         if self.acoustic_profile is not None:
             env["FAKE_HDD_ACOUSTIC_PROFILE"] = self.acoustic_profile
@@ -64,6 +71,8 @@ class ClatterDriveConfig:
             env["FAKE_HDD_AUDIO_TEE_PATH"] = self.audio_tee_path
         if self.event_trace_path:
             env["FAKE_HDD_EVENT_TRACE_PATH"] = self.event_trace_path
+        if self.state_path:
+            env["FAKE_HDD_STATE_PATH"] = self.state_path
         return env
 
     def apply_to_environ(self) -> None:
@@ -99,6 +108,9 @@ def config_from_env(env: dict[str, str] | None = None) -> ClatterDriveConfig:
         async_power_on=parse_bool(values.get("FAKE_HDD_ASYNC_POWER_ON"), True),
         drive_profile=values.get("FAKE_HDD_DRIVE_PROFILE", "desktop_7200_internal"),
         acoustic_profile=values.get("FAKE_HDD_ACOUSTIC_PROFILE") or None,
+        capacity_gb=float(values.get("FAKE_HDD_CAPACITY_GB", "10")),
+        filesystem_profile=values.get("FAKE_HDD_FILESYSTEM_PROFILE", "generic_journaled"),
+        state_path=values.get("FAKE_HDD_STATE_PATH") or None,
     )
 
 
@@ -121,6 +133,21 @@ def profile_catalog() -> dict[str, Any]:
                 "description": profile.description,
             }
             for profile in ACOUSTIC_PROFILES.values()
+        ],
+        "filesystem_profiles": [
+            {
+                "name": profile.name,
+                "description": profile.description,
+            }
+            for profile in FILESYSTEM_PROFILES.values()
+        ],
+        "frontends": [
+            {
+                "name": frontend.name,
+                "status": frontend.status,
+                "description": frontend.description,
+            }
+            for frontend in FRONTEND_CAPABILITIES
         ],
     }
 
@@ -164,6 +191,25 @@ def _check_backing_dir(path: str) -> dict[str, Any]:
     }
 
 
+def _check_state_path(backing_dir: str, state_path: str | None) -> dict[str, Any]:
+    backing = Path(backing_dir).expanduser().resolve()
+    state = (
+        Path(state_path).expanduser().resolve()
+        if state_path
+        else Path(f"{backing}.clatterdrive-state.json").resolve()
+    )
+    outside_backing = not state.is_relative_to(backing)
+    return {
+        "ok": outside_backing,
+        "path": str(state),
+        "message": (
+            "state sidecar is outside the served tree"
+            if outside_backing
+            else "state sidecar must be outside the served backing directory"
+        ),
+    }
+
+
 def _check_audio(config: ClatterDriveConfig) -> dict[str, Any]:
     if config.audio.strip().lower() in FALSE_VALUES:
         return {"ok": True, "mode": "off", "message": "live audio disabled"}
@@ -183,11 +229,16 @@ def doctor_report(config: ClatterDriveConfig) -> dict[str, Any]:
     try:
         drive = resolve_drive_profile(config.drive_profile)
         acoustic = resolve_acoustic_profile(config.acoustic_profile, drive_profile=drive)
+        filesystem = resolve_filesystem_profile(config.filesystem_profile)
     except ValueError as exc:
         profile_ok = False
         profile_message = str(exc)
         drive = None
         acoustic = None
+        filesystem = None
+
+    capacity_ok = 0 < config.capacity_gb <= FileSystemSimulator.MAX_CAPACITY_GB
+    state_path_check = _check_state_path(config.backing_dir, config.state_path)
 
     host_warning = None
     if config.host in {"0.0.0.0", "::"}:
@@ -198,7 +249,18 @@ def doctor_report(config: ClatterDriveConfig) -> dict[str, Any]:
             "ok": profile_ok,
             "drive": None if drive is None else drive.name,
             "acoustic": None if acoustic is None else acoustic.name,
+            "filesystem": None if filesystem is None else filesystem.name,
             "message": profile_message,
+        },
+        "volume": {
+            "ok": capacity_ok and bool(state_path_check["ok"]),
+            "capacity_gb": config.capacity_gb,
+            "state_path": state_path_check["path"],
+            "message": (
+                state_path_check["message"]
+                if capacity_ok
+                else f"capacity must be greater than 0 and no more than {FileSystemSimulator.MAX_CAPACITY_GB:g} GB"
+            ),
         },
         "port": _check_port_available(config.host, config.port),
         "backing_dir": _check_backing_dir(config.backing_dir),

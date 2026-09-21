@@ -46,7 +46,8 @@ function Test-WritableDirectory {
 }
 
 function Enable-RepoUvFallbacks {
-    $venvPython = Join-Path (Join-Path $RepoRoot ".venv") "Scripts\python.exe"
+    $pythonRelativePath = if ($env:OS -eq "Windows_NT") { "Scripts/python.exe" } else { "bin/python" }
+    $venvPython = Join-Path (Join-Path $RepoRoot ".venv") $pythonRelativePath
     if (-not $env:UV_PROJECT_ENVIRONMENT -and (Test-Path -LiteralPath (Join-Path $RepoRoot ".venv"))) {
         if (-not (Test-ExecutablePython $venvPython)) {
             $env:UV_PROJECT_ENVIRONMENT = $RepoUvEnvironment
@@ -54,6 +55,11 @@ function Enable-RepoUvFallbacks {
     }
 
     if ($env:UV_CACHE_DIR) {
+        return
+    }
+
+    # Let uv select the native XDG/macOS cache path; LOCALAPPDATA is Windows-only.
+    if ($env:OS -ne "Windows_NT") {
         return
     }
 

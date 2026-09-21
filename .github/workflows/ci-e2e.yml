@@ -8,9 +8,13 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  windows-webdav:
-    name: Windows WebDAV source E2E
-    runs-on: windows-latest
+  source-webdav:
+    name: WebDAV source E2E (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
 
     defaults:
       run:
@@ -32,4 +36,4 @@ jobs:
         run: scripts/bootstrap.ps1 -PythonOnly
 
       - name: WebDAV, tee WAV, event trace, and shutdown smoke
-        run: scripts/test-e2e.ps1
+        run: uv run python -m tools.backend_e2e --space-paths

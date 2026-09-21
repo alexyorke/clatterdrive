@@ -15,6 +15,7 @@ bash "${script_dir}/bootstrap-macos.sh"
 export PYTHONPATH="${repo_root}"
 pytest_workers="${CLATTERDRIVE_MACOS_PYTEST_WORKERS:-2}"
 uv run pytest -n "${pytest_workers}"
+uv run python -m tools.audio_physics_benchmark
 uv run ruff check clatterdrive tests tools
 uv run mypy clatterdrive tests tools
 swift test --package-path launcher/ClatterDrive.MacLauncher

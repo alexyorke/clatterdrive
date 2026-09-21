@@ -35,6 +35,7 @@ MODEL_TIERS = ("physical_state", "physical_model", "artistic_calibration")
 MODEL_TIER_BY_FUNCTION: Mapping[str, str] = {
     "clamp": "physical_model",
     "one_pole_alpha": "physical_model",
+    "resample_alpha": "physical_model",
     "rotor_torque_balance": "physical_model",
     "exact_rotor_step": "physical_model",
     "step_spindle_motor": "physical_model",
@@ -56,6 +57,7 @@ MODEL_TIER_BY_FUNCTION: Mapping[str, str] = {
     "park_stop_contact_force": "physical_model",
     "voice_coil_force_transfer": "physical_model",
     "sequential_boundary_contact_force": "physical_model",
+    "sequential_track_interval": "physical_model",
     "step_stiffness_damping_contact": "physical_model",
     "route_sources_to_structure": "physical_model",
     "step_modal_bank": "physical_model",
@@ -181,6 +183,15 @@ def one_pole_alpha(cutoff_hz: float, sample_rate: int) -> float:
     return 1.0 - math.exp(-TAU * cutoff / sample_rate)
 
 
+def resample_alpha(alpha: float, sample_rate: int, reference_rate: int = 44100) -> float:
+    """Preserve a calibrated one-pole time constant when changing sample rate."""
+    if sample_rate <= 0 or reference_rate <= 0 or not 0.0 <= alpha <= 1.0:
+        raise ValueError("invalid filter coefficient or sample rate")
+    if sample_rate == reference_rate or alpha in {0.0, 1.0}:
+        return alpha
+    return -math.expm1(math.log1p(-alpha) * reference_rate / sample_rate)
+
+
 def rotor_torque_balance(
     *,
     omega: float,
@@ -283,13 +294,14 @@ def step_spindle_motor(
         inertia=inertia,
         windage_drag_share_at_nominal=windage_drag_share_at_nominal,
     )
-    next_omega = exact_rotor_step(
-        omega_before,
-        target_omega,
-        tau_s,
-        dt,
-        inertia=inertia,
-        windage_drag_share_at_nominal=windage_drag_share_at_nominal,
+    # Audio-rate steps need one substep; reuse the torque already calculated.
+    next_omega = (
+        omega_before + torque_balance.angular_accel * dt
+        if 0.0 < dt <= 0.0005
+        else exact_rotor_step(
+            omega_before, target_omega, tau_s, dt, inertia=inertia,
+            windage_drag_share_at_nominal=windage_drag_share_at_nominal,
+        )
     )
     phase_increment = 0.5 * (omega_before + next_omega) * dt
     rpm_norm = clamp(next_omega / max(nominal_omega, EPS), 0.0, 1.35)
@@ -403,6 +415,10 @@ def step_windage_noise(
     rpm_norm: float,
     startup_active: bool,
     windage_gain: float,
+    startup_low_alpha: float = 0.005,
+    startup_high_alpha: float = 0.024,
+    startup_strength: float = 0.050,
+    sample_rate: int = 44100,
 ) -> NoiseStep:
     """Tier: physical_model.
 
@@ -410,12 +426,22 @@ def step_windage_noise(
     speed plus dynamic pressure/turbulence terms; `windage_gain` is the one
     profile-level calibration scalar retained for this source.
     """
-    windage_low_alpha = 0.005 if startup_active else 0.020
-    windage_high_alpha = 0.024 if startup_active else 0.130
+    # Startup priors were fitted at 22050 Hz; running priors at 44100 Hz.
+    # Keep their bandwidths in seconds, not samples. White noise is scaled to
+    # preserve spectral density per Hz as the sampling bandwidth changes.
+    reference_rate = 22050 if startup_active else 44100
+    windage_low_alpha = resample_alpha(startup_low_alpha if startup_active else 0.020, sample_rate, reference_rate)
+    windage_high_alpha = resample_alpha(startup_high_alpha if startup_active else 0.130, sample_rate, reference_rate)
+    raw_sample *= math.sqrt(sample_rate / reference_rate)
     next_low_state = low_state + windage_low_alpha * (raw_sample - low_state)
     next_high_state = high_state + windage_high_alpha * (next_low_state - high_state)
-    source_strength = spindle_airflow_source(rpm_norm, startup_active=startup_active)
-    signal = (next_low_state - next_high_state) * source_strength * windage_gain
+    source_strength = spindle_airflow_source(
+        rpm_norm,
+        startup_active=startup_active,
+        startup_turbulence_gain=startup_strength,
+    )
+    filtered_flow = next_low_state - next_high_state
+    signal = filtered_flow * source_strength * windage_gain
     return NoiseStep(
         primary_state=next_low_state,
         secondary_state=next_high_state,
@@ -424,7 +450,12 @@ def step_windage_noise(
     )
 
 
-def spindle_airflow_source(rpm_norm: float, *, startup_active: bool) -> float:
+def spindle_airflow_source(
+    rpm_norm: float,
+    *,
+    startup_active: bool,
+    startup_turbulence_gain: float = 0.050,
+) -> float:
     """Tier: physical_model.
 
     HDD windage roughly follows spindle surface speed and turbulent/dynamic
@@ -435,7 +466,7 @@ def spindle_airflow_source(rpm_norm: float, *, startup_active: bool) -> float:
     dynamic_pressure = speed_ratio * speed_ratio
     turbulent_pressure = dynamic_pressure * speed_ratio * speed_ratio
     if startup_active:
-        return 0.002 * speed_ratio + 0.050 * turbulent_pressure * speed_ratio**0.8
+        return 0.002 * speed_ratio + startup_turbulence_gain * turbulent_pressure * speed_ratio**0.8
     return 0.010 * speed_ratio + 0.18 * dynamic_pressure
 
 
@@ -446,13 +477,16 @@ def step_bearing_noise(
     rpm_norm: float,
     startup_active: bool,
     bearing_gain: float,
+    sample_rate: int = 44100,
 ) -> NoiseStep:
     """Tier: physical_model.
 
     Bearing vibration follows shaft speed with a mild load-dependent nonlinear
     term. `bearing_gain` is the retained profile-level calibration scalar.
     """
-    bearing_alpha = 0.010 if startup_active else 0.060
+    reference_rate = 22050 if startup_active else 44100
+    bearing_alpha = resample_alpha(0.010 if startup_active else 0.060, sample_rate, reference_rate)
+    raw_sample *= math.sqrt(sample_rate / reference_rate)
     next_state = state + bearing_alpha * (raw_sample - state)
     source_strength = bearing_vibration_source(rpm_norm, startup_active=startup_active)
     signal = next_state * source_strength * bearing_gain
@@ -499,7 +533,7 @@ def spindle_rotor_excitation(
     ):
         runout_order_gain = rpm_norm ** (0.55 * max(harmonic_index - 1, 0)) if startup_active else 1.0
         excitation += harmonic_weight * runout_order_gain * math.sin(spindle_phase * harmonic_index + float(phase_offset))
-    return excitation * (
+    return excitation * min(max(rpm_norm, 0.0), 1.0) * (
         (0.005 + 0.018 * rpm_norm * rpm_norm)
         if startup_active
         else (0.012 + 0.040 * rpm_norm * rpm_norm)
@@ -545,7 +579,8 @@ def chassis_reaction_force(
 def head_load_contact_force(previous_heads_loaded: bool, heads_loaded: bool) -> float:
     """Tier: physical_model.
 
-    Normalized contact impulse from loading the head stack onto the air bearing.
+    Normalized ramp/suspension impulse when the head stack loads.
+    This represents ramp release, not contact with the recording surface.
     """
     return 0.26 if not previous_heads_loaded and heads_loaded else 0.0
 
@@ -560,8 +595,9 @@ def head_media_event_forces(
 ) -> ContactEventForces:
     """Tier: physical_model.
 
-    Convert filesystem/media locality pressure into normalized head/media and
-    servo-wedge contact forces. Constants are broad normalized assumptions.
+    Approximate extra servo reaction from workload locality and repetition.
+    Healthy read/write heads fly above the medium: ordinary I/O never injects
+    a head/platter contact impulse. Wedge amplitude remains a normalized prior.
     """
     wedge = 0.0
     contact = 0.0
@@ -571,7 +607,6 @@ def head_media_event_forces(
         wedge += 0.045 * fragmentation_activity
     if repetition_pressure > 0.0 and op_kind in {"data", "writeback", "metadata"}:
         wedge += 0.010 + 0.018 * repetition_pressure * (1.0 - abs(repetition_variant))
-        contact += 0.006 * repetition_pressure * abs(repetition_variant)
     return ContactEventForces(wedge=wedge, contact=contact)
 
 
@@ -618,10 +653,21 @@ def sequential_boundary_contact_force(
 ) -> float:
     """Tier: physical_model.
 
-    Normalized head/media tick when sequential transfer crosses a track/zone
-    boundary under the current spindle speed.
+    Normalized actuator reaction when sequential transfer changes tracks.
+    The legacy function name is retained; this is not head/platter contact.
     """
     return 0.045 * boundary_gain * (0.8 + 0.2 * rpm_norm) * (1.0 + 0.25 * fragmentation_activity)
+
+
+def sequential_track_interval(rpm: float, transfer_activity: float) -> float:
+    """Approximate track-change spacing from rotation period and transfer duty.
+
+    Full-track sequential streaming consumes roughly one revolution per track.
+    This is a timing prior, not a measured head-switch/track-skew map.
+    """
+    if rpm <= 0.0 or transfer_activity <= 0.0:
+        return math.inf
+    return 60.0 / rpm / min(transfer_activity, 1.0)
 
 
 def step_stiffness_damping_contact(
@@ -660,6 +706,7 @@ def route_sources_to_structure(
     fragmentation_activity: float,
     startup_ramp_value: float,
     acoustic_profile: AcousticProfile,
+    startup_windage_structure_scale: float = 1.0,
 ) -> SourceForces:
     """Tier: physical_model.
 
@@ -673,18 +720,19 @@ def route_sources_to_structure(
             1.55 * torque_structure
             + 0.14 * spindle_tone * startup_ramp_value
             + 0.06 * bearing
-            + 0.03 * windage
+            + 0.03 * startup_windage_structure_scale * windage
         )
         cover_force = (
             0.44 * torque_structure
             + 0.08 * spindle_tone * startup_ramp_value
-            + 0.03 * windage
+            + 0.03 * startup_windage_structure_scale * windage
             + 0.02 * bearing
         )
         actuator_force = 0.0
         enclosure_force = (
             acoustic_profile.enclosure_coupling * (0.52 * base_force + 0.22 * cover_force)
-            + acoustic_profile.internal_air_coupling * (0.04 * windage + 0.04 * spindle_tone)
+            + acoustic_profile.internal_air_coupling
+            * (0.04 * startup_windage_structure_scale * windage + 0.04 * spindle_tone)
         )
         desk_force = acoustic_profile.desk_coupling * (0.94 * base_force + 0.20 * cover_force)
     else:
@@ -773,7 +821,9 @@ def radiate_acoustic_paths(
             * (1.72 * base_signal + 0.78 * cover_signal + 1.02 * enclosure_signal + 1.42 * desk_signal)
         )
         airborne = (
-            mode_bank.direct_gain * startup_airborne_gate * (0.16 * spindle_tone + 0.05 * windage + 0.03 * bearing)
+            mode_bank.direct_gain
+            * startup_airborne_gate
+            * (0.16 * spindle_tone + mode_bank.startup_windage_airborne_gain * windage + 0.03 * bearing)
             + 0.07 * mode_bank.cover_gain * cover_signal
         )
     else:

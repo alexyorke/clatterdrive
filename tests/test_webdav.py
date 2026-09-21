@@ -58,6 +58,24 @@ def test_webdav_end_to_end_directory_lifecycle(tmp_path: Path) -> None:
         _assert_provider_tree_matches_disk(provider, backing)
 
 
+def test_webdav_empty_overwrite_emits_modeled_truncate_io(tmp_path: Path) -> None:
+    backing = tmp_path / "backing"
+    backing.mkdir()
+    recorder = StorageEventRecorder()
+
+    with _run_test_server(backing, event_sink=recorder) as (base_url, provider):
+        status, _, _ = _request(base_url, "PUT", "/overwrite.bin", b"x" * 32768)
+        assert status in (200, 201, 204)
+        provider.vhdd.sync_all()
+        recorder.clear()
+
+        status, _, _ = _request(base_url, "PUT", "/overwrite.bin", b"")
+
+        assert status in (200, 201, 204)
+        assert provider.vhdd.fs.files["/overwrite.bin"].size == 0
+        assert any(event.is_flush for event in recorder.snapshot())
+
+
 def test_webdav_operations_emit_renderable_audio_events(tmp_path: Path) -> None:
     backing = tmp_path / "backing"
     backing.mkdir()
@@ -159,7 +177,9 @@ def test_webdav_workload_shape_reaches_audio_event_trace(tmp_path: Path) -> None
     assert max(event.directory_entry_count for event in events) >= 96
     assert max(event.fragmentation_score for event in events) > 1
     expanded_count = sum(len(expand_workload_event(event, audio.fs)) for event in events)
-    assert expanded_count > len(events) * 1.5
+    # Extent operations already describe the physical workload. Audio must not
+    # multiply them into invented seeks or transfers.
+    assert expanded_count == len(events)
     rms, peak = _wav_metrics(tee_path)
     assert rms > 0.0005
     assert peak > 0.002

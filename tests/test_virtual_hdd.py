@@ -4,9 +4,12 @@ import random
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
 from _pytest.monkeypatch import MonkeyPatch
 
 from clatterdrive.hdd import VirtualHDD
+from clatterdrive.fs.simulator import IOOperation
+from clatterdrive.hdd.core import OperationStats
 from clatterdrive.profiles import resolve_acoustic_profile, resolve_drive_profile
 from clatterdrive.scheduler import OSScheduler
 from clatterdrive.storage_events import StorageEvent
@@ -57,6 +60,26 @@ def test_virtual_hdd_prepare_overwrite_discards_old_tail(isolated_backing_dir: P
     finally:
         vhdd.stop()
 
+def test_virtual_hdd_can_model_overwrite_after_backing_file_was_already_truncated(
+    isolated_backing_dir: Path,
+) -> None:
+    backing_file = isolated_backing_dir / "overwrite.bin"
+    backing_file.write_bytes(b"x" * 32768)
+    vhdd = VirtualHDD(str(isolated_backing_dir), latency_scale=0.0)
+    try:
+        vhdd.access_file("/overwrite.bin", 0, 4096, is_write=False)
+        assert vhdd.fs.files["/overwrite.bin"].size == 32768
+
+        backing_file.write_bytes(b"")
+        stats = vhdd.prepare_overwrite("/overwrite.bin", reconcile_backing=False)
+
+        assert stats.op_type == "TRUNCATE"
+        assert stats.block_count > 0
+        assert vhdd.fs.files["/overwrite.bin"].size == 0
+    finally:
+        vhdd.stop()
+
+
 def test_virtual_hdd_materializes_existing_backing_file(tmp_path: Path) -> None:
     backing = tmp_path / "backing"
     backing.mkdir()
@@ -95,6 +118,41 @@ def test_virtual_hdd_stop_drains_background_threads(isolated_backing_dir: Path) 
     assert not vhdd.writeback_thread.is_alive()
     assert not vhdd.model.background_thread.is_alive()
     assert not scheduler.dispatch_thread.is_alive()
+
+
+def test_virtual_hdd_batches_ncq_requests_with_a_journal_barrier(isolated_backing_dir: Path) -> None:
+    class RecordingScheduler:
+        def __init__(self) -> None:
+            self.submitted: list[int] = []
+            self.wait_submission_counts: list[int] = []
+
+        def submit_bio(self, lba: int, *_args: Any, **_kwargs: Any) -> str:
+            self.submitted.append(lba)
+            return f"request-{len(self.submitted)}"
+
+        def wait_for_completion(self, _request_id: str) -> OperationStats:
+            self.wait_submission_counts.append(len(self.submitted))
+            return OperationStats(total_ms=1.0, cyl=0, head=0)
+
+        def stop(self) -> None:
+            return None
+
+    vhdd = VirtualHDD(str(isolated_backing_dir), latency_scale=0.0)
+    scheduler = RecordingScheduler()
+    vhdd.set_scheduler(scheduler)
+    try:
+        operations = [
+            IOOperation(100, 1, "journal", "intent"),
+            IOOperation(200, 1, "metadata", "inode"),
+            IOOperation(300, 1, "data", "extent"),
+        ]
+
+        stats = vhdd._run_ops(operations, is_write=True)
+
+        assert stats.total_ms == 3.0
+        assert scheduler.wait_submission_counts == [1, 3, 3]
+    finally:
+        vhdd.stop()
 
 def test_virtual_hdd_directory_operations_update_runtime_tree(tmp_path: Path) -> None:
     backing = tmp_path / "backing"
@@ -428,12 +486,51 @@ def test_virtual_hdd_can_emit_to_injected_event_sink(isolated_backing_dir: Path)
     vhdd = VirtualHDD(str(isolated_backing_dir), latency_scale=0.0, event_sink=sink)
     try:
         vhdd.access_file("/captured.bin", 0, 4096, is_write=True)
+        # Test a media read; a controller-cache hit correctly emits no motion.
+        vhdd.reset_runtime_state()
         vhdd.access_file("/captured.bin", 0, 4096, is_write=False)
 
         assert sink.events
         assert any(event.op_kind == "data" for event in sink.events)
     finally:
         vhdd.stop()
+
+
+def test_virtual_hdd_rejects_state_sidecar_inside_served_tree(tmp_path: Path) -> None:
+    backing = tmp_path / "backing"
+    backing.mkdir()
+
+    with pytest.raises(ValueError, match="outside backing_dir"):
+        VirtualHDD(
+            str(backing),
+            latency_scale=0.0,
+            state_path=str(backing / "volume-state.json"),
+        )
+
+
+def test_virtual_hdd_reloads_default_sidecar_on_restart(tmp_path: Path) -> None:
+    backing = tmp_path / "backing"
+    backing.mkdir()
+    (backing / "persisted.bin").write_bytes(b"x" * 8192)
+
+    first = VirtualHDD(str(backing), latency_scale=0.0)
+    try:
+        first.lookup_path("/persisted.bin")
+        expected_extents = list(first.fs.files["/persisted.bin"].extents)
+    finally:
+        first.stop()
+
+    state_path = Path(f"{backing.resolve()}.clatterdrive-state.json")
+    assert state_path.is_file()
+
+    restored = VirtualHDD(str(backing), latency_scale=0.0)
+    try:
+        assert restored.fs.loaded_from_state is True
+        assert restored.fs.files["/persisted.bin"].extents == expected_extents
+        restored.lookup_path("/persisted.bin")
+        restored.fs.assert_consistent()
+    finally:
+        restored.stop()
 
 
 def test_many_small_writes_emit_more_metadata_events_than_one_large_write(

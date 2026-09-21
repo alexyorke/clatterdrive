@@ -7,7 +7,8 @@ import numpy as np
 import pytest
 
 from clatterdrive.hdd import HDDLatencyModel, VirtualHDD
-from clatterdrive.hdd.core import CacheSpan, CacheState, remember_read
+from clatterdrive.hdd.core import CacheSpan, CacheState, mean_sqrt_seek_distance, remember_read
+from clatterdrive.runtime.deps import RuntimeDeps
 from clatterdrive.storage_events import StorageEvent
 
 def test_partial_read_cache_is_not_reported_as_full_hit() -> None:
@@ -52,8 +53,75 @@ def test_read_ahead_window_grows_for_sequential_reads_and_stays_small_for_random
 
 def test_zone_table_does_not_extend_past_addressable_capacity() -> None:
     model = HDDLatencyModel(addressable_blocks=2048, latency_scale=0.0)
+    assert len(model.zones) == 8
     assert model.zones[-1].end_lba == 2047
+    assert model.zones[0].transfer_rate_mbps == pytest.approx(model.drive_profile.transfer_rate_outer_mbps)
+    assert model.zones[-1].transfer_rate_mbps == pytest.approx(model.drive_profile.transfer_rate_inner_mbps)
     model.stop()
+
+
+def test_seek_curve_is_calibrated_to_the_profile_average() -> None:
+    model = HDDLatencyModel(addressable_blocks=500000, latency_scale=0.0)
+    try:
+        mean_factor = mean_sqrt_seek_distance(model.zones, model.addressable_blocks, model.num_heads)
+        modeled_average = model.track_to_track_ms + model.settle_ms + model.seek_curve_b * mean_factor
+
+        assert modeled_average == pytest.approx(model.avg_seek_ms, abs=0.05)
+    finally:
+        model.stop()
+
+
+def test_profile_can_model_fewer_active_heads_than_platter_surfaces() -> None:
+    model = HDDLatencyModel(
+        addressable_blocks=4096,
+        latency_scale=0.0,
+        drive_profile="seagate_ironwolf_pro_16tb",
+    )
+    try:
+        assert model.drive_profile.platters == 8
+        assert model.drive_profile.active_heads == 15
+        assert model.num_heads == 15
+    finally:
+        model.stop()
+
+
+def test_spindle_phase_advances_between_physical_accesses() -> None:
+    class MutableClock:
+        def __init__(self) -> None:
+            self.current_time = 0.0
+
+        def now(self) -> float:
+            return self.current_time
+
+    clock = MutableClock()
+    model = HDDLatencyModel(
+        addressable_blocks=4096,
+        latency_scale=0.0,
+        enable_background_scan=False,
+        deps=RuntimeDeps(clock=clock),
+    )
+    try:
+        initial_ms = model._calculate_position_latency(0, 1)[0]
+        clock.current_time = model.ms_per_rotation / 2000.0
+        half_rotation_later_ms = model._calculate_position_latency(0, 1)[0]
+
+        assert half_rotation_later_ms - initial_ms == pytest.approx(model.ms_per_rotation / 2.0, abs=0.1)
+    finally:
+        model.stop()
+
+
+def test_backward_reads_do_not_expand_the_sequential_read_ahead_window() -> None:
+    model = HDDLatencyModel(addressable_blocks=100000, latency_scale=0.0)
+    try:
+        now = time.monotonic()
+        cache_state = remember_read(model.core_config, CacheState(), 1000, 1, now)
+        initial_window = cache_state.read_ahead_window_blocks
+
+        cache_state = remember_read(model.core_config, cache_state, 900, 1, now + 0.001)
+
+        assert cache_state.read_ahead_window_blocks < initial_window
+    finally:
+        model.stop()
 
 def test_zone_boundary_transfer_latency_uses_per_zone_rates() -> None:
     model = HDDLatencyModel(addressable_blocks=100000, latency_scale=0.0)
@@ -62,7 +130,7 @@ def test_zone_boundary_transfer_latency_uses_per_zone_rates() -> None:
         start_lba = first_zone.end_lba - 2
         block_count = 8
         cross_zone_ms = model._transfer_ms_for_span(start_lba, block_count)
-        start_only_ms = ((block_count * model.block_bytes) / (1024 * 1024)) / first_zone.transfer_rate_mbps * 1000.0
+        start_only_ms = (block_count * model.block_bytes) / (first_zone.transfer_rate_mbps * 1_000_000) * 1000.0
 
         assert cross_zone_ms > start_only_ms
     finally:
@@ -96,15 +164,24 @@ def test_drive_profile_changes_rpm_and_command_classes() -> None:
         model.stop()
 
 def test_queue_depth_materially_changes_latency() -> None:
+    class FixedClock:
+        def now(self) -> float:
+            return 0.0
+
+    deps = RuntimeDeps(clock=FixedClock())
     shallow = HDDLatencyModel(
         addressable_blocks=100000,
         latency_scale=0.0,
         drive_profile="enterprise_7200_bare",
+        enable_background_scan=False,
+        deps=deps,
     )
     deep = HDDLatencyModel(
         addressable_blocks=100000,
         latency_scale=0.0,
         drive_profile="enterprise_7200_bare",
+        enable_background_scan=False,
+        deps=deps,
     )
     try:
         shallow_result = shallow.submit_physical_access(4096, 4096, False, op_kind="data", queue_depth=1)
@@ -354,6 +431,34 @@ def test_background_scan_activity_can_delay_foreground_access() -> None:
 
         assert any(event.op_kind == "background" for event in sink.events)
         assert result.maintenance_wait_ms > 0.0
+    finally:
+        model.stop()
+
+
+def test_transfer_span_past_end_of_disk_is_rejected() -> None:
+    model = HDDLatencyModel(addressable_blocks=2048, latency_scale=0.0)
+    try:
+        with pytest.raises(ValueError, match="addressable range"):
+            model._transfer_ms_for_span(2047, 2)
+        with pytest.raises(ValueError, match="addressable range"):
+            model.submit_physical_access(2047, 2 * model.block_bytes, False, op_kind="data")
+    finally:
+        model.stop()
+
+
+def test_full_cache_hit_includes_pending_background_maintenance_wait() -> None:
+    model = HDDLatencyModel(addressable_blocks=4096, latency_scale=0.0, enable_background_scan=False)
+    try:
+        now = time.monotonic()
+        with model.lock:
+            model.read_cache.append(CacheSpan(start_lba=100, end_lba=100, expires_at=now + 5.0))
+            model.background_busy_until = now + 0.125
+
+        result = model.submit_physical_access(100, model.block_bytes, False, op_kind="data")
+
+        assert result.cache_hit is True
+        assert result.maintenance_wait_ms >= 100.0
+        assert result.total_ms >= result.maintenance_wait_ms
     finally:
         model.stop()
 

@@ -13,6 +13,7 @@ from _pytest.monkeypatch import MonkeyPatch
 
 import clatterdrive.audio.engine as audio_engine_module
 from clatterdrive.audio import HDDAudioEngine, HDDAudioEvent
+from clatterdrive.audio.calibration import resolve_drive_modal_calibration
 from clatterdrive.audio.core import AudioDiagnosticTrace, render_chunk as render_audio_chunk
 from clatterdrive.audio.workload import expand_workload_event
 from clatterdrive.runtime.deps import NoOpSleeper, RuntimeDeps
@@ -25,7 +26,7 @@ from tools.generate_audio_samples import (
     update_metadata_storm,
     update_spinup_idle,
 )
-from tools.reference_audio import compute_audio_features
+from tools.reference_audio import compute_audio_features, evaluate_startup_acceptance
 from tests.helpers import _audio_event, _wav_metrics
 
 
@@ -170,14 +171,16 @@ def _render_startup_only(
     *,
     sample_rate: int = 22050,
     chunked: bool = False,
+    drive_profile: str = "desktop_7200_internal",
+    acoustic_profile: str = "drive_on_desk",
 ) -> tuple[np.ndarray, AudioDiagnosticTrace | None]:
     engine = HDDAudioEngine(
         seed=0,
         sample_rate=sample_rate,
-        drive_profile="desktop_7200_internal",
-        acoustic_profile="drive_on_desk",
+        drive_profile=drive_profile,
+        acoustic_profile=acoustic_profile,
     )
-    total_frames = int(startup_only_duration("desktop_7200_internal") * sample_rate)
+    total_frames = int(startup_only_duration(drive_profile) * sample_rate)
     startup_event = _audio_event(
         rpm=0.0,
         target_rpm=7200.0,
@@ -321,16 +324,27 @@ def test_audio_engine_headless_tee_renders_without_manual_pull(
     try:
         assert engine.output_enabled is False
         assert engine.stream is None
+        # Exercise an already-running silent recorder, not just startup timing.
+        idle_deadline = time.monotonic() + 20.0
+        while time.monotonic() < idle_deadline and engine.render_frame_cursor < engine.chunk_size * 4:
+            time.sleep(0.02)
+        assert engine.render_frame_cursor >= engine.chunk_size * 4
         engine.emit_telemetry(7200.0, seek_trigger=True, seek_dist=700, op_kind="data")
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline and engine.render_frame_cursor < engine.chunk_size * 4:
+        # On loaded runners, wall-clock time can advance before this thread
+        # publishes the event. Four chunks from startup may still be silence;
+        # wait for four chunks beyond the event's position in the audio clock.
+        assert engine.time_origin is not None
+        event_frame_bound = int((engine.clock.now() - engine.time_origin) * engine.fs) + 1
+        minimum_frames = max(engine.render_frame_cursor, event_frame_bound) + engine.chunk_size * 4
+        deadline = time.monotonic() + 20.0
+        while time.monotonic() < deadline and engine.render_frame_cursor < minimum_frames:
             time.sleep(0.02)
     finally:
         engine.stop()
 
     assert tee_path.exists()
     with wave.open(str(tee_path), "rb") as wav_file:
-        assert wav_file.getnframes() >= engine.chunk_size * 4
+        assert wav_file.getnframes() >= minimum_frames
     rms, peak = _wav_metrics(tee_path)
     assert rms > 0.001
     assert peak > 0.004
@@ -359,7 +373,7 @@ def test_workload_mapper_preserves_hand_authored_demo_events() -> None:
     assert expanded == [(event, 0)]
 
 
-def test_workload_mapper_expands_directory_metadata_storms() -> None:
+def test_workload_mapper_does_not_invent_directory_seeks() -> None:
     event = _audio_event(
         rpm=7200.0,
         target_rpm=7200.0,
@@ -372,16 +386,10 @@ def test_workload_mapper_expands_directory_metadata_storms() -> None:
     )
 
     expanded = expand_workload_event(event, 44100)
-    offsets = [offset for _event, offset in expanded]
-
-    assert len(expanded) >= 6
-    assert offsets == sorted(offsets)
-    assert expanded[0][0].op_kind == "journal"
-    assert any(item.op_kind == "metadata" for item, _offset in expanded[1:])
-    assert max(abs(item.track_delta) for item, _offset in expanded) > 0.03
+    assert expanded == [(event, 0)]
 
 
-def test_workload_mapper_adds_transfer_ticks_for_large_fragmented_writeback() -> None:
+def test_workload_mapper_does_not_double_count_fragmented_writeback() -> None:
     event = _audio_event(
         rpm=7200.0,
         target_rpm=7200.0,
@@ -397,10 +405,7 @@ def test_workload_mapper_adds_transfer_ticks_for_large_fragmented_writeback() ->
 
     expanded = expand_workload_event(event, 44100)
 
-    assert len(expanded) > 1
-    assert expanded[0] == (event, 0)
-    assert any(item.servo_mode == "seek" for item, _offset in expanded[1:])
-    assert max(offset for _item, offset in expanded) > 0
+    assert expanded == [(event, 0)]
 
 
 def test_audio_engine_reports_event_to_render_lag() -> None:
@@ -425,7 +430,7 @@ def test_audio_engine_reports_event_to_render_lag() -> None:
     assert lag["max_lag_ms"] >= 70.0
 
 
-def test_audio_engine_caps_workload_expansion_for_bursty_chunks() -> None:
+def test_audio_engine_preserves_physical_event_count_for_bursty_chunks() -> None:
     engine = HDDAudioEngine(seed=0, max_pending_events=80)
     for index in range(80):
         engine.publish_event(
@@ -445,8 +450,8 @@ def test_audio_engine_caps_workload_expansion_for_bursty_chunks() -> None:
     engine.render_chunk(1024)
     lag = engine.audio_lag_snapshot()
 
-    assert lag["event_count"] == engine._max_scheduled_events_per_chunk
-    assert lag["dropped_events"] > 0
+    assert lag["event_count"] == 80
+    assert lag["dropped_events"] == 0
     assert lag["pending_events"] == 0
 
 
@@ -611,6 +616,9 @@ def test_audio_engine_demo_samples_stay_feature_close_to_golden() -> None:
             acoustic_profile=acoustic_profile,
             force_silence_prefix_s=silence_prefix_s,
         )
+        # Compare the same PCM16 encoding: quantization noise changes magnitude-
+        # weighted spectral features even when waveforms agree within one LSB.
+        rendered = np.clip(rendered * 32767.0, -32768, 32767).astype(np.int16).astype(np.float64) / 32767.0
         rendered_features = compute_audio_features(rendered, sample_rate, "desktop_7200_internal")
         golden_features = compute_audio_features(golden, sample_rate, "desktop_7200_internal")
 
@@ -892,11 +900,60 @@ def test_audio_engine_startup_only_has_real_delay_and_no_immediate_output() -> N
     features = compute_audio_features(startup_chunk, 22050, "desktop_7200_internal")
     time_to_90 = _startup_time_to_fraction(diagnostics, 7200.0, 0.90)
 
-    assert _rms(startup_chunk[: int(0.5 * 22050)]) < 0.0002
-    assert 0.75 <= float(features["first_audible_s"]) <= 1.55
+    # No motor command before 0.85 s means no excitation at all. The former
+    # short onset bound included a spurious stationary-rotor DC transient.
+    assert np.count_nonzero(startup_chunk[: int(0.85 * 22050)]) == 0
+    assert 0.85 <= float(features["first_audible_s"]) < time_to_90
     assert time_to_90 > 5.0
     assert time_to_90 < 10.5
     assert float(np.max(np.abs(diagnostics.actuator_torque))) < 0.03
+
+
+def test_drive_profiles_select_traceable_modal_calibrations() -> None:
+    desktop = resolve_drive_modal_calibration("desktop_7200_internal")
+    enterprise = resolve_drive_modal_calibration("enterprise_7200_bare")
+
+    assert desktop.calibration_id == "desktop-engineering-v1"
+    assert enterprise.evidence == "reference_guided"
+    assert enterprise.reference_bucket == "enterprise_ultrastar"
+    assert enterprise.reference_ids
+    assert enterprise.base_modes != desktop.base_modes
+
+
+def test_startup_acceptance_requires_matching_reference_bucket_and_absolute_bands() -> None:
+    summary = {
+        "reference_bucket": "enterprise_ultrastar",
+        "reference_band": {
+            "first_audible_s_min": 0.1,
+            "first_audible_s_max": 7.0,
+            "time_to_90_s_min": 0.1,
+            "time_to_90_s_max": 11.0,
+            "spectral_centroid_hz_min": 350.0,
+            "spectral_centroid_hz_max": 4300.0,
+            "low_band_ratio_min": 0.3,
+            "low_band_ratio_max": 4.4,
+            "bubbly_modulation_ratio_max": 0.82,
+        },
+    }
+    generated = {
+        "first_audible_s": 1.0,
+        "time_to_90_s": 5.0,
+        "spectral_centroid_hz": 1200.0,
+        "low_band_ratio": 1.2,
+        "bubbly_modulation_ratio": 0.5,
+    }
+
+    accepted = evaluate_startup_acceptance(generated, summary, drive_bucket="enterprise_ultrastar")
+    wrong_bucket = evaluate_startup_acceptance(generated, summary, drive_bucket="desktop_7200_internal")
+    too_bassy = evaluate_startup_acceptance(
+        {**generated, "low_band_ratio": 8.0},
+        summary,
+        drive_bucket="enterprise_ultrastar",
+    )
+
+    assert accepted["passed"] is True
+    assert wrong_bucket["passed"] is False
+    assert too_bassy["passed"] is False
 
 
 def test_audio_engine_startup_only_is_less_transient_than_metadata_storm() -> None:
@@ -939,9 +996,12 @@ def test_audio_engine_startup_only_matches_reference_summary_band() -> None:
     summary_path = Path("docs/reference-calibration/startup_reference_summary.json")
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
 
-    startup_chunk, diagnostics = _render_startup_only()
+    startup_chunk, diagnostics = _render_startup_only(
+        drive_profile="enterprise_7200_bare",
+        acoustic_profile="bare_drive_lab",
+    )
     assert diagnostics is not None
-    features = compute_audio_features(startup_chunk, 22050, "desktop_7200_internal")
+    features = compute_audio_features(startup_chunk, 22050, "enterprise_ultrastar")
     ref_band = summary["reference_band"]
     time_to_90 = _startup_time_to_fraction(diagnostics, 7200.0, 0.90)
 
@@ -957,8 +1017,11 @@ def test_audio_engine_startup_reference_distance_does_not_regress() -> None:
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     assert summary["references_used"] > 0
 
-    startup_chunk, _diagnostics = _render_startup_only()
-    features = compute_audio_features(startup_chunk, 22050, "desktop_7200_internal")
+    startup_chunk, _diagnostics = _render_startup_only(
+        drive_profile="enterprise_7200_bare",
+        acoustic_profile="bare_drive_lab",
+    )
+    features = compute_audio_features(startup_chunk, 22050, "enterprise_ultrastar")
     median = summary["median_reference_curves"]
     baseline = summary["distance"]
     curve_frames = len(median["envelope"])

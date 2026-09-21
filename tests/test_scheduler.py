@@ -144,6 +144,43 @@ def test_scheduler_core_reverses_direction_when_no_forward_requests_exist() -> N
     assert queue == ()
 
 
+def test_scheduler_core_prefers_lower_positioning_cost_for_ncq_rpo() -> None:
+    left, sequence = build_request(
+        sequence=0,
+        lba=90,
+        size=4096,
+        is_write=False,
+        op_kind="data",
+        sync=False,
+        arrival_time=1.0,
+        read_deadline_s=0.025,
+        write_deadline_s=0.150,
+    )
+    right, _ = build_request(
+        sequence=sequence,
+        lba=110,
+        size=4096,
+        is_write=False,
+        op_kind="data",
+        sync=False,
+        arrival_time=1.0,
+        read_deadline_s=0.025,
+        write_deadline_s=0.150,
+    )
+
+    queue, picked, direction = pick_next_request(
+        (left, right),
+        current_lba=100,
+        direction=1,
+        now=1.0,
+        positioning_costs={left.id: 1.0, right.id: 5.0},
+    )
+
+    assert picked == left
+    assert direction == -1
+    assert queue == (right,)
+
+
 def test_scheduler_core_tracks_queue_depth_accounting_and_completion_ids() -> None:
     assert can_submit(0, 1) is True
     assert can_submit(1, 1) is False
@@ -166,6 +203,27 @@ def test_scheduler_propagates_model_failures() -> None:
         request_id = scheduler.submit_bio(0, 4096, is_write=False)
         with pytest.raises(RuntimeError, match="boom"):
             scheduler.wait_for_completion(request_id)
+    finally:
+        scheduler.stop()
+
+
+def test_scheduler_falls_back_when_positioning_estimate_fails() -> None:
+    class EstimateFailingModel:
+        block_bytes = 4096
+
+        def get_estimated_lba(self) -> int:
+            return 0
+
+        def estimate_positioning_ms(self, *_args: Any) -> float:
+            raise ValueError("estimate unavailable")
+
+        def submit_physical_access(self, *args: Any, **kwargs: Any) -> dict[str, float]:
+            return {"total_ms": 0.0}
+
+    scheduler = OSScheduler(EstimateFailingModel())
+    try:
+        request_id = scheduler.submit_bio(0, 4096, is_write=False)
+        assert scheduler.wait_for_completion(request_id) == {"total_ms": 0.0}
     finally:
         scheduler.stop()
 

@@ -159,11 +159,26 @@ class OSScheduler:
                     self.condition.wait(timeout=0.05)
                 if not self.running and not self.staging_queue:
                     return
+                queued_requests = tuple(pending.request for pending in self.staging_queue)
+                current_lba = self.hdd_model.get_estimated_lba()
+                estimate_positioning = getattr(self.hdd_model, "estimate_positioning_ms", None)
+                positioning_costs = None
+                if callable(estimate_positioning):
+                    try:
+                        positioning_costs = {
+                            request.id: estimate_positioning(request.lba, request.size)
+                            for request in queued_requests
+                        }
+                    except Exception:
+                        # RPO is an advisory optimization. A failed estimate must
+                        # not kill the dispatch thread or strand queued requests.
+                        positioning_costs = None
                 _, request, self.direction = pick_next_request(
-                    tuple(pending.request for pending in self.staging_queue),
-                    current_lba=self.hdd_model.get_estimated_lba(),
+                    queued_requests,
+                    current_lba=current_lba,
                     direction=self.direction,
                     now=time.monotonic(),
+                    positioning_costs=positioning_costs,
                 )
                 request_id = None if request is None else request.id
                 pending = None if request_id is None else self._find_pending(request_id)

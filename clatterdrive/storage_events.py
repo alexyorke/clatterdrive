@@ -34,6 +34,11 @@ class StorageEvent:
     transfer_ms: float = 0.0
     directory_entry_count: int = 0
     fragmentation_score: int = 0
+    # Absolute normalized radial position from the mechanical model. None is
+    # reserved for legacy hand-authored audio demonstrations.
+    target_track: float | None = None
+    transfer_delay_ms: float = 0.0
+    track_phase: float = 0.0
 
     # Legacy compatibility telemetry. The current synth should prefer the
     # command-domain fields above and treat these as optional fallbacks only.

@@ -102,10 +102,10 @@ def _render_startup_only_diagnostics() -> tuple[FloatArray, dict[str, float]]:
     engine = HDDAudioEngine(
         seed=0,
         sample_rate=sample_rate,
-        drive_profile="desktop_7200_internal",
-        acoustic_profile="drive_on_desk",
+        drive_profile="enterprise_7200_bare",
+        acoustic_profile="bare_drive_lab",
     )
-    total_frames = int(startup_only_duration("desktop_7200_internal") * sample_rate)
+    total_frames = int(startup_only_duration("enterprise_7200_bare") * sample_rate)
     startup_event = HDDAudioEvent(
         rpm=0.0,
         emitted_at=0.0,
@@ -182,8 +182,8 @@ def main() -> None:
     call_graph_path = AUDIO_BASELINE_DIR / "callgraph.json"
     metrics_path = AUDIO_BASELINE_DIR / "metrics.json"
     startup_summary_path = AUDIO_BASELINE_DIR / "startup_reference_summary.json"
-    startup_wav_path = AUDIO_BASELINE_DIR / "startup-only-desktop.wav"
-    startup_diag_path = AUDIO_BASELINE_DIR / "startup-only-desktop.diagnostics.json"
+    startup_wav_path = AUDIO_BASELINE_DIR / "startup-only-enterprise.wav"
+    startup_diag_path = AUDIO_BASELINE_DIR / "startup-only-enterprise.diagnostics.json"
 
     rendered: dict[str, FloatArray] = {}
     metrics: dict[str, dict[str, float]] = {}
@@ -208,7 +208,7 @@ def main() -> None:
     startup_samples, startup_metrics = _render_startup_only_diagnostics()
     write_wav(startup_wav_path, startup_samples, 22050)
     startup_diag_path.write_text(json.dumps(startup_metrics, indent=2), encoding="utf-8")
-    startup_features = compute_audio_features(startup_samples, 22050, "desktop_7200_internal")
+    startup_features = compute_audio_features(startup_samples, 22050, "enterprise_ultrastar")
     startup_features["time_to_50_s"] = startup_metrics["rpm_time_to_50_s"]
     startup_features["time_to_90_s"] = startup_metrics["rpm_time_to_90_s"]
     startup_features["time_to_99_s"] = startup_metrics["rpm_time_to_99_s"]
@@ -216,6 +216,7 @@ def main() -> None:
     startup_summary = compare_startup_features(
         startup_features,
         [(entry, features) for entry, features, _path in analyzed_references],
+        drive_bucket="enterprise_ultrastar",
     )
     startup_summary_path.write_text(json.dumps(startup_summary, indent=2), encoding="utf-8")
     COMMITTED_REPORT_DIR.mkdir(parents=True, exist_ok=True)

@@ -1,7 +1,6 @@
 using System;
 using System.Diagnostics;
 using System.IO;
-using System.Management;
 using System.Net.Http;
 using System.Text.Json;
 using System.Threading.Tasks;
@@ -12,7 +11,6 @@ public sealed class BackendController : IBackendController
 {
     private Process? process;
     private BackendSettings? currentSettings;
-    private string? backendExecutablePath;
 
     public event EventHandler<string>? LogReceived;
     public event EventHandler? Ready;
@@ -22,28 +20,42 @@ public sealed class BackendController : IBackendController
 
     public void Start(BackendSettings settings)
     {
-        if (IsRunning)
+        if (process is not null)
         {
-            return;
+            if (!process.HasExited)
+            {
+                return;
+            }
+            process.Dispose();
+            process = null;
+            currentSettings = null;
         }
 
         var startInfo = BuildStartInfo(settings);
-        backendExecutablePath = File.Exists(startInfo.FileName) ? Path.GetFullPath(startInfo.FileName) : null;
         foreach (var item in settings.ToEnvironment())
         {
             startInfo.Environment[item.Key] = item.Value;
         }
-        process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
-        process.OutputDataReceived += (_, args) => HandleOutput(args.Data);
-        process.ErrorDataReceived += (_, args) => HandleOutput(args.Data);
-        process.Exited += (_, _) => Exited?.Invoke(this, EventArgs.Empty);
-        if (!process.Start())
+        var candidate = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
+        candidate.OutputDataReceived += (_, args) => HandleOutput(args.Data);
+        candidate.ErrorDataReceived += (_, args) => HandleOutput(args.Data);
+        candidate.Exited += (_, _) => Exited?.Invoke(this, EventArgs.Empty);
+        try
         {
-            throw new InvalidOperationException("Backend process did not start.");
+            if (!candidate.Start())
+            {
+                throw new InvalidOperationException("Backend process did not start.");
+            }
+            process = candidate;
+            currentSettings = settings;
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
         }
-        currentSettings = settings;
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
+        catch
+        {
+            candidate.Dispose();
+            throw;
+        }
     }
 
     public void Stop()
@@ -59,18 +71,22 @@ public sealed class BackendController : IBackendController
                 RequestBackendShutdown();
                 if (!process.WaitForExit(1000))
                 {
-                    process.Kill(entireProcessTree: true);
-                    process.WaitForExit(5000);
+                    try
+                    {
+                        process.Kill(entireProcessTree: true);
+                        process.WaitForExit(5000);
+                    }
+                    catch (InvalidOperationException) when (process.HasExited)
+                    {
+                    }
                 }
             }
-            KillOrphanedBackendProcesses();
         }
         finally
         {
             process.Dispose();
             process = null;
             currentSettings = null;
-            backendExecutablePath = null;
         }
     }
 
@@ -100,75 +116,6 @@ public sealed class BackendController : IBackendController
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or InvalidOperationException)
         {
             LogReceived?.Invoke(this, $"Graceful shutdown request failed: {ex.Message}");
-        }
-    }
-
-    private void KillOrphanedBackendProcesses()
-    {
-        if (string.IsNullOrWhiteSpace(backendExecutablePath))
-        {
-            return;
-        }
-        var expectedPath = Path.GetFullPath(backendExecutablePath);
-        if (OperatingSystem.IsWindows())
-        {
-            KillOrphanedBackendProcessesByWmi(expectedPath);
-            return;
-        }
-        var processName = Path.GetFileNameWithoutExtension(expectedPath);
-        foreach (var candidate in Process.GetProcessesByName(processName))
-        {
-            try
-            {
-                var candidatePath = candidate.MainModule?.FileName;
-                if (candidatePath is not null && Path.GetFullPath(candidatePath).Equals(expectedPath, StringComparison.OrdinalIgnoreCase))
-                {
-                    candidate.Kill(entireProcessTree: true);
-                    candidate.WaitForExit(5000);
-                }
-            }
-            catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
-            {
-                LogReceived?.Invoke(this, $"Backend orphan cleanup skipped: {ex.Message}");
-            }
-            finally
-            {
-                candidate.Dispose();
-            }
-        }
-    }
-
-    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
-    private void KillOrphanedBackendProcessesByWmi(string expectedPath)
-    {
-        using var searcher = new ManagementObjectSearcher(
-            "SELECT ProcessId, ExecutablePath, CommandLine FROM Win32_Process WHERE Name='clatterdrive-backend.exe'"
-        );
-        foreach (ManagementObject candidate in searcher.Get().Cast<ManagementObject>())
-        {
-            try
-            {
-                var executablePath = candidate["ExecutablePath"] as string;
-                var commandLine = candidate["CommandLine"] as string;
-                var matches = executablePath is not null
-                    && Path.GetFullPath(executablePath).Equals(expectedPath, StringComparison.OrdinalIgnoreCase);
-                matches |= commandLine?.Contains(expectedPath, StringComparison.OrdinalIgnoreCase) == true;
-                if (!matches || candidate["ProcessId"] is not uint processId)
-                {
-                    continue;
-                }
-                using var processToKill = Process.GetProcessById((int)processId);
-                processToKill.Kill(entireProcessTree: true);
-                processToKill.WaitForExit(5000);
-            }
-            catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception or ManagementException)
-            {
-                LogReceived?.Invoke(this, $"Backend orphan cleanup skipped: {ex.Message}");
-            }
-            finally
-            {
-                candidate.Dispose();
-            }
         }
     }
 

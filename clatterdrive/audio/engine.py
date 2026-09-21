@@ -269,6 +269,14 @@ class HDDAudioEngine:
         self.tee_recorder: _WaveTeeRecorder | None = None
         self._headless_stop_event = threading.Event()
         self._headless_render_thread: threading.Thread | None = None
+        self._live_stop_event = threading.Event()
+        self._live_render_thread: threading.Thread | None = None
+        self._live_chunks: deque[FloatArray] = deque()
+        self._live_current = np.zeros(0, dtype=np.float64)
+        self._live_offset = 0
+        self._live_underruns = 0
+        self._device_underflows = 0
+        self._live_render_error: Exception | None = None
         self.event_trace_sink = event_trace_sink
         self._audio_lag_samples_ms: deque[float] = deque(maxlen=1024)
         self._max_scheduled_events_per_chunk = max(256, max_pending_events * 4)
@@ -470,7 +478,67 @@ class HDDAudioEngine:
         return diagnostics
 
     def _audio_callback(self, outdata: Any, frames: int, _time_info: Any, status: Any) -> None:
-        outdata[:] = self.render_chunk(frames).reshape(-1, 1)
+        # Only copy already-rendered PCM here. No synthesis, file I/O or waits
+        # on the device's deadline-sensitive callback thread.
+        if status and status.output_underflow:
+            self._device_underflows += 1
+        written = 0
+        while written < frames:
+            if self._live_offset == len(self._live_current):
+                try:
+                    self._live_current = self._live_chunks.popleft()
+                except IndexError:
+                    outdata[written:] = 0.0
+                    self._live_underruns += 1
+                    return
+                self._live_offset = 0
+            count = min(frames - written, len(self._live_current) - self._live_offset)
+            outdata[written:written + count, 0] = self._live_current[self._live_offset:self._live_offset + count]
+            self._live_offset += count
+            written += count
+
+    def playback_health(self) -> dict[str, int | str | None]:
+        return {
+            "buffer_underruns": self._live_underruns,
+            "device_underflows": self._device_underflows,
+            "buffered_chunks": len(self._live_chunks),
+            "render_error": str(self._live_render_error) if self._live_render_error else None,
+        }
+
+    def _live_render_loop(self) -> None:
+        try:
+            while not self._live_stop_event.is_set():
+                if len(self._live_chunks) >= 4:
+                    self._live_stop_event.wait(self.chunk_size / self.fs / 2)
+                    continue
+                self._live_chunks.append(self.render_chunk(self.chunk_size))
+        except Exception as exc:
+            self._live_render_error = exc
+            self._live_stop_event.set()
+
+    def _start_live_render_loop(self) -> None:
+        self._reset_render_clock()
+        self._live_stop_event.clear()
+        self._live_chunks.clear()
+        self._live_current = np.zeros(0, dtype=np.float64)
+        self._live_offset = 0
+        self._live_underruns = self._device_underflows = 0
+        self._live_render_error = None
+        # About 93 ms of bounded lookahead at 44.1 kHz, plus device latency.
+        for _ in range(4):
+            self._live_chunks.append(self.render_chunk(self.chunk_size))
+        self._live_render_thread = threading.Thread(
+            target=self._live_render_loop, name="clatterdrive-audio-render", daemon=True,
+        )
+        self._live_render_thread.start()
+
+    def _stop_live_render_loop(self) -> None:
+        self._live_stop_event.set()
+        if self._live_render_thread is not None:
+            self._live_render_thread.join(timeout=5.0)
+            if self._live_render_thread.is_alive():
+                raise RuntimeError("Audio renderer did not stop; recorder remains open")
+            self._live_render_thread = None
 
     def _reset_render_clock(self) -> None:
         self.time_origin = self.clock.now()
@@ -538,8 +606,10 @@ class HDDAudioEngine:
             stream_kwargs["device"] = device
         try:
             stream = sd.OutputStream(**stream_kwargs)
+            self._start_live_render_loop()
             stream.start()
         except Exception as exc:
+            self._stop_live_render_loop()
             stream = locals().get("stream")
             if stream is not None:
                 stream.close()
@@ -555,18 +625,20 @@ class HDDAudioEngine:
                 "FAKE_HDD_AUDIO_DEVICE/PULSE_SERVER for container-host audio bridging"
             ) from exc
         self.stream = stream
-        self.time_origin = self.clock.now()
-        self.render_frame_cursor = 0
-        self.last_render_at = self.clock.now()
 
     def stop(self) -> None:
         self._stop_headless_render_loop()
-        if self.stream is not None:
-            try:
-                self.stream.stop()
-            finally:
-                self.stream.close()
-                self.stream = None
+        try:
+            if self.stream is not None:
+                try:
+                    self.stream.stop()
+                finally:
+                    try:
+                        self.stream.close()
+                    finally:
+                        self.stream = None
+        finally:
+            self._stop_live_render_loop()
         if self.tee_recorder is not None:
             self.tee_recorder.close()
             self.tee_recorder = None
