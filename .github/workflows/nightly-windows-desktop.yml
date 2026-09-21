@@ -36,6 +36,10 @@ jobs:
       - name: Bootstrap Python and .NET tooling
         run: scripts/bootstrap.ps1
 
+      - name: Prepare WebDAV redirector for mapped-drive tests
+        shell: powershell
+        run: scripts/prepare-windows-webdav.ps1
+
       - name: Build release package
         run: scripts/package-windows.ps1
 
