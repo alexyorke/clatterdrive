@@ -24,3 +24,21 @@ def test_normalized_descendant_destination_is_rejected(tmp_path: Path, method: s
         assert status == 403
         assert (backing / "docs" / "file.bin").read_bytes() == b"preserved"
         assert not (backing / "docs" / "child").exists()
+
+
+def test_long_lived_server_copy_move_during_writeback(tmp_path: Path) -> None:
+    backing = tmp_path / "backing"
+    backing.mkdir()
+    with _run_test_server(backing) as (base_url, provider):
+        provider.vhdd.model.dirty_expire_s = 0.01
+        assert _request(base_url, "MKCOL", "/docs")[0] == 201
+        assert _request(base_url, "PUT", "/docs/file.bin", b"payload" * 1024)[0] == 201
+        for _ in range(100):
+            assert _request(base_url, "COPY", "/docs", headers={
+                "Destination": f"{base_url}/../copy", "Depth": "infinity",
+            })[0] in (201, 204)
+            assert _request(base_url, "MOVE", "/copy", headers={
+                "Destination": f"{base_url}/../moved",
+            })[0] in (201, 204)
+            assert _request(base_url, "GET", "/moved/file.bin")[1] == b"payload" * 1024
+            assert _request(base_url, "DELETE", "/moved")[0] == 204
