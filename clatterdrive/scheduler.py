@@ -39,6 +39,8 @@ class OSScheduler:
         read_deadline_ms: float = 25,
         write_deadline_ms: float = 150,
     ) -> None:
+        if max_queue_depth <= 0:
+            raise ValueError("queue depth must be positive")
         self.hdd_model = hdd_model
         self.max_queue_depth = max_queue_depth
         self.read_deadline_s = read_deadline_ms / 1000.0
@@ -160,7 +162,12 @@ class OSScheduler:
                 if not self.running and not self.staging_queue:
                     return
                 queued_requests = tuple(pending.request for pending in self.staging_queue)
-                current_lba = self.hdd_model.get_estimated_lba()
+                try:
+                    current_lba = self.hdd_model.get_estimated_lba()
+                except Exception:
+                    # Head position, like RPO cost, is advisory. Retain a
+                    # dispatch path so real I/O can report its own outcome.
+                    current_lba = 0
                 estimate_positioning = getattr(self.hdd_model, "estimate_positioning_ms", None)
                 positioning_costs = None
                 if callable(estimate_positioning):

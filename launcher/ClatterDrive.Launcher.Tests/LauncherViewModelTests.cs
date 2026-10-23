@@ -81,6 +81,18 @@ public sealed class LauncherViewModelTests
     }
 
     [TestMethod]
+    public void StartCommandRejectsNonfiniteCapacity()
+    {
+        using var backend = new FakeBackendController();
+        using var viewModel = new LauncherViewModel(backend);
+        foreach (var capacity in new[] { double.NaN, double.PositiveInfinity, double.NegativeInfinity })
+        {
+            viewModel.CapacityGb = capacity;
+            Assert.IsFalse(viewModel.CanStart);
+        }
+    }
+
+    [TestMethod]
     public void BackendExitResetsViewModelState()
     {
         using var backend = new FakeBackendController();

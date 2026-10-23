@@ -87,7 +87,9 @@ class VirtualHDD:
         self.copy_chunk_bytes = 1024 * 1024
         self.writeback_cluster_gap_blocks = max(8, self.model.read_ahead_blocks // 8)
 
-        self.writeback_lock = threading.Lock()
+        self.writeback_lock = threading.RLock()
+        self.writeback_dispatch_lock = threading.Lock()
+        self.writeback_error: Exception | None = None
         self.writeback_queue: deque[DirtyWrite] = deque()
         self.writeback_bytes = 0
         self.inflight_writebacks = 0
@@ -255,7 +257,7 @@ class VirtualHDD:
                 seen_paths.add(child_path)
 
         for observed_path in list(self.backing_observed_paths):
-            if not (observed_path == normalized or observed_path.startswith(f"{normalized}/")):
+            if not (observed_path == normalized or observed_path.startswith(normalized.rstrip("/") + "/")):
                 continue
             if observed_path in seen_paths:
                 continue
@@ -341,7 +343,15 @@ class VirtualHDD:
                 )
                 operation_results.append((operation, result))
 
+        accounted_dispatches: set[int] = set()
         for _operation, result in operation_results:
+            # Merged scheduler followers receive the same result object as the
+            # root request. Count physical work once, not once per logical bio.
+            # operation_results retains the objects, so identities cannot recycle.
+            if self.scheduler:
+                if id(result) in accounted_dispatches:
+                    continue
+                accounted_dispatches.add(id(result))
             total_stats = OperationStats(
                 total_ms=total_stats.total_ms + result.total_ms,
                 extents=total_stats.extents,
@@ -411,16 +421,46 @@ class VirtualHDD:
     def _drain_write_cache(self, target_bytes: int = 0) -> float:
         total_ms = 0.0
         while True:
-            batch = self._dequeue_writeback_batch(force=True)
-            if not batch:
+            result = self._process_writeback_batch(force=True)
+            if result is None:
                 break
-            operations = self._cluster_writeback_operations(batch)
-            total_ms += self._run_ops(operations, is_write=True)["total_ms"]
+            total_ms += result
             if self.writeback_bytes <= target_bytes:
                 break
         if target_bytes <= 0:
             self._wait_for_writeback_idle()
         return total_ms
+
+    def _process_writeback_batch(self, *, force: bool) -> float | None:
+        # Synchronization includes the dequeue-to-dispatch interval as well as
+        # physical completion. Other drainers cannot overtake this batch.
+        with self.writeback_dispatch_lock:
+            with self.writeback_lock:
+                if self.writeback_error is not None:
+                    if not force:
+                        return None
+                    failure = self.writeback_error
+                    self.writeback_error = None
+                    raise OSError("background writeback failed; dirty data retained for retry") from failure
+                batch = self._dequeue_writeback_batch(force=force)
+                if not batch:
+                    return None
+                self.inflight_writebacks += 1
+                self._refresh_writeback_idle_state_locked()
+            try:
+                operations = self._cluster_writeback_operations(batch)
+                return self._run_ops(operations, is_write=True).total_ms
+            except Exception as exc:
+                with self.writeback_lock:
+                    self.writeback_queue.extendleft(reversed(batch))
+                    self.writeback_bytes += sum(item.size_bytes for item in batch)
+                    if not force:
+                        self.writeback_error = exc
+                raise
+            finally:
+                with self.writeback_lock:
+                    self.inflight_writebacks -= 1
+                    self._refresh_writeback_idle_state_locked()
 
     def _cluster_writeback_operations(self, batch: list[DirtyWrite]) -> list[IOOperation]:
         if not batch:
@@ -479,19 +519,13 @@ class VirtualHDD:
 
     def _writeback_loop(self) -> None:
         while self.running:
-            batch = self._dequeue_writeback_batch(force=False)
-            if batch:
-                with self.writeback_lock:
-                    self.inflight_writebacks += 1
-                    self._refresh_writeback_idle_state_locked()
-                operations = self._cluster_writeback_operations(batch)
-                try:
-                    self._run_ops(operations, is_write=True)
-                finally:
-                    with self.writeback_lock:
-                        self.inflight_writebacks -= 1
-                        self._refresh_writeback_idle_state_locked()
-                continue
+            try:
+                if self._process_writeback_batch(force=False) is not None:
+                    continue
+            except Exception:
+                # The batch and its error remain visible to sync_all(). Do not
+                # silently kill the worker or retry a failing device in a loop.
+                pass
             self.sleeper.sleep(0.05)
 
     def sync_all(self) -> float:

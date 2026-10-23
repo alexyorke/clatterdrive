@@ -1,6 +1,24 @@
 import Darwin
 import Foundation
 
+// Pipe reads may split both JSON records and multi-byte UTF-8 characters.
+final class BackendOutputLines {
+    private var pending = Data()
+    private let lock = NSLock()
+
+    func append(_ data: Data) -> [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        pending.append(data)
+        var lines: [String] = []
+        while let newline = pending.firstIndex(of: 10) {
+            lines.append(String(decoding: pending[..<newline], as: UTF8.self))
+            pending.removeSubrange(...newline)
+        }
+        return lines
+    }
+}
+
 public protocol BackendControlling: AnyObject {
     var onLog: ((String) -> Void)? { get set }
     var onReady: (() -> Void)? { get set }
@@ -39,14 +57,17 @@ public final class BackendController: BackendControlling {
         launchedProcess.environment = ProcessInfo.processInfo.environment.merging(spec.environment) { _, new in new }
 
         let pipe = Pipe()
+        let outputLines = BackendOutputLines()
         launchedProcess.standardOutput = pipe
         launchedProcess.standardError = pipe
         pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
-            guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else {
+            guard !data.isEmpty else {
                 return
             }
-            self?.handleOutput(text)
+            for line in outputLines.append(data) {
+                self?.handleOutput(line)
+            }
         }
         launchedProcess.terminationHandler = { [weak self] process in
             pipe.fileHandleForReading.readabilityHandler = nil
@@ -89,8 +110,8 @@ public final class BackendController: BackendControlling {
         process.standardOutput = output
         process.standardError = output
         try process.run()
-        process.waitUntilExit()
         let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
         if process.terminationStatus != 0 {
             let detail = String(data: data, encoding: .utf8) ?? "unknown error"
             throw NSError(
@@ -117,7 +138,8 @@ public final class BackendController: BackendControlling {
         guard let currentSettings else {
             return
         }
-        let rawHost = currentSettings.host == "0.0.0.0" || currentSettings.host == "::" ? "127.0.0.1" : currentSettings.host
+        let rawHost = currentSettings.host == "0.0.0.0" ? "127.0.0.1" :
+            (currentSettings.host == "::" ? "::1" : currentSettings.host)
         let host = BackendSettings.urlHost(rawHost)
         guard let url = URL(string: "http://\(host):\(currentSettings.port)/.clatterdrive/shutdown") else {
             return

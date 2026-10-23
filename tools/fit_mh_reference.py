@@ -824,15 +824,9 @@ def align_by_cross_correlation(reference: np.ndarray, candidate: np.ndarray, max
     correlation = signal.correlate(candidate_centered, reference_centered, mode="full", method="fft")
     lags = signal.correlation_lags(len(candidate_centered), len(reference_centered), mode="full")
     mask = (lags >= -max_lag) & (lags <= max_lag)
-    lag = int(lags[mask][int(np.argmax(correlation[mask]))]) if np.any(mask) else 0
-    if lag > 0:
-        aligned = np.pad(candidate, (0, lag))[: candidate.size]
-        aligned = np.pad(aligned, (lag, 0))[: candidate.size]
-    elif lag < 0:
-        shift = abs(lag)
-        aligned = np.pad(candidate[shift:], (0, shift))
-    else:
-        aligned = candidate.copy()
+    # Correlation reports candidate delay; alignment must apply its inverse.
+    lag = -int(lags[mask][int(np.argmax(correlation[mask]))]) if np.any(mask) else 0
+    aligned = _shift_window(candidate, lag)
     return aligned, lag
 
 
@@ -939,8 +933,7 @@ def event_window_metrics(
         }
     indices = selected if selected is not None else np.arange(len(reference_events))
     max_lag = int((max_lag_ms / 1000.0) * SAMPLE_RATE)
-    amplitudes = np.asarray([reference_events[int(index)]["a"] for index in indices], dtype=np.float64)
-    weights = amplitudes / max(float(np.sum(amplitudes)), 1e-9)
+    weights: list[float] = []
     correlations: list[float] = []
     distances: list[float] = []
 
@@ -962,6 +955,7 @@ def event_window_metrics(
                 best_window = shifted
         correlations.append(best_corr)
         distances.append(_window_log_distance(ref_window, best_window))
+        weights.append(reference_events[int(index)]["a"])
 
     if not correlations:
         return {
@@ -973,7 +967,7 @@ def event_window_metrics(
 
     correlation_array = np.asarray(correlations, dtype=np.float64)
     distance_array = np.asarray(distances, dtype=np.float64)
-    weight_array = weights[: len(correlation_array)]
+    weight_array = np.asarray(weights, dtype=np.float64)
     weight_array = weight_array / max(float(np.sum(weight_array)), 1e-9)
     return {
         "weighted_correlation": float(np.sum(correlation_array * weight_array)),

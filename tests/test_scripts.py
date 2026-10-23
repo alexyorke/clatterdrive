@@ -8,6 +8,40 @@ from pathlib import Path
 import pytest
 
 
+@pytest.mark.parametrize("script", ["bootstrap.ps1", "test-ui.ps1"])
+def test_powershell_runner_stops_on_native_failure(tmp_path: Path, script: str) -> None:
+    shell = shutil.which("powershell") or shutil.which("pwsh")
+    if shell is None:
+        pytest.skip("PowerShell is not installed on this host")
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    source = Path(__file__).resolve().parents[1] / "scripts"
+    for name in (script, "Use-RepoUv.ps1"):
+        shutil.copyfile(source / name, scripts / name)
+    env = os.environ.copy()
+    env["AUDIT_SCRIPT"] = script
+    env["UV_CACHE_DIR"] = str(tmp_path / "cache")
+    result = subprocess.run(
+        [shell, "-NoProfile", "-Command", """
+        $ErrorActionPreference = 'Stop'
+        $global:dotnetCalls = 0
+        function global:uv { $global:LASTEXITCODE = 0 }
+        function global:dotnet {
+            $global:dotnetCalls++
+            $global:LASTEXITCODE = 42
+        }
+        try { & (Join-Path ./scripts $env:AUDIT_SCRIPT) }
+        catch {
+            if ($global:dotnetCalls -ne 1) { throw 'Did not fail fast' }
+            if ($_ -notmatch 'failed') { throw }
+            exit 0
+        }
+        throw 'Native failure was ignored'
+        """], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 
 
 def test_powershell_test_runner_creates_fresh_temp_parent(tmp_path: Path) -> None:

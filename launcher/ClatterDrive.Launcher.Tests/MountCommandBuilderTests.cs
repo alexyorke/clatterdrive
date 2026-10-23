@@ -74,7 +74,24 @@ public sealed class MountCommandBuilderTests
         var ipv4Url = (string?)method.Invoke(null, new object[] { new BackendSettings { Host = "127.0.0.1", Port = 8123 } });
 
         Assert.AreEqual("http://[::1]:8123/.clatterdrive/shutdown", ipv6Url);
-        Assert.AreEqual("http://127.0.0.1:8123/.clatterdrive/shutdown", bindAllUrl);
+        Assert.AreEqual("http://[::1]:8123/.clatterdrive/shutdown", bindAllUrl);
         Assert.AreEqual("http://127.0.0.1:8123/.clatterdrive/shutdown", ipv4Url);
+    }
+
+    [TestMethod]
+    public void BackendControllerIgnoresNonStatusJson()
+    {
+        using var backend = new BackendController();
+        var method = typeof(BackendController).GetMethod("HandleOutput", BindingFlags.NonPublic | BindingFlags.Instance);
+        Assert.IsNotNull(method);
+        var readyCount = 0;
+        backend.Ready += (_, _) => readyCount++;
+        foreach (var line in new[] { "[]", "null", "42", "\"log\"", "{\"event\":42}", "{\"event\":null}", "plain text" })
+        {
+            method.Invoke(backend, new object[] { line });
+        }
+        Assert.AreEqual(0, readyCount);
+        method.Invoke(backend, new object[] { "{\"event\":\"ready\"}" });
+        Assert.AreEqual(1, readyCount);
     }
 }

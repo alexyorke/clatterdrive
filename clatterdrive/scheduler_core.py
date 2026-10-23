@@ -92,6 +92,10 @@ def merge_request(
     for index, request in enumerate(updated_queue):
         if request.is_write != incoming.is_write or request.op_kind != incoming.op_kind or request.sync != incoming.sync:
             continue
+        # Requests begin at block boundaries. Summing two partial-block byte
+        # counts would erase the gap and undercount the physical sectors.
+        if request.size % block_bytes or incoming.size % block_bytes:
+            continue
 
         request_blocks = size_in_blocks(request.size, block_bytes)
         incoming_blocks = size_in_blocks(incoming.size, block_bytes)
