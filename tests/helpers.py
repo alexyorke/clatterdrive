@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import faulthandler
 import threading
 import urllib.error
 import urllib.request
@@ -84,6 +85,9 @@ def _request(
     except ConnectionResetError:
         if method in {"LOCK", "UNLOCK"}:
             return 403, b"", {}
+        raise
+    except TimeoutError:
+        faulthandler.dump_traceback()
         raise
 
 

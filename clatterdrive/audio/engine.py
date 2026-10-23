@@ -408,6 +408,8 @@ class HDDAudioEngine:
         }
 
     def render_chunk(self, frames: int) -> FloatArray:
+        if frames < 0:
+            raise ValueError("frames must be nonnegative")
         with self.render_lock:
             scheduled_events = self._schedule_events_for_chunk(frames)
             chunk = self.synthesizer.render_chunk(frames, scheduled_events=scheduled_events)
@@ -418,6 +420,8 @@ class HDDAudioEngine:
             return chunk
 
     def render_chunk_with_diagnostics(self, frames: int) -> tuple[FloatArray, AudioDiagnosticTrace]:
+        if frames < 0:
+            raise ValueError("frames must be nonnegative")
         with self.render_lock:
             scheduled_events = self._schedule_events_for_chunk(frames)
             diagnostics = self.synthesizer.render_diagnostic_chunk(frames, scheduled_events=scheduled_events)
@@ -570,6 +574,8 @@ class HDDAudioEngine:
             return
         self._headless_stop_event.set()
         self._headless_render_thread.join(timeout=2.0)
+        if self._headless_render_thread.is_alive():
+            raise RuntimeError("headless audio renderer did not stop; recorder remains open")
         self._headless_render_thread = None
 
     def start(self) -> None:

@@ -9,6 +9,7 @@ $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $RepoRoot
 
 dotnet build launcher\ClatterDrive.Launcher\ClatterDrive.Launcher.csproj -c Debug
+if ($LASTEXITCODE -ne 0) { throw "Launcher build failed ($LASTEXITCODE)" }
 
 if ($Packaged) {
     $zipPath = Join-Path $RepoRoot ".runtime\package\ClatterDrive-windows-x64.zip"
@@ -37,6 +38,7 @@ try {
     } else {
         dotnet test launcher\ClatterDrive.Launcher.Tests\ClatterDrive.Launcher.Tests.csproj -c Debug
     }
+    if ($LASTEXITCODE -ne 0) { throw "Launcher tests failed ($LASTEXITCODE)" }
 } finally {
     if ($Packaged) {
         Remove-Item Env:\CLATTERDRIVE_LAUNCHER_EXE -ErrorAction SilentlyContinue

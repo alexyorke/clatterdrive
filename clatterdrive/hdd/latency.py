@@ -249,6 +249,7 @@ class HDDLatencyModel:
         self.transition_origin: str | None = None
         self.transition_stage: str | None = None
         self.transition_total_ms: float = 0.0
+        self.transition_error: Exception | None = None
         self.last_startup_origin: str | None = None
         self.last_startup_total_ms: float = 0.0
         self.last_idle_calibration_time = 0.0
@@ -312,6 +313,7 @@ class HDDLatencyModel:
             self.transition_origin = None
             self.transition_stage = None
             self.transition_total_ms = 0.0
+            self.transition_error = None
 
     def _clear_read_cache_locked(self) -> None:
         self.read_cache.clear()
@@ -565,14 +567,12 @@ class HDDLatencyModel:
                 self.power_state = "low_rpm_idle"
                 self.current_rpm = self.low_rpm_rpm
                 self.heads_loaded = False
-                self.last_access_time = self.clock.now()
-                self.position_updated_at = self.last_access_time
+                self.position_updated_at = self.clock.now()
             else:
                 self.power_state = "standby"
                 self.current_rpm = 0.0
                 self.heads_loaded = False
-                self.last_access_time = self.clock.now()
-                self.position_updated_at = self.last_access_time
+                self.position_updated_at = self.clock.now()
                 self.ready_event.clear()
                 self._clear_read_cache_locked()
 
@@ -591,6 +591,10 @@ class HDDLatencyModel:
                     completed = self._run_spindown_trace(kind, stages, cancel_event)
                 if completed:
                     self._finish_transition(cancel_event, kind, origin)
+            except Exception as exc:
+                with self.lock:
+                    if self.transition_cancel is cancel_event:
+                        self.transition_error = exc
             finally:
                 with self.lock:
                     if self.transition_cancel is cancel_event:
@@ -655,6 +659,7 @@ class HDDLatencyModel:
     def begin_async_startup(self) -> bool:
         thread_to_join = None
         with self.lock:
+            self._check_available_locked()
             if self.transition_kind == "startup" and self.transition_thread is not None:
                 return False
             if self.ready_event.is_set() and self.power_state == "active":
@@ -666,6 +671,9 @@ class HDDLatencyModel:
             thread_to_join.join(timeout=2.0)
 
         with self.lock:
+            self._check_available_locked()
+            if self.transition_kind == "startup":
+                return False
             origin, stages, total_ms = self._resolve_startup_plan_locked()
             if not stages:
                 self.power_state = "active"
@@ -757,6 +765,8 @@ class HDDLatencyModel:
         poll_ms = 0.0
         poll_count = 0
         while not self.ready_event.is_set():
+            with self.lock:
+                self._check_available_locked()
             probe_ms = self.identify_poll_ms if poll_count == 0 else self.test_unit_ready_ms
             cycle_ms = probe_ms + self.ready_poll_ms
             self._publish_event(
@@ -778,6 +788,12 @@ class HDDLatencyModel:
             ready_poll_ms=poll_ms,
             ready_poll_count=poll_count,
         )
+
+    def _check_available_locked(self) -> None:
+        if not self.running:
+            raise RuntimeError("HDD model is stopped")
+        if self.transition_error is not None:
+            raise RuntimeError("HDD power transition failed") from self.transition_error
 
     def _sleep_ms(self, latency_ms: float) -> None:
         if self.latency_scale <= 0.0:
@@ -1083,16 +1099,19 @@ class HDDLatencyModel:
         directory_entry_count: int = 0,
         fragmentation_score: int = 0,
     ) -> Stats:
+        if size_bytes <= 0:
+            raise ValueError("physical access size must be positive")
         block_count = max(1, math.ceil(size_bytes / self.block_bytes))
+        if lba < 0 or lba >= self.addressable_blocks or block_count > self.addressable_blocks - lba:
+            raise ValueError("physical access is outside the addressable range")
         requested_size_bytes = max(0, int(size_bytes))
         reported_extent_count = (
             max(1, int(extent_count))
             if op_kind in {"data", "writeback"}
             else max(0, int(extent_count))
         )
-        ready_info = self._wait_for_ready_poll()
-
         with self.io_lock:
+            ready_info = self._wait_for_ready_poll()
             with self.lock:
                 now = self.clock.now()
                 cache_latency_ms = 0.0
@@ -1235,11 +1254,16 @@ class HDDLatencyModel:
                     fragmentation_score=fragmentation_score,
                 )
 
-    def _background_tasks_loop(self) -> None:
-        while self.running:
-            self.sleeper.sleep(0.05)
+    def _background_power_step(self) -> None:
+        # Idle time is measured since the last completed command. A long
+        # transfer is not idle, even when it outlasts the configured timeout.
+        if not self.io_lock.acquire(blocking=False):
+            return
+        try:
             decision = BackgroundDecision(rpm=0.0)
             with self.lock:
+                if not self.running:
+                    return
                 decision = background_decision(
                     self.core_config,
                     self._core_mechanical_state(),
@@ -1274,8 +1298,17 @@ class HDDLatencyModel:
                     motion_duration_ms=1.2,
                     settle_duration_ms=1.0,
                 )
-            self._background_scan_step(self.clock.now())
             if decision.should_low_rpm:
                 self.begin_async_low_rpm()
             if decision.should_spindown:
                 self.begin_async_spindown()
+        finally:
+            self.io_lock.release()
+
+    def _background_tasks_loop(self) -> None:
+        while self.running:
+            self.sleeper.sleep(0.05)
+            if not self.running:
+                break
+            self._background_power_step()
+            self._background_scan_step(self.clock.now())

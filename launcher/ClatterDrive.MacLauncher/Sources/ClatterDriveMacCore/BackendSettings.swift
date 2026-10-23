@@ -79,7 +79,7 @@ public struct BackendSettings: Equatable {
         if driveProfile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return "Choose a drive profile."
         }
-        if capacityGb <= 0 || capacityGb > 256 {
+        if !capacityGb.isFinite || capacityGb <= 0 || capacityGb > 256 {
             return "Choose a capacity from greater than 0 through 256 GB."
         }
         if filesystemProfile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

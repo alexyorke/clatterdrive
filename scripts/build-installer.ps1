@@ -30,6 +30,7 @@ if (-not (Test-Path (Join-Path $PackageRoot "backend\clatterdrive-backend.exe"))
 
 New-Item -ItemType Directory -Force -Path $InstallerDir | Out-Null
 dotnet tool restore
+if ($LASTEXITCODE -ne 0) { throw "dotnet tool restore failed ($LASTEXITCODE)" }
 
 function Get-InstallerVersion {
     if ($env:CLATTERDRIVE_INSTALLER_VERSION -match '^\d+\.\d+\.\d+$') {
@@ -203,4 +204,5 @@ if (Test-Path $MsiPath) {
 }
 
 dotnet tool run wix -- build $WxsPath -arch x64 -out $MsiPath
+if ($LASTEXITCODE -ne 0) { throw "Installer build failed ($LASTEXITCODE)" }
 Write-Host "Installer: $MsiPath"

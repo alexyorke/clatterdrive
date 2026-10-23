@@ -241,6 +241,9 @@ def compute_audio_features(samples: FloatArray, sample_rate: int, bucket: str) -
     n_fft = 1024
     hop = 256
     noverlap = n_fft - hop
+    # Keep the FFT and mel-bank dimensions identical for short clips.
+    if normalized.size < n_fft:
+        normalized = np.pad(normalized, (0, n_fft - normalized.size))
     freqs, times, stft = signal.stft(
         normalized,
         fs=sample_rate,
