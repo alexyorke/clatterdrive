@@ -121,7 +121,7 @@ public sealed class BackendController : IBackendController
 
     internal static string BuildLocalControlUrl(BackendSettings settings)
     {
-        var host = settings.Host is "0.0.0.0" or "::" ? "127.0.0.1" : settings.Host;
+        var host = settings.Host switch { "0.0.0.0" => "127.0.0.1", "::" or "[::]" => "::1", _ => settings.Host };
         host = BackendSettings.FormatUrlHost(host);
         return $"http://{host}:{settings.Port}/.clatterdrive/shutdown";
     }
@@ -189,7 +189,9 @@ public sealed class BackendController : IBackendController
         try
         {
             using var doc = JsonDocument.Parse(line);
-            if (doc.RootElement.TryGetProperty("event", out var eventName) && eventName.GetString() == "ready")
+            if (doc.RootElement.ValueKind == JsonValueKind.Object &&
+                doc.RootElement.TryGetProperty("event", out var eventName) &&
+                eventName.ValueKind == JsonValueKind.String && eventName.GetString() == "ready")
             {
                 Ready?.Invoke(this, EventArgs.Empty);
             }

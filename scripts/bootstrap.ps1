@@ -19,6 +19,9 @@ if (-not $PythonOnly) {
         throw ".NET SDK is required for the Windows launcher."
     }
     dotnet tool restore
+    if ($LASTEXITCODE -ne 0) { throw "dotnet tool restore failed ($LASTEXITCODE)" }
     dotnet restore launcher\ClatterDrive.Launcher\ClatterDrive.Launcher.csproj
+    if ($LASTEXITCODE -ne 0) { throw "Launcher restore failed ($LASTEXITCODE)" }
     dotnet restore launcher\ClatterDrive.Launcher.Tests\ClatterDrive.Launcher.Tests.csproj
+    if ($LASTEXITCODE -ne 0) { throw "Launcher test restore failed ($LASTEXITCODE)" }
 }

@@ -639,6 +639,8 @@ def create_empty_file(state: FileSystemState, path: str) -> tuple[FileSystemStat
 
 
 def write(state: FileSystemState, path: str, offset: int, length: int) -> tuple[FileSystemState, list[IOOperation]]:
+    if offset < 0 or length < 0:
+        raise ValueError("offset and length must be non-negative")
     normalized = normalize_path(path)
     if normalized in state.directories:
         raise IsADirectoryError(normalized)
@@ -646,6 +648,9 @@ def write(state: FileSystemState, path: str, offset: int, length: int) -> tuple[
     parent_path = parent_dir(normalized)
     if parent_path not in state.directories:
         raise FileNotFoundError(parent_path)
+
+    if length == 0:
+        return state, []
 
     next_state = clone_state(state)
     parent_entry = next_state.directories[parent_path]
@@ -683,6 +688,8 @@ def write(state: FileSystemState, path: str, offset: int, length: int) -> tuple[
 
 
 def read(state: FileSystemState, path: str, offset: int, length: int) -> list[IOOperation]:
+    if offset < 0 or length < 0:
+        raise ValueError("offset and length must be non-negative")
     normalized = normalize_path(path)
     if normalized in state.directories:
         raise IsADirectoryError(normalized)

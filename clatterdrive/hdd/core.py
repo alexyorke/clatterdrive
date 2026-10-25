@@ -1072,7 +1072,7 @@ def remember_read(config: HDDCoreConfig, cache_state: CacheState, lba: int, bloc
         cache_blocks = min(max_window, max(blocks, previous_window * 2))
     else:
         cache_blocks = max(blocks, min(blocks * 2, max(1, config.read_ahead_blocks // 8)))
-    span = CacheSpan(lba, lba + cache_blocks - 1, now + 2.0)
+    span = CacheSpan(lba, min(config.addressable_blocks - 1, lba + cache_blocks - 1), now + 2.0)
     return replace(
         pruned,
         spans=(*pruned.spans, span),
@@ -1206,6 +1206,8 @@ def background_decision(
     standby_after_s: float,
 ) -> BackgroundDecision:
     idle_s = now - mechanical.last_access_time
+    if idle_s >= standby_after_s and mechanical.power_state in {"low_rpm_idle", "unloaded_idle", "active"} and not transition_active:
+        return BackgroundDecision(rpm=mechanical.current_rpm, should_spindown=True)
     if idle_s >= unload_after_s and mechanical.power_state == "active" and not transition_active:
         return BackgroundDecision(
             rpm=mechanical.current_rpm,
@@ -1227,6 +1229,4 @@ def background_decision(
             calibrate=True,
             next_idle_calibration_time=now,
         )
-    if idle_s >= standby_after_s and mechanical.power_state in {"low_rpm_idle", "unloaded_idle", "active"} and not transition_active:
-        return BackgroundDecision(rpm=mechanical.current_rpm, should_spindown=True)
     return BackgroundDecision(rpm=mechanical.current_rpm)

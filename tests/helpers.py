@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import contextlib
+import faulthandler
+import sys
 import threading
+import time
+import traceback
 import urllib.error
 import urllib.request
 import wave
+import uuid
 from collections.abc import Iterator
+from collections import deque
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +23,18 @@ from wsgidav.wsgidav_app import WsgiDAVApp
 from clatterdrive.audio import HDDAudioEvent
 from clatterdrive.storage_events import StorageEventSink
 from clatterdrive.webdav import HDDProvider
+
+
+_http_heartbeat: deque[float] = deque(maxlen=256)
+
+
+def _http_heartbeat_loop() -> None:
+    while True:
+        _http_heartbeat.append(time.monotonic())
+        time.sleep(0.05)
+
+
+threading.Thread(target=_http_heartbeat_loop, name="http-test-heartbeat", daemon=True).start()
 
 
 class _NoAuthWsgiDAVApp(WsgiDAVApp):
@@ -47,6 +66,7 @@ def _run_test_server(
             "wsgidav.request_resolver.RequestResolver",
         ],
         "verbose": 0,
+        "logging": {"enable": False},
     }
     app = _NoAuthWsgiDAVApp(config)
     server = wsgi.Server(("127.0.0.1", 0), app)
@@ -61,6 +81,33 @@ def _run_test_server(
         provider.vhdd.stop()
 
 
+def _dump_http_threads(method: str, path: str) -> None:
+    # Freeze frame locations before any filesystem access: the filesystem may
+    # itself be stalled, and live frame references can advance during logging.
+    frames = sys._current_frames()
+    snapshots = {
+        ident: traceback.StackSummary.extract(traceback.walk_stack(frame), lookup_lines=False)
+        for ident, frame in frames.items()
+    }
+    names = [(thread.name, thread.ident) for thread in threading.enumerate()]
+    captured_at = time.monotonic()
+    ticks = tuple(_http_heartbeat)
+    gaps = [later - earlier for earlier, later in pairwise(ticks)]
+    trace_dir = Path(__file__).resolve().parents[1] / ".tmp_tests" / "http-timeouts"
+    trace_dir.mkdir(parents=True, exist_ok=True)
+    trace_path = trace_dir / f"timeout-{uuid.uuid4().hex}.txt"
+    with trace_path.open("w", encoding="utf-8") as trace_file:
+        faulthandler.dump_traceback(file=trace_file, all_threads=True)
+        trace_file.write(f"{method} {path}; captured={captured_at}; saved={time.monotonic()}\n")
+        trace_file.write(f"Heartbeat last={ticks[-1] if ticks else None}; max_gap={max(gaps, default=0)}; last_gaps={gaps[-10:]}\n")
+        for name, ident in names:
+            trace_file.write(f"\nThread {name} ident={ident}\n")
+            stack = snapshots.get(ident) if ident is not None else None
+            if stack is not None:
+                trace_file.writelines(stack.format())
+    print(f"Full HTTP timeout trace: {trace_path}", file=sys.stderr)
+
+
 def _request(
     base_url: str,
     method: str,
@@ -72,6 +119,9 @@ def _request(
     for key, value in (headers or {}).items():
         request.add_header(key, value)
 
+    watchdog = threading.Timer(1.0, _dump_http_threads, args=(method, path))
+    watchdog.daemon = True
+    watchdog.start()
     try:
         with urllib.request.urlopen(request, timeout=5.0) as response:
             return response.status, response.read(), dict(response.headers)
@@ -80,11 +130,18 @@ def _request(
             body = exc.read()
         except OSError:
             body = b""
+        print(f"HTTP error: {method} {path}: {exc.code}; body={body[:4096]!r}", file=sys.stderr)
         return exc.code, body, dict(exc.headers)
     except ConnectionResetError:
         if method in {"LOCK", "UNLOCK"}:
             return 403, b"", {}
         raise
+    except TimeoutError:
+        _dump_http_threads(method, path)
+        faulthandler.dump_traceback()
+        raise
+    finally:
+        watchdog.cancel()
 
 
 def _assert_provider_tree_matches_disk(provider: HDDProvider, backing_dir: Path) -> None:

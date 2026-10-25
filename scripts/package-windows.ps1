@@ -22,6 +22,7 @@ if ($env:WINDOWS_SIGNING_THUMBPRINT) {
     foreach ($target in $signTargets) {
         if (Test-Path $target) {
             & $signtool.Source sign /sha1 $env:WINDOWS_SIGNING_THUMBPRINT /fd SHA256 /tr $timestampUrl /td SHA256 $target
+            if ($LASTEXITCODE -ne 0) { throw "Artifact signing failed ($LASTEXITCODE)" }
         }
     }
 } else {

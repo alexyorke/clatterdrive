@@ -283,7 +283,7 @@ public sealed class LauncherViewModel : INotifyPropertyChanged, IDisposable
         {
             return "Choose a port from 1 to 65535.";
         }
-        if (CapacityGb <= 0 || CapacityGb > 256)
+        if (!double.IsFinite(CapacityGb) || CapacityGb <= 0 || CapacityGb > 256)
         {
             return "Choose a capacity from greater than 0 through 256 GB.";
         }

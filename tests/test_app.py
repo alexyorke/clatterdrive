@@ -130,7 +130,11 @@ def test_local_control_passes_non_control_requests_to_inner_app() -> None:
     assert statuses == ["200 OK"]
 
 
-def test_server_bind_failure_exits_nonzero_and_cleans_up(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+@pytest.mark.parametrize("cleanup_failure", [False, True])
+def test_server_bind_failure_exits_nonzero_and_cleans_up(
+    tmp_path: Path, monkeypatch: MonkeyPatch, cleanup_failure: bool,
+) -> None:
+    cleaned: list[str] = []
     class FakeAudio:
         output_enabled = False
         tee_path = None
@@ -142,7 +146,7 @@ def test_server_bind_failure_exits_nonzero_and_cleans_up(tmp_path: Path, monkeyp
             return None
 
         def stop(self) -> None:
-            return None
+            cleaned.append("audio")
 
         def publish_event(self, _event: Any) -> None:
             return None
@@ -156,6 +160,8 @@ def test_server_bind_failure_exits_nonzero_and_cleans_up(tmp_path: Path, monkeyp
 
         def stop(self) -> None:
             self.stopped = True
+            if cleanup_failure:
+                raise RuntimeError("persistence failed")
 
     fake_vhdd = FakeVirtualHDD()
 
@@ -178,10 +184,14 @@ def test_server_bind_failure_exits_nonzero_and_cleans_up(tmp_path: Path, monkeyp
     monkeypatch.setattr(app_module, "HDDProvider", FakeProvider)
     monkeypatch.setattr(app_module, "NoAuthWsgiDAVApp", lambda _config: object())
     monkeypatch.setattr(app_module.wsgi, "Server", FailingServer)
+    monkeypatch.setattr(app_module, "_restore_shutdown_handlers", lambda _handlers: cleaned.append("signals"))
 
     config = ClatterDriveConfig(backing_dir=str(tmp_path), audio="off")
-    with pytest.raises(SystemExit) as exc_info:
+    with pytest.raises(RuntimeError if cleanup_failure else SystemExit) as exc_info:
         app_module.start_server(config)
 
-    assert exc_info.value.code == 1
+    if not cleanup_failure:
+        assert isinstance(exc_info.value, SystemExit)
+        assert exc_info.value.code == 1
     assert fake_vhdd.stopped is True
+    assert cleaned == ["audio", "signals"]

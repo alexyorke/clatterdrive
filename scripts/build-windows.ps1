@@ -37,6 +37,7 @@ dotnet publish launcher\ClatterDrive.Launcher\ClatterDrive.Launcher.csproj `
     --self-contained true `
     -p:PublishSingleFile=false `
     -o $LauncherDist
+if ($LASTEXITCODE -ne 0) { throw "Launcher publish failed ($LASTEXITCODE)" }
 
 Write-Host "Backend: $BackendDist"
 Write-Host "Launcher: $LauncherDist"

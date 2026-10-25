@@ -36,4 +36,10 @@ final class BackendSettingsTests: XCTestCase {
         let settings = BackendSettings(port: 70_000)
         XCTAssertEqual(settings.validationMessage(), "Choose a port from 1 to 65535.")
     }
+
+    func testValidationRejectsNonfiniteCapacity() {
+        for capacity in [Double.nan, Double.infinity, -Double.infinity] {
+            XCTAssertNotNil(BackendSettings(capacityGb: capacity).validationMessage())
+        }
+    }
 }

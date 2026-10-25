@@ -5,6 +5,7 @@ import json
 import os
 import signal
 import threading
+from contextlib import ExitStack
 from typing import Any
 
 from cheroot import wsgi
@@ -192,15 +193,18 @@ def start_server(config: ClatterDriveConfig | None = None, *, json_status: bool 
         print(f"Server startup failed: {exc}", flush=True)
         raise SystemExit(1) from exc
     finally:
-        if server is not None:
-            server.stop()
-        if provider is not None:
-            provider.vhdd.stop()
-        if audio_started:
-            audio.stop()
-        if event_recorder is not None and event_trace_path:
-            event_recorder.export_json(event_trace_path)
-        _restore_shutdown_handlers(previous_signal_handlers)
+        # ExitStack runs every cleanup even if an earlier one fails. Register
+        # in reverse shutdown order so producers stop before audio/trace sinks.
+        with ExitStack() as cleanup:
+            cleanup.callback(_restore_shutdown_handlers, previous_signal_handlers)
+            if event_recorder is not None and event_trace_path:
+                cleanup.callback(event_recorder.export_json, event_trace_path)
+            if audio_started:
+                cleanup.callback(audio.stop)
+            if provider is not None:
+                cleanup.callback(provider.vhdd.stop)
+            if server is not None:
+                cleanup.callback(server.stop)
 
 
 if __name__ == "__main__":

@@ -10,10 +10,12 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.request
 import wave
 from contextlib import suppress
+from collections import deque
 from pathlib import Path
 
 
@@ -30,23 +32,37 @@ def _request(method: str, url: str, data: bytes | None = None) -> bytes:
 
 
 def _wait_ready(process: subprocess.Popen[str], timeout_s: float) -> dict[str, object]:
-    deadline = time.monotonic() + timeout_s
-    lines: list[str] = []
-    while time.monotonic() < deadline:
-        line = process.stdout.readline() if process.stdout is not None else ""
-        if not line:
-            if process.poll() is not None:
-                raise RuntimeError(f"backend exited early with code {process.returncode}: {' '.join(lines[-20:])}")
-            time.sleep(0.05)
-            continue
-        lines.append(line.strip())
+    ready = threading.Event()
+    lock = threading.Lock()
+    lines: deque[str] = deque(maxlen=20)
+    result: dict[str, object] = {}
+
+    def drain_output() -> None:
         try:
-            payload = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if payload.get("event") == "ready":
-            return payload
-    raise RuntimeError(f"backend did not become ready: {' '.join(lines[-20:])}")
+            if process.stdout is None:
+                return
+            for line in process.stdout:
+                with lock:
+                    lines.append(line.strip()[-2048:])
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(payload, dict) and payload.get("event") == "ready" and not ready.is_set():
+                    result.update(payload)
+                    ready.set()
+                # Continue draining until exit: a full log pipe can block the
+                # backend's request threads even after readiness was reported.
+        finally:
+            ready.set()
+
+    threading.Thread(target=drain_output, name="backend-e2e-output", daemon=True).start()
+    ready.wait(timeout_s)
+    if result:
+        return result
+    with lock:
+        detail = " ".join(lines)
+    raise RuntimeError(f"backend did not become ready (exit code {process.poll()}): {detail}")
 
 
 def _launch_backend(

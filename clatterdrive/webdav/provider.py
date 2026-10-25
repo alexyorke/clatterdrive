@@ -6,6 +6,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from wsgidav import util
+from wsgidav.dav_error import DAVError, HTTP_FORBIDDEN
 from wsgidav.fs_dav_provider import FileResource, FilesystemProvider, FolderResource
 
 from ..hdd import VirtualHDD
@@ -26,10 +27,37 @@ def _resource_file_path(resource: Any) -> str:
 
 def _resource_backing_path(resource: Any, path: str) -> str:
     normalized = resource.vhdd.fs._normalize_path(path)
-    return os.path.join(resource.provider.root_folder_path, normalized.lstrip("/").replace("/", os.sep))
+    return resource.provider._loc_to_file_path(normalized, resource.environ)
+
+
+def _validate_directory_destination(resource: Any, destination: str) -> None:
+    source = resource.vhdd.fs._normalize_path(resource.path)
+    if _is_case_only_alias(source, destination):
+        return
+    if os.name == "nt":
+        source, destination = source.casefold(), destination.casefold()
+    if (source == destination
+            or destination.startswith(source.rstrip("/") + "/")
+            or source.startswith(destination.rstrip("/") + "/")):
+        raise DAVError(HTTP_FORBIDDEN, "Source and destination directories must not overlap")
 
 
 def _copy_directory_contents(source_dir: str, dest_dir: str) -> None:
+    # Custom recursive COPY must preserve the provider's no-follow policy.
+    # Preflight both trees before creating/removing destination entries.
+    for root in (source_dir, dest_dir):
+        pending = [root]
+        while pending:
+            path = pending.pop()
+            if os.path.islink(path) or os.path.isjunction(path):
+                raise DAVError(HTTP_FORBIDDEN, "Recursive copy does not support filesystem links")
+            if os.path.isdir(path):
+                with os.scandir(path) as entries:
+                    pending.extend(entry.path for entry in entries)
+    _copy_directory_contents_unchecked(source_dir, dest_dir)
+
+
+def _copy_directory_contents_unchecked(source_dir: str, dest_dir: str) -> None:
     os.makedirs(dest_dir, exist_ok=True)
     source_names = {entry.name for entry in os.scandir(source_dir)}
     for name in list(os.listdir(dest_dir)):
@@ -45,7 +73,7 @@ def _copy_directory_contents(source_dir: str, dest_dir: str) -> None:
         src_path = entry.path
         dest_path = os.path.join(dest_dir, entry.name)
         if entry.is_dir():
-            _copy_directory_contents(src_path, dest_path)
+            _copy_directory_contents_unchecked(src_path, dest_path)
         elif entry.is_file():
             os.makedirs(os.path.dirname(dest_path), exist_ok=True)
             shutil.copy2(src_path, dest_path)
@@ -215,6 +243,7 @@ class LatencyFileResource(_LatencyResourceMixin, FileResource):
 
     def handle_move(self, dest_path: str) -> bool:
         dest_path = self.vhdd.fs._normalize_path(dest_path)
+        _validate_directory_destination(self, dest_path)
         self.vhdd.ensure_tree_known(self.path)
         self.vhdd.ensure_tree_known(self.vhdd.fs._parent_dir(dest_path))
         dest_file_path = _resource_backing_path(self, dest_path)
@@ -292,6 +321,7 @@ class LatencyFolderResource(_LatencyResourceMixin, FolderResource):
     def handle_move(self, dest_path: str) -> bool:
         dest_path = self.vhdd.fs._normalize_path(dest_path)
         self.vhdd.ensure_tree_known(self.path)
+        _validate_directory_destination(self, dest_path)
         self.vhdd.ensure_tree_known(self.vhdd.fs._parent_dir(dest_path))
         dest_file_path = _resource_backing_path(self, dest_path)
         if _is_case_only_alias(self.path, dest_path):
@@ -307,6 +337,7 @@ class LatencyFolderResource(_LatencyResourceMixin, FolderResource):
 
     def handle_copy(self, dest_path: str, *, depth_infinity: bool) -> bool:
         dest_path = self.vhdd.fs._normalize_path(dest_path)
+        _validate_directory_destination(self, dest_path)
         if _is_case_only_alias(self.path, dest_path):
             _log_op("COPY", f"{self.path} -> {dest_path}", OperationStats(op_type="COPY"))
             return True
@@ -323,6 +354,7 @@ class LatencyFolderResource(_LatencyResourceMixin, FolderResource):
 
     def move_recursive(self, dest_path: str) -> None:
         dest_path = self.vhdd.fs._normalize_path(dest_path)
+        _validate_directory_destination(self, dest_path)
         self.vhdd.ensure_tree_known(self.path)
         if _is_case_only_alias(self.path, dest_path):
             dest_file_path = _resource_backing_path(self, dest_path)
@@ -334,6 +366,7 @@ class LatencyFolderResource(_LatencyResourceMixin, FolderResource):
 
     def copy_move_single(self, dest_path: str, *, is_move: bool) -> Any:
         dest_path = self.vhdd.fs._normalize_path(dest_path)
+        _validate_directory_destination(self, dest_path)
         if is_move:
             return super().copy_move_single(dest_path, is_move=is_move)
         if _is_case_only_alias(self.path, dest_path):
