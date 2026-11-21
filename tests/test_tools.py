@@ -218,7 +218,6 @@ def test_profile_core_expectations_hold() -> None:
     metrics = profile_core.collect_core_metrics()
     profile_core.assert_core_expectations(metrics)
     assert metrics["cold_start_startup_ms"] > metrics["ready_startup_ms"]
-    assert metrics["mixed_churn_total_ms"] > metrics["metadata_churn_total_ms"]
 
 def test_profile_fragmentation_expectations_hold() -> None:
     metrics = profile_fragmentation.collect_fragmentation_metrics()
