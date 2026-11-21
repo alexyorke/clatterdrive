@@ -203,6 +203,6 @@ if (Test-Path $MsiPath) {
     Remove-Item -Force $MsiPath
 }
 
-dotnet tool run wix -- build $WxsPath -arch x64 -out $MsiPath
+dotnet tool run wix -- build -acceptEula wix7 $WxsPath -arch x64 -out $MsiPath
 if ($LASTEXITCODE -ne 0) { throw "Installer build failed ($LASTEXITCODE)" }
 Write-Host "Installer: $MsiPath"
