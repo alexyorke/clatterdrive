@@ -1,5 +1,5 @@
 FROM ghcr.io/astral-sh/uv:0.13.9 AS uv
-FROM python:3.14-slim
+FROM python:3.15-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -27,4 +27,4 @@ RUN uv sync --locked --no-dev
 EXPOSE 8080
 VOLUME ["/data"]
 
-CMD ["uv", "run", "--locked", "python", "-m", "clatterdrive"]
+CMD ["/app/.venv/bin/python", "-m", "clatterdrive"]
