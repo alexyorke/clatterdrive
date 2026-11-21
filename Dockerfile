@@ -27,4 +27,4 @@ RUN uv sync --locked --no-dev
 EXPOSE 8080
 VOLUME ["/data"]
 
-CMD ["uv", "run", "--locked", "python", "-m", "clatterdrive"]
+CMD ["/app/.venv/bin/python", "-m", "clatterdrive"]
